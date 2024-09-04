@@ -103,7 +103,8 @@ static io_source_t gs_device = {
     gs_dump,               /* device state information dump function */
     CARTRIDGE_GS,          /* cartridge ID */
     IO_PRIO_NORMAL,        /* normal priority, device read needs to be checked for collisions */
-    0                      /* insertion order, gets filled in by the registration function */
+    0,                     /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE         /* NO mirroring */
 };
 
 static io_source_list_t *gs_list_item = NULL;
@@ -117,7 +118,7 @@ static const export_resource_t export_res = {
 void gs_config_init(void)
 {
     /* 8k configuration */
-    cart_config_changed_slotmain(0, 0, CMODE_READ);
+    cart_config_changed_slotmain(CMODE_8KGAME, CMODE_8KGAME, CMODE_READ);
     gs_io1_store((uint16_t)0xde00, 0);
 }
 
@@ -125,7 +126,7 @@ void gs_config_setup(uint8_t *rawcart)
 {
     memcpy(roml_banks, rawcart, 0x2000 * 64);
     /* 8k configuration */
-    cart_config_changed_slotmain(0, 0, CMODE_READ);
+    cart_config_changed_slotmain(CMODE_8KGAME, CMODE_8KGAME, CMODE_READ);
 }
 
 /* ---------------------------------------------------------------------*/

@@ -18,37 +18,42 @@
 #include <imagine/gfx/GfxText.hh>
 #include <imagine/base/Timer.hh>
 #include <imagine/gui/View.hh>
+#include <imagine/gfx/Quads.hh>
 #include <cstdio>
-#include <system_error>
 #include <array>
+
+namespace IG
+{
 
 class ToastView : public View
 {
 public:
-	ToastView();
 	ToastView(ViewAttachParams attach);
 	void setFace(Gfx::GlyphTextureSet &face);
 	void clear();
 	void place() final;
-	void unpost();
-	void post(const char *msg, int secs = 3, bool error = false);
-	void postError(const char *msg, int secs = 3);
-	void post(const char *prefix, const std::system_error &err, int secs = 3);
-	void post(const char *prefix, std::error_code ec, int secs = 3);
-	void prepareDraw() final;
-	void draw(Gfx::RendererCommands &cmds) final;
-	bool inputEvent(Input::Event event) final;
 
-	[[gnu::format(printf, 4, 5)]]
-	void printf(uint32_t secs, bool error, const char *format, ...);
-	void vprintf(uint32_t secs, bool error, const char *format, va_list args);
+	void post(UTF16Convertible auto &&msg, int secs, bool error)
+	{
+		text.resetString(IG_forward(msg));
+		place();
+		this->error = error;
+		postContent(secs);
+	}
+
+	void postError(UTF16Convertible auto &&msg, int secs) { post(IG_forward(msg), secs, true); }
+	void unpost();
+	void prepareDraw() final;
+	void draw(Gfx::RendererCommands &__restrict__, ViewDrawParams p = {}) const final;
 
 private:
-	Gfx::Text text{};
-	Base::Timer unpostTimer{Base::Timer::NullInit{}};
-	Gfx::GCRect msgFrame{};
+	Gfx::Text text;
+	Timer unpostTimer;
+	Gfx::IQuads msgFrameQuads;
+	WRect msgFrame{};
 	bool error = false;
 
-	void contentUpdated(bool error);
 	void postContent(int secs);
 };
+
+}

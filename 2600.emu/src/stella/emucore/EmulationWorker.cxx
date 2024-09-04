@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -20,6 +20,7 @@
 #include "EmulationWorker.hxx"
 #include "DispatchResult.hxx"
 #include "TIA.hxx"
+#include "Logger.hxx"
 
 using namespace std::chrono;
 
@@ -238,10 +239,13 @@ void EmulationWorker::handleWakeupFromWaitingForStop(std::unique_lock<std::mutex
       break;
 
     case Signal::none:
-      if (myVirtualTime <= high_resolution_clock::now())
+      if(myVirtualTime <= high_resolution_clock::now())
         // The time allotted to the emulation timeslice has passed and we haven't been stopped?
         // -> go for another emulation timeslice
+      {
+        Logger::debug("Frame dropped!");
         dispatchEmulation(lock);
+      }
       else
         // Wakeup was spurious, reenter sleep
         myWakeupCondition.wait_until(lock, myVirtualTime);
@@ -275,7 +279,7 @@ void EmulationWorker::dispatchEmulation(std::unique_lock<std::mutex>& lock)
 
   if (myDispatchResult->getStatus() == DispatchResult::Status::ok) {
     // If emulation finished successfully, we are free to go for another round
-    duration<double> timesliceSeconds(static_cast<double>(totalCycles) / static_cast<double>(myCyclesPerSecond));
+    const duration<double> timesliceSeconds(static_cast<double>(totalCycles) / static_cast<double>(myCyclesPerSecond));
     myVirtualTime += duration_cast<high_resolution_clock::duration>(timesliceSeconds);
 
     // If we aren't fast enough to keep up with the emulation, we stop immediatelly to avoid

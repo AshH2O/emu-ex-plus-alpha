@@ -70,7 +70,7 @@
 */
 
 /* #define RRNETMK3DEBUG */
- 
+
 #ifdef RRNETMK3DEBUG
 #define LOG(_x_) log_debug _x_
 #else
@@ -126,7 +126,8 @@ static io_source_t rrnetmk3_io1_device = {
     rrnetmk3_dump,           /* device state information dump function */
     CARTRIDGE_RRNETMK3,      /* cartridge ID */
     IO_PRIO_NORMAL,          /* normal priority, device read needs to be checked for collisions */
-    0                        /* insertion order, gets filled in by the registration function */
+    0,                       /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE           /* NO mirroring */
 };
 
 static io_source_t rrnetmk3_cs8900_io1_device = {
@@ -142,7 +143,8 @@ static io_source_t rrnetmk3_cs8900_io1_device = {
     rrnetmk3_cs8900_dump,    /* device state information dump function */
     CARTRIDGE_RRNETMK3,      /* cartridge ID */
     IO_PRIO_NORMAL,          /* normal priority, device read needs to be checked for collisions */
-    0                        /* insertion order, gets filled in by the registration function */
+    0,                       /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE           /* NO mirroring */
 };
 
 static io_source_list_t *rrnetmk3_io1_list_item = NULL;
@@ -405,7 +407,7 @@ static int rrnetmk3_common_attach(void)
 int rrnetmk3_bin_save(const char *filename)
 {
     FILE *fd;
-    int ret;
+    size_t ret;
 
     if (filename == NULL) {
         return -1;
@@ -418,7 +420,7 @@ int rrnetmk3_bin_save(const char *filename)
 
     ret = fwrite(rrnetmk3_bios, 1, 0x2000 + rrnetmk3_bios_offset, fd);
     fclose(fd);
-    if (ret != 0x2000 + rrnetmk3_bios_offset) {
+    if (ret != (0x2000 + rrnetmk3_bios_offset)) {
         return -1;
     }
     rrnetmk3_bios_changed = 0;

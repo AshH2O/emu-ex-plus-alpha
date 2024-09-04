@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -28,7 +28,6 @@ class AbstractFSNode;
 #elif defined(BSPF_WINDOWS)
   #include "FSNodeWINDOWS.hxx"
 #elif defined(EMU_EX_PLATFORM)
-  #include "FSNodeEmuEx.hh"
 #elif defined(__LIB_RETRO__)
   #include "FSNodeLIBRETRO.hxx"
 #else
@@ -55,8 +54,6 @@ class FilesystemNodeFactory
           return make_unique<FilesystemNodePOSIX>(path);
         #elif defined(BSPF_WINDOWS)
           return make_unique<FilesystemNodeWINDOWS>(path);
-        #elif defined(EMU_EX_PLATFORM)
-          return make_unique<FilesystemNodeEmuEx>(path);
         #elif defined(__LIB_RETRO__)
           return make_unique<FilesystemNodeLIBRETRO>(path);
         #endif

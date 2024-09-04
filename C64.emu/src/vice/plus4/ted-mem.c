@@ -387,7 +387,7 @@ inline static void ted07_store(uint8_t value)
     /* FIXME: Line-based emulation!  */
     if ((value & 7) != (ted.regs[0x07] & 7)) {
 #if 1
-        if (raster->skip_frame || TED_RASTER_CHAR(cycle) <= 1) {
+        if (TED_RASTER_CHAR(cycle) <= 1) {
             raster->xsmooth = value & 0x7;
         } else {
             raster_changes_next_line_add_int(raster,
@@ -1032,6 +1032,13 @@ uint8_t ted_peek(uint16_t addr)
     addr &= 0x3f;
 
     switch (addr) {
+        case 0x00:
+        case 0x01:
+        case 0x02:
+        case 0x03:
+        case 0x04:
+        case 0x05:
+            return ted_timer_read(addr);
         case 0x08:
             return ted08_read();
         case 0x09:

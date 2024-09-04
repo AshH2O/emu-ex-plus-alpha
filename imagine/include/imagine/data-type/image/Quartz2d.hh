@@ -17,15 +17,10 @@
 
 #include <imagine/config/defs.hh>
 #include <imagine/base/ApplicationContext.hh>
+#include <imagine/pixmap/Pixmap.hh>
 #include <CoreGraphics/CGImage.h>
-#include <system_error>
 #include <memory>
-
-namespace IG
-{
-class PixelFormat;
-class Pixmap;
-}
+#include <type_traits>
 
 namespace IG::Data
 {
@@ -33,13 +28,13 @@ namespace IG::Data
 class Quartz2dImage
 {
 public:
-	Quartz2dImage(const char *path);
-	std::errc readImage(IG::Pixmap dest);
+	Quartz2dImage(CStringView path);
+	void readImage(MutablePixmapView dest);
 	bool hasAlphaChannel();
 	bool isGrayscale();
-	uint32_t width();
-	uint32_t height();
-	const IG::PixelFormat pixelFormat();
+	int width();
+	int height();
+	const PixelFormat pixelFormat();
 	explicit operator bool() const;
 
 protected:
@@ -62,14 +57,14 @@ using PixmapImageImpl = Quartz2dImage;
 class Quartz2dImageReader
 {
 public:
-	constexpr Quartz2dImageReader(Base::ApplicationContext ctx):
+	constexpr Quartz2dImageReader(ApplicationContext ctx):
 		ctx{ctx}
 	{}
 
 protected:
-	Base::ApplicationContext ctx{};
+	ApplicationContext ctx{};
 
-	constexpr Base::ApplicationContext appContext() const { return ctx; }
+	constexpr ApplicationContext appContext() const { return ctx; }
 };
 
 using PixmapReaderImpl = Quartz2dImageReader;
@@ -77,7 +72,7 @@ using PixmapReaderImpl = Quartz2dImageReader;
 class Quartz2dImageWriter
 {
 public:
-	constexpr Quartz2dImageWriter(Base::ApplicationContext) {}
+	constexpr Quartz2dImageWriter(ApplicationContext) {}
 };
 
 using PixmapWriterImpl = Quartz2dImageWriter;

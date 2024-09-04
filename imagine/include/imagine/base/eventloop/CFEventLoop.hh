@@ -15,16 +15,18 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/base/eventLoopDefs.hh>
-#include <imagine/util/typeTraits.hh>
+#include <imagine/base/baseDefs.hh>
+#include <imagine/util/used.hh>
+#include <imagine/util/memory/UniqueFileDescriptor.hh>
 #include <CoreFoundation/CoreFoundation.h>
 #include <memory>
+#include <utility>
 
-namespace Base
+namespace IG
 {
 
-static constexpr int UNUSED_EVENT = 0;
-static constexpr int POLLEV_IN = kCFFileDescriptorReadCallBack, POLLEV_OUT = kCFFileDescriptorWriteCallBack, POLLEV_ERR = UNUSED_EVENT, POLLEV_HUP = UNUSED_EVENT;
+constexpr int pollEventInput = kCFFileDescriptorReadCallBack, pollEventOutput = kCFFileDescriptorWriteCallBack,
+	pollEventError = 0, pollEventHangUp = 0;
 
 struct CFFDEventSourceInfo
 {
@@ -39,18 +41,14 @@ struct CFFDEventSourceInfo
 class CFFDEventSource
 {
 public:
-	constexpr CFFDEventSource() {}
-	CFFDEventSource(int fd) : CFFDEventSource{nullptr, fd} {}
-	CFFDEventSource(const char *debugLabel, int fd);
-	CFFDEventSource(CFFDEventSource &&o);
-	CFFDEventSource &operator=(CFFDEventSource &&o);
+	CFFDEventSource(MaybeUniqueFileDescriptor, FDEventSourceDesc, PollEventDelegate);
+	CFFDEventSource(CFFDEventSource&&) noexcept;
+	CFFDEventSource &operator=(CFFDEventSource&&) noexcept;
 	~CFFDEventSource();
 
 protected:
-	IG_enableMemberIf(Config::DEBUG_BUILD, const char *, debugLabel){};
-	std::unique_ptr<CFFDEventSourceInfo> info{};
+	std::unique_ptr<CFFDEventSourceInfo> info;
 
-	const char *label() const;
 	void deinit();
 };
 
@@ -59,7 +57,7 @@ using FDEventSourceImpl = CFFDEventSource;
 class CFEventLoop
 {
 public:
-	constexpr CFEventLoop() {}
+	constexpr CFEventLoop() = default;
 	constexpr CFEventLoop(CFRunLoopRef loop): loop{loop} {}
 	CFRunLoopRef nativeObject() { return loop; }
 

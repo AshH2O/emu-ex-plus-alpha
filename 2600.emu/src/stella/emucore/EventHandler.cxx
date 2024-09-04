@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -22,19 +22,26 @@
 
 #include "Base.hxx"
 #include "Console.hxx"
+#include "PaletteHandler.hxx"
 #include "FrameBuffer.hxx"
 #include "FSNode.hxx"
 #include "OSystem.hxx"
 #include "Joystick.hxx"
 #include "Paddles.hxx"
+#include "MindLink.hxx"
 #include "Lightgun.hxx"
 #include "PointingDevice.hxx"
+#include "Driving.hxx"
 #include "PropsSet.hxx"
 #include "Settings.hxx"
 #include "Sound.hxx"
 #include "StateManager.hxx"
 #include "RewindManager.hxx"
 #include "TimerManager.hxx"
+#include "GlobalKeyHandler.hxx"
+#ifdef GUI_SUPPORT
+#include "HighScoresManager.hxx"
+#endif
 #include "Switches.hxx"
 #include "M6532.hxx"
 #include "MouseControl.hxx"
@@ -49,11 +56,14 @@
 #endif
 #ifdef DEBUGGER_SUPPORT
   #include "Debugger.hxx"
+  #include "DebuggerParser.hxx"
 #endif
 #ifdef GUI_SUPPORT
-  #include "Menu.hxx"
+  #include "OptionsMenu.hxx"
   #include "CommandMenu.hxx"
+  #include "HighScoresMenu.hxx"
   #include "MessageMenu.hxx"
+  #include "PlusRomsMenu.hxx"
   #include "DialogContainer.hxx"
   #include "Launcher.hxx"
   #include "TimeMachine.hxx"
@@ -61,20 +71,13 @@
   #include "ScrollBarWidget.hxx"
 #endif
 
+using namespace std::placeholders;
+using json = nlohmann::json;
+
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 EventHandler::EventHandler(OSystem& osystem)
-  : myOSystem(osystem)
+  : myOSystem{osystem}
 {
-  // Create keyboard handler (to handle all physical keyboard functionality)
-  myPKeyHandler = make_unique<PhysicalKeyboardHandler>(osystem, *this);
-
-  // Create joystick handler (to handle all physical joystick functionality)
-  myPJoyHandler = make_unique<PhysicalJoystickHandler>(osystem, *this);
-
-  // Erase the 'combo' array
-  for(int i = 0; i < COMBO_SIZE; ++i)
-    for(int j = 0; j < EVENTS_PER_COMBO; ++j)
-      myComboTable[i][j] = Event::NoType;
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -85,18 +88,33 @@ EventHandler::~EventHandler()
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 void EventHandler::initialize()
 {
+  // Create global key handler (handles all global hot keys)
+  myGlobalKeyHandler = make_unique<GlobalKeyHandler>(myOSystem);
+
+  // Create keyboard handler (to handle all physical keyboard functionality)
+  myPKeyHandler = make_unique<PhysicalKeyboardHandler>(myOSystem, *this);
+
+  // Create joystick handler (to handle all physical joystick functionality)
+  myPJoyHandler = make_unique<PhysicalJoystickHandler>(myOSystem, *this, myEvent);
+
   // Make sure the event/action mappings are correctly set,
   // and fill the ActionList structure with valid values
   setComboMap();
   setActionMappings(EventMode::kEmulationMode);
   setActionMappings(EventMode::kMenuMode);
 
-  Joystick::setDeadZone(myOSystem.settings().getInt("joydeadzone"));
+  Controller::setDigitalDeadZone(myOSystem.settings().getInt("joydeadzone"));
+  Controller::setAnalogDeadZone(myOSystem.settings().getInt("adeadzone"));
+  Paddles::setAnalogLinearity(myOSystem.settings().getInt("plinear"));
+  Paddles::setDejitterDiff(myOSystem.settings().getInt("dejitter.diff"));
   Paddles::setDejitterBase(myOSystem.settings().getInt("dejitter.base"));
   Paddles::setDejitterDiff(myOSystem.settings().getInt("dejitter.diff"));
   Paddles::setDigitalSensitivity(myOSystem.settings().getInt("dsense"));
-  Paddles::setMouseSensitivity(myOSystem.settings().getInt("msense"));
+  Controller::setMouseSensitivity(myOSystem.settings().getInt("msense"));
   PointingDevice::setSensitivity(myOSystem.settings().getInt("tsense"));
+  Driving::setSensitivity(myOSystem.settings().getInt("dcsense"));
+  Controller::setAutoFire(myOSystem.settings().getBool("autofire"));
+  Controller::setAutoFireRate(myOSystem.settings().getInt("autofirerate"));
 
 #ifdef GUI_SUPPORT
   // Set quick select delay when typing characters in listwidgets
@@ -146,17 +164,11 @@ void EventHandler::reset(EventHandlerState state)
 void EventHandler::addPhysicalJoystick(const PhysicalJoystickPtr& joy)
 {
 #ifdef JOYSTICK_SUPPORT
-  int ID = myPJoyHandler->add(joy);
-  if(ID < 0)
+  if(myPJoyHandler->add(joy) < 0)
     return;
 
   setActionMappings(EventMode::kEmulationMode);
   setActionMappings(EventMode::kMenuMode);
-
-  ostringstream buf;
-  buf << "Added joystick " << ID << ":" << endl
-      << "  " << joy->about() << endl;
-  Logger::info(buf.str());
 #endif
 }
 
@@ -177,20 +189,42 @@ void EventHandler::mapStelladaptors(const string& saport)
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-void EventHandler::toggleSAPortOrder()
+void EventHandler::toggleAllow4JoyDirections(bool toggle)
+{
+  bool joyAllow4 = myOSystem.settings().getBool("joyallow4");
+
+  if(toggle)
+  {
+    joyAllow4 = !joyAllow4;
+    allowAllDirections(joyAllow4);
+    myOSystem.settings().setValue("joyallow4", joyAllow4);
+  }
+
+  ostringstream ss;
+  ss << "Allow all 4 joystick directions ";
+  ss << (joyAllow4 ? "enabled" : "disabled");
+  myOSystem.frameBuffer().showTextMessage(ss.str());
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+void EventHandler::toggleSAPortOrder(bool toggle)
 {
 #ifdef JOYSTICK_SUPPORT
-  const string& saport = myOSystem.settings().getString("saport");
+  string saport = myOSystem.settings().getString("saport");
+
+  if(toggle)
+  {
+    if(saport == "lr")
+      saport = "rl";
+    else
+      saport = "lr";
+    mapStelladaptors(saport);
+  }
+
   if(saport == "lr")
-  {
-    mapStelladaptors("rl");
-    myOSystem.frameBuffer().showMessage("Stelladaptor ports right/left");
-  }
+    myOSystem.frameBuffer().showTextMessage("Stelladaptor ports left/right");
   else
-  {
-    mapStelladaptors("lr");
-    myOSystem.frameBuffer().showMessage("Stelladaptor ports left/right");
-  }
+    myOSystem.frameBuffer().showTextMessage("Stelladaptor ports right/left");
 #endif
 }
 
@@ -204,10 +238,18 @@ void EventHandler::set7800Mode()
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-void EventHandler::handleMouseControl()
+void EventHandler::changeMouseControl(int direction)
 {
   if(myMouseControl)
-    myOSystem.frameBuffer().showMessage(myMouseControl->next());
+    myOSystem.frameBuffer().showTextMessage(myMouseControl->change(direction));
+  else
+    myOSystem.frameBuffer().showTextMessage("Mouse input is disabled");
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+bool EventHandler::hasMouseControl() const
+{
+  return myMouseControl && myMouseControl->hasMouseControl();
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -294,10 +336,10 @@ void EventHandler::handleMouseButtonEvent(MouseButton b, bool pressed,
     switch(b)
     {
       case MouseButton::LEFT:
-        myEvent.set(Event::MouseButtonLeftValue, int(pressed));
+        myEvent.set(Event::MouseButtonLeftValue, static_cast<int>(pressed));
         break;
       case MouseButton::RIGHT:
-        myEvent.set(Event::MouseButtonRightValue, int(pressed));
+        myEvent.set(Event::MouseButtonRightValue, static_cast<int>(pressed));
         break;
       default:
         return;
@@ -316,21 +358,33 @@ void EventHandler::handleSystemEvent(SystemEvent e, int, int)
   {
     case SystemEvent::WINDOW_EXPOSED:
     case SystemEvent::WINDOW_RESIZED:
-      myOSystem.frameBuffer().update(true); // force full update
+      // Force full render update
+      myOSystem.frameBuffer().update(FrameBuffer::UpdateMode::RERENDER);
       break;
-#ifdef BSPF_UNIX
+#if 0
+    case SystemEvent::WINDOW_MINIMIZED:
+      if(myState == EventHandlerState::EMULATION)
+        enterMenuMode(EventHandlerState::OPTIONSMENU);
+      break;
+#endif
+
     case SystemEvent::WINDOW_FOCUS_GAINED:
+  #ifdef BSPF_UNIX
       // Used to handle Alt-x key combos; sometimes the key associated with
       // Alt gets 'stuck'  and is passed to the core for processing
       if(myPKeyHandler->altKeyCount() > 0)
         myPKeyHandler->altKeyCount() = 2;
+  #endif
+      if(myOSystem.settings().getBool("autopause") && myState == EventHandlerState::PAUSE)
+        setState(EventHandlerState::EMULATION);
       break;
-#endif
-#if 0
-    case SystemEvent::WINDOW_MINIMIZED:
-      if(myState == EventHandlerState::EMULATION) enterMenuMode(EventHandlerState::OPTIONSMENU);
-        break;
-#endif
+
+    case SystemEvent::WINDOW_FOCUS_LOST:
+      if(myOSystem.settings().getBool("autopause") && myState == EventHandlerState::EMULATION
+          && myOSystem.launcherLostFocus())
+        setState(EventHandlerState::PAUSE);
+      break;
+
     default:  // handle other events as testing requires
       // cerr << "handleSystemEvent: " << e << endl;
       break;
@@ -342,376 +396,1114 @@ void EventHandler::handleEvent(Event::Type event, Int32 value, bool repeated)
 {
   // Take care of special events that aren't part of the emulation core
   // or need to be preprocessed before passing them on
-  bool pressed = (value != 0);
+  const bool pressed = (value != 0);
+
+  // Abort if global keys are pressed
+  if(myGlobalKeyHandler->handleEvent(event, pressed, repeated))
+    return;
 
   switch(event)
   {
     ////////////////////////////////////////////////////////////////////////
     // If enabled, make sure 'impossible' joystick directions aren't allowed
-    case Event::JoystickZeroUp:
+    case Event::LeftJoystickUp:
       if(!myAllowAllDirectionsFlag && pressed)
-        myEvent.set(Event::JoystickZeroDown, 0);
+        myEvent.set(Event::LeftJoystickDown, 0);
       break;
 
-    case Event::JoystickZeroDown:
+    case Event::LeftJoystickDown:
       if(!myAllowAllDirectionsFlag && pressed)
-        myEvent.set(Event::JoystickZeroUp, 0);
+        myEvent.set(Event::LeftJoystickUp, 0);
       break;
 
-    case Event::JoystickZeroLeft:
+    case Event::LeftJoystickLeft:
       if(!myAllowAllDirectionsFlag && pressed)
-        myEvent.set(Event::JoystickZeroRight, 0);
+        myEvent.set(Event::LeftJoystickRight, 0);
       break;
 
-    case Event::JoystickZeroRight:
+    case Event::LeftJoystickRight:
       if(!myAllowAllDirectionsFlag && pressed)
-        myEvent.set(Event::JoystickZeroLeft, 0);
+        myEvent.set(Event::LeftJoystickLeft, 0);
       break;
 
-    case Event::JoystickOneUp:
+    case Event::RightJoystickUp:
       if(!myAllowAllDirectionsFlag && pressed)
-        myEvent.set(Event::JoystickOneDown, 0);
+        myEvent.set(Event::RightJoystickDown, 0);
       break;
 
-    case Event::JoystickOneDown:
+    case Event::RightJoystickDown:
       if(!myAllowAllDirectionsFlag && pressed)
-        myEvent.set(Event::JoystickOneUp, 0);
+        myEvent.set(Event::RightJoystickUp, 0);
       break;
 
-    case Event::JoystickOneLeft:
+    case Event::RightJoystickLeft:
       if(!myAllowAllDirectionsFlag && pressed)
-        myEvent.set(Event::JoystickOneRight, 0);
+        myEvent.set(Event::RightJoystickRight, 0);
       break;
 
-    case Event::JoystickOneRight:
+    case Event::RightJoystickRight:
       if(!myAllowAllDirectionsFlag && pressed)
-        myEvent.set(Event::JoystickOneLeft, 0);
+        myEvent.set(Event::RightJoystickLeft, 0);
       break;
-    ////////////////////////////////////////////////////////////////////////
 
-    case Event::Fry:
-      if (!repeated) myFryingFlag = pressed;
-      return;
+    case Event::QTJoystickThreeUp:
+      if(!myAllowAllDirectionsFlag && pressed)
+        myEvent.set(Event::QTJoystickThreeDown, 0);
+      break;
 
-    case Event::ReloadConsole:
-      if (pressed && !repeated) myOSystem.reloadConsole();
-      return;
+    case Event::QTJoystickThreeDown:
+      if(!myAllowAllDirectionsFlag && pressed)
+        myEvent.set(Event::QTJoystickThreeUp, 0);
+      break;
 
+    case Event::QTJoystickThreeLeft:
+      if(!myAllowAllDirectionsFlag && pressed)
+        myEvent.set(Event::QTJoystickThreeRight, 0);
+      break;
+
+    case Event::QTJoystickThreeRight:
+      if(!myAllowAllDirectionsFlag && pressed)
+        myEvent.set(Event::QTJoystickThreeLeft, 0);
+      break;
+
+    case Event::QTJoystickFourUp:
+      if(!myAllowAllDirectionsFlag && pressed)
+        myEvent.set(Event::QTJoystickFourDown, 0);
+      break;
+
+    case Event::QTJoystickFourDown:
+      if(!myAllowAllDirectionsFlag && pressed)
+        myEvent.set(Event::QTJoystickFourUp, 0);
+      break;
+
+    case Event::QTJoystickFourLeft:
+      if(!myAllowAllDirectionsFlag && pressed)
+        myEvent.set(Event::QTJoystickFourRight, 0);
+      break;
+
+    case Event::QTJoystickFourRight:
+      if(!myAllowAllDirectionsFlag && pressed)
+        myEvent.set(Event::QTJoystickFourLeft, 0);
+      break;
+
+    ///////////////////////////////////////////////////////////////////////////
+    // Audio & Video events (with global hotkeys)
     case Event::VolumeDecrease:
-      if(pressed) myOSystem.sound().adjustVolume(-1);
+      if(pressed)
+      {
+        myOSystem.sound().adjustVolume(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::VOLUME);
+      }
       return;
 
     case Event::VolumeIncrease:
-      if(pressed) myOSystem.sound().adjustVolume(+1);
+      if(pressed)
+      {
+        myOSystem.sound().adjustVolume(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::VOLUME);
+      }
       return;
 
     case Event::SoundToggle:
-      if(pressed && !repeated) myOSystem.sound().toggleMute();
+      if(pressed && !repeated)
+      {
+        myOSystem.sound().toggleMute();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::VOLUME);
+      }
       return;
 
     case Event::VidmodeDecrease:
-      if(pressed) myOSystem.frameBuffer().changeVidMode(-1);
+      if(pressed)
+      {
+        myOSystem.frameBuffer().switchVideoMode(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::ZOOM);
+      }
       return;
 
     case Event::VidmodeIncrease:
-      if(pressed) myOSystem.frameBuffer().changeVidMode(+1);
-      return;
-
-    case Event::VCenterDecrease:
-      if (pressed) myOSystem.console().changeVerticalCenter(-1);
-      return;
-
-    case Event::VCenterIncrease:
-      if (pressed) myOSystem.console().changeVerticalCenter(+1);
-      return;
-
-    case Event::ScanlineAdjustDecrease:
-      if (pressed) myOSystem.console().changeScanlineAdjust(-1);
-      return;
-
-    case Event::ScanlineAdjustIncrease:
-      if (pressed) myOSystem.console().changeScanlineAdjust(+1);
+      if(pressed)
+      {
+        myOSystem.frameBuffer().switchVideoMode(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::ZOOM);
+      }
       return;
 
     case Event::ToggleFullScreen:
-      if (pressed && !repeated) myOSystem.frameBuffer().toggleFullscreen();
+      if(pressed && !repeated)
+      {
+        myOSystem.frameBuffer().toggleFullscreen();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::FULLSCREEN);
+      }
       return;
 
+    #ifdef ADAPTABLE_REFRESH_SUPPORT
+    case Event::ToggleAdaptRefresh:
+      if(pressed && !repeated)
+      {
+        myOSystem.frameBuffer().toggleAdaptRefresh();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::ADAPT_REFRESH);
+      }
+      return;
+    #endif
+
     case Event::OverscanDecrease:
-      if (pressed) myOSystem.frameBuffer().changeOverscan(-1);
+      if(pressed)
+      {
+        myOSystem.frameBuffer().changeOverscan(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::OVERSCAN);
+      }
       return;
 
     case Event::OverscanIncrease:
-      if (pressed) myOSystem.frameBuffer().changeOverscan(1);
+      if(pressed)
+      {
+        myOSystem.frameBuffer().changeOverscan(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::OVERSCAN);
+      }
+      return;
+
+    case Event::FormatDecrease:
+      if(pressed && !repeated)
+      {
+        myOSystem.console().selectFormat(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::TVFORMAT);
+      }
+      return;
+
+    case Event::FormatIncrease:
+      if(pressed && !repeated)
+      {
+        myOSystem.console().selectFormat(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::TVFORMAT);
+      }
+      return;
+
+    case Event::VCenterDecrease:
+      if(pressed)
+      {
+        myOSystem.console().changeVerticalCenter(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::VCENTER);
+      }
+      return;
+
+    case Event::VCenterIncrease:
+      if(pressed)
+      {
+        myOSystem.console().changeVerticalCenter(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::VCENTER);
+      }
+      return;
+    case Event::VSizeAdjustDecrease:
+      if(pressed)
+      {
+        myOSystem.console().changeVSizeAdjust(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::VSIZE);
+      }
+      return;
+
+    case Event::VSizeAdjustIncrease:
+      if(pressed)
+      {
+        myOSystem.console().changeVSizeAdjust(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::VSIZE);
+      }
+      return;
+
+    case Event::ToggleCorrectAspectRatio:
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleCorrectAspectRatio();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::ASPECT_RATIO);
+      }
+      break;
+
+    case Event::PaletteDecrease:
+      if(pressed && !repeated)
+      {
+        myOSystem.frameBuffer().tiaSurface().paletteHandler().cyclePalette(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::PALETTE);
+      }
+      return;
+
+    case Event::PaletteIncrease:
+      if(pressed && !repeated)
+      {
+        myOSystem.frameBuffer().tiaSurface().paletteHandler().cyclePalette(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::PALETTE);
+      }
+      return;
+
+    case Event::PreviousVideoMode:
+      if(pressed && !repeated)
+      {
+        myOSystem.frameBuffer().tiaSurface().changeNTSC(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::NTSC_PRESET);
+      }
+      return;
+
+    case Event::NextVideoMode:
+      if(pressed && !repeated)
+      {
+        myOSystem.frameBuffer().tiaSurface().changeNTSC(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::NTSC_PRESET);
+      }
       return;
 
     case Event::VidmodeStd:
-      if (pressed && !repeated) myOSystem.frameBuffer().tiaSurface().setNTSC(NTSCFilter::Preset::OFF);
+      if(pressed && !repeated)
+      {
+        myOSystem.frameBuffer().tiaSurface().setNTSC(NTSCFilter::Preset::OFF);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::NTSC_PRESET);
+      }
       return;
 
     case Event::VidmodeRGB:
-      if (pressed && !repeated) myOSystem.frameBuffer().tiaSurface().setNTSC(NTSCFilter::Preset::RGB);
+      if(pressed && !repeated)
+      {
+        myOSystem.frameBuffer().tiaSurface().setNTSC(NTSCFilter::Preset::RGB);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::NTSC_PRESET);
+      }
       return;
 
     case Event::VidmodeSVideo:
-      if (pressed && !repeated) myOSystem.frameBuffer().tiaSurface().setNTSC(NTSCFilter::Preset::SVIDEO);
+      if(pressed && !repeated)
+      {
+        myOSystem.frameBuffer().tiaSurface().setNTSC(NTSCFilter::Preset::SVIDEO);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::NTSC_PRESET);
+      }
       return;
 
     case Event::VidModeComposite:
-      if (pressed && !repeated) myOSystem.frameBuffer().tiaSurface().setNTSC(NTSCFilter::Preset::COMPOSITE);
+      if(pressed && !repeated)
+      {
+        myOSystem.frameBuffer().tiaSurface().setNTSC(NTSCFilter::Preset::COMPOSITE);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::NTSC_PRESET);
+      }
       return;
 
     case Event::VidModeBad:
-      if (pressed && !repeated) myOSystem.frameBuffer().tiaSurface().setNTSC(NTSCFilter::Preset::BAD);
+      if(pressed && !repeated)
+      {
+        myOSystem.frameBuffer().tiaSurface().setNTSC(NTSCFilter::Preset::BAD);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::NTSC_PRESET);
+      }
       return;
 
     case Event::VidModeCustom:
-      if (pressed && !repeated) myOSystem.frameBuffer().tiaSurface().setNTSC(NTSCFilter::Preset::CUSTOM);
+      if(pressed && !repeated)
+      {
+        myOSystem.frameBuffer().tiaSurface().setNTSC(NTSCFilter::Preset::CUSTOM);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::NTSC_PRESET);
+      }
+      return;
+    case Event::PhosphorDecrease:
+      if(pressed)
+      {
+        myOSystem.console().changePhosphor(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::PHOSPHOR);
+      }
+      return;
+
+    case Event::PhosphorIncrease:
+      if(pressed)
+      {
+        myOSystem.console().changePhosphor(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::PHOSPHOR);
+      }
+      return;
+
+    case Event::TogglePhosphor:
+      if(pressed && !repeated)
+      {
+        myOSystem.console().togglePhosphor();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::PHOSPHOR);
+      }
       return;
 
     case Event::ScanlinesDecrease:
-      if (pressed) myOSystem.frameBuffer().tiaSurface().setScanlineIntensity(-2);
+      if(pressed)
+      {
+        myOSystem.frameBuffer().tiaSurface().changeScanlineIntensity(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::SCANLINES);
+      }
       return;
 
     case Event::ScanlinesIncrease:
-      if (pressed) myOSystem.frameBuffer().tiaSurface().setScanlineIntensity(+2);
+      if(pressed)
+      {
+        myOSystem.frameBuffer().tiaSurface().changeScanlineIntensity(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::SCANLINES);
+      }
+      return;
+
+    case Event::PreviousScanlineMask:
+      if(pressed && !repeated)
+      {
+        myOSystem.frameBuffer().tiaSurface().cycleScanlineMask(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::SCANLINE_MASK);
+      }
+      return;
+
+    case Event::NextScanlineMask:
+      if(pressed && !repeated)
+      {
+        myOSystem.frameBuffer().tiaSurface().cycleScanlineMask(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::SCANLINE_MASK);
+      }
+      return;
+
+    case Event::ToggleInter:
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleInter();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::INTERPOLATION);
+      }
+      return;
+
+      ///////////////////////////////////////////////////////////////////////////
+      // Direct key Audio & Video events
+    case Event::PreviousPaletteAttribute:
+      if(pressed)
+      {
+        myOSystem.frameBuffer().tiaSurface().paletteHandler().cycleAdjustable(-1);
+        myGlobalKeyHandler->setDirectSetting(GlobalKeyHandler::Setting::PALETTE_ATTRIBUTE);
+      }
+      return;
+
+    case Event::NextPaletteAttribute:
+      if(pressed)
+      {
+        myOSystem.frameBuffer().tiaSurface().paletteHandler().cycleAdjustable(+1);
+        myGlobalKeyHandler->setDirectSetting(GlobalKeyHandler::Setting::PALETTE_ATTRIBUTE);
+      }
+      return;
+
+    case Event::PaletteAttributeDecrease:
+      if(pressed)
+      {
+        myOSystem.frameBuffer().tiaSurface().paletteHandler().changeCurrentAdjustable(-1);
+        myGlobalKeyHandler->setDirectSetting(GlobalKeyHandler::Setting::PALETTE_ATTRIBUTE);
+      }
+      return;
+
+    case Event::PaletteAttributeIncrease:
+      if(pressed)
+      {
+        myOSystem.frameBuffer().tiaSurface().paletteHandler().changeCurrentAdjustable(+1);
+        myGlobalKeyHandler->setDirectSetting(GlobalKeyHandler::Setting::PALETTE_ATTRIBUTE);
+      }
       return;
 
     case Event::PreviousAttribute:
-      if (pressed)
+      if(pressed)
       {
-        myOSystem.frameBuffer().tiaSurface().setNTSC(NTSCFilter::Preset::CUSTOM);
-        myOSystem.frameBuffer().showMessage(
-          myOSystem.frameBuffer().tiaSurface().ntsc().setPreviousAdjustable());
+        myOSystem.frameBuffer().tiaSurface().setNTSCAdjustable(-1);
+        myGlobalKeyHandler->setDirectSetting(GlobalKeyHandler::Setting::NTSC_ATTRIBUTE);
       }
       return;
 
     case Event::NextAttribute:
-      if (pressed)
+      if(pressed)
       {
-        myOSystem.frameBuffer().tiaSurface().setNTSC(NTSCFilter::Preset::CUSTOM);
-        myOSystem.frameBuffer().showMessage(
-          myOSystem.frameBuffer().tiaSurface().ntsc().setNextAdjustable());
+        myOSystem.frameBuffer().tiaSurface().setNTSCAdjustable(+1);
+        myGlobalKeyHandler->setDirectSetting(GlobalKeyHandler::Setting::NTSC_ATTRIBUTE);
       }
       return;
 
     case Event::DecreaseAttribute:
-      if (pressed)
+      if(pressed)
       {
-        myOSystem.frameBuffer().tiaSurface().setNTSC(NTSCFilter::Preset::CUSTOM);
-        myOSystem.frameBuffer().showMessage(
-          myOSystem.frameBuffer().tiaSurface().ntsc().decreaseAdjustable());
+        myOSystem.frameBuffer().tiaSurface().changeCurrentNTSCAdjustable(-1);
+        myGlobalKeyHandler->setDirectSetting(GlobalKeyHandler::Setting::NTSC_ATTRIBUTE);
       }
       return;
 
     case Event::IncreaseAttribute:
-      if (pressed)
+      if(pressed)
       {
-        myOSystem.frameBuffer().tiaSurface().setNTSC(NTSCFilter::Preset::CUSTOM);
-        myOSystem.frameBuffer().showMessage(
-          myOSystem.frameBuffer().tiaSurface().ntsc().increaseAdjustable());
+        myOSystem.frameBuffer().tiaSurface().changeCurrentNTSCAdjustable(+1);
+        myGlobalKeyHandler->setDirectSetting(GlobalKeyHandler::Setting::NTSC_ATTRIBUTE);
       }
       return;
 
-    case Event::PhosphorDecrease:
-      if (pressed) myOSystem.console().changePhosphor(-1);
-      return;
-
-    case Event::PhosphorIncrease:
-      if (pressed) myOSystem.console().changePhosphor(1);
-      return;
-
-    case Event::TogglePhosphor:
-      if (pressed && !repeated) myOSystem.console().togglePhosphor();
-      return;
-
-    case Event::ToggleColorLoss:
-      if (pressed && !repeated) myOSystem.console().toggleColorLoss();
-      return;
-
-    case Event::TogglePalette:
-      if (pressed && !repeated) myOSystem.console().togglePalette();
-      return;
-
-    case Event::ToggleInter:
-      if (pressed && !repeated) myOSystem.console().toggleInter();
-      return;
-
-    case Event::ToggleJitter:
-      if (pressed && !repeated) myOSystem.console().toggleJitter();
-      return;
-
+    ///////////////////////////////////////////////////////////////////////////
+    // Debug events (with global hotkeys)
     case Event::ToggleFrameStats:
-      if (pressed) myOSystem.frameBuffer().toggleFrameStats();
-      return;
-
-    case Event::ToggleTimeMachine:
-      if (pressed && !repeated) myOSystem.state().toggleTimeMachine();
-      return;
-
-  #ifdef PNG_SUPPORT
-    case Event::ToggleContSnapshots:
-      if (pressed && !repeated) myOSystem.png().toggleContinuousSnapshots(false);
-      return;
-
-    case Event::ToggleContSnapshotsFrame:
-      if (pressed && !repeated) myOSystem.png().toggleContinuousSnapshots(true);
-      return;
-  #endif
-
-    case Event::HandleMouseControl:
-      if (pressed && !repeated) handleMouseControl();
-      return;
-
-    case Event::ToggleSAPortOrder:
-      if (pressed && !repeated) toggleSAPortOrder();
-      return;
-
-    case Event::FormatDecrease:
-      if (pressed) myOSystem.console().toggleFormat(-1);
-      return;
-
-    case Event::FormatIncrease:
-      if (pressed) myOSystem.console().toggleFormat(1);
-      return;
-
-    case Event::ToggleGrabMouse:
-      if (pressed && !repeated && !myOSystem.frameBuffer().fullScreen())
+      if(pressed && !repeated)
       {
-        bool oldState = myOSystem.frameBuffer().grabMouseEnabled();
-        myOSystem.frameBuffer().toggleGrabMouse();
-        bool newState = myOSystem.frameBuffer().grabMouseEnabled();
-        myOSystem.frameBuffer().showMessage(oldState != newState ? myOSystem.frameBuffer().grabMouseEnabled()
-                                            ? "Grab mouse enabled" : "Grab mouse disabled"
-                                            : "Grab mouse not allowed while cursor shown");
+        myOSystem.frameBuffer().toggleFrameStats();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::STATS);
       }
       return;
 
     case Event::ToggleP0Collision:
-      if (pressed && !repeated) myOSystem.console().toggleP0Collision();
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleP0Collision();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::P0_CX);
+      }
       return;
 
     case Event::ToggleP0Bit:
-      if (pressed && !repeated) myOSystem.console().toggleP0Bit();
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleP0Bit();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::P0_ENAM);
+      }
       return;
 
     case Event::ToggleP1Collision:
-      if (pressed && !repeated) myOSystem.console().toggleP1Collision();
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleP1Collision();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::P1_CX);
+      }
       return;
 
     case Event::ToggleP1Bit:
-      if (pressed && !repeated) myOSystem.console().toggleP1Bit();
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleP1Bit();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::P1_ENAM);
+      }
       return;
 
     case Event::ToggleM0Collision:
-      if (pressed && !repeated) myOSystem.console().toggleM0Collision();
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleM0Collision();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::M0_CX);
+      }
       return;
 
     case Event::ToggleM0Bit:
-      if (pressed && !repeated) myOSystem.console().toggleM0Bit();
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleM0Bit();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::M0_ENAM);
+      }
       return;
 
     case Event::ToggleM1Collision:
-      if (pressed && !repeated) myOSystem.console().toggleM1Collision();
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleM1Collision();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::M1_CX);
+      }
       return;
 
     case Event::ToggleM1Bit:
-      if (pressed && !repeated) myOSystem.console().toggleM1Bit();
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleM1Bit();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::M1_ENAM);
+      }
       return;
 
     case Event::ToggleBLCollision:
-      if (pressed && !repeated) myOSystem.console().toggleBLCollision();
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleBLCollision();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::BL_CX);
+      }
       return;
 
     case Event::ToggleBLBit:
-      if (pressed) myOSystem.console().toggleBLBit();
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleBLBit();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::BL_ENAM);
+      }
       return;
 
     case Event::TogglePFCollision:
-      if (pressed && !repeated) myOSystem.console().togglePFCollision();
+      if(pressed && !repeated)
+      {
+        myOSystem.console().togglePFCollision();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::PF_CX);
+      }
       return;
 
     case Event::TogglePFBit:
-      if (pressed && !repeated) myOSystem.console().togglePFBit();
-      return;
-
-    case Event::ToggleFixedColors:
-      if (pressed) myOSystem.console().toggleFixedColors();
+      if(pressed && !repeated)
+      {
+        myOSystem.console().togglePFBit();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::PF_ENAM);
+      }
       return;
 
     case Event::ToggleCollisions:
-      if (pressed && !repeated) myOSystem.console().toggleCollisions();
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleCollisions();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::ALL_CX);
+      }
       return;
 
     case Event::ToggleBits:
-      if (pressed && !repeated) myOSystem.console().toggleBits();
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleBits();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::ALL_ENAM);
+      }
       return;
 
+    case Event::ToggleFixedColors:
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleFixedColors();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::FIXED_COL);
+      }
+      return;
+
+    case Event::ToggleColorLoss:
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleColorLoss();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::COLOR_LOSS);
+      }
+      return;
+
+    case Event::ToggleDeveloperSet:
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleDeveloperSet();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::DEVELOPER);
+      }
+      break;
+
+    case Event::ToggleJitter:
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleJitter();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::JITTER_SENSE);
+      }
+      return;
+
+    case Event::JitterSenseDecrease:
+      if(pressed)
+      {
+        myOSystem.console().changeJitterSense(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::JITTER_SENSE);
+      }
+      return;
+
+    case Event::JitterSenseIncrease:
+      if(pressed)
+      {
+        myOSystem.console().changeJitterSense(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::JITTER_SENSE);
+      }
+      return;
+
+    case Event::JitterRecDecrease:
+      if(pressed)
+      {
+        myOSystem.console().changeJitterRecovery(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::JITTER_REC);
+      }
+      return;
+
+    case Event::JitterRecIncrease:
+      if(pressed)
+      {
+        myOSystem.console().changeJitterRecovery(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::JITTER_REC);
+      }
+      return;
+
+    ///////////////////////////////////////////////////////////////////////////
+    // Input events
+    case Event::DecreaseDeadzone:
+      if(pressed)
+      {
+        myPJoyHandler->changeDigitalDeadZone(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::DIGITAL_DEADZONE);
+      }
+      return;
+
+    case Event::IncreaseDeadzone:
+      if(pressed)
+      {
+        myPJoyHandler->changeDigitalDeadZone(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::DIGITAL_DEADZONE);
+      }
+      return;
+
+    case Event::DecAnalogDeadzone:
+      if(pressed)
+      {
+        myPJoyHandler->changeAnalogPaddleDeadZone(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::ANALOG_DEADZONE);
+      }
+      return;
+
+    case Event::IncAnalogDeadzone:
+      if(pressed)
+      {
+        myPJoyHandler->changeAnalogPaddleDeadZone(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::ANALOG_DEADZONE);
+      }
+      return;
+
+    case Event::DecAnalogSense:
+      if(pressed)
+      {
+        myPJoyHandler->changeAnalogPaddleSensitivity(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::ANALOG_SENSITIVITY);
+      }
+      return;
+
+    case Event::IncAnalogSense:
+      if(pressed)
+      {
+        myPJoyHandler->changeAnalogPaddleSensitivity(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::ANALOG_SENSITIVITY);
+      }
+      return;
+
+    case Event::DecAnalogLinear:
+      if(pressed)
+      {
+        myPJoyHandler->changeAnalogPaddleLinearity(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::ANALOG_LINEARITY);
+      }
+      return;
+
+    case Event::IncAnalogLinear:
+      if(pressed)
+      {
+        myPJoyHandler->changeAnalogPaddleLinearity(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::ANALOG_LINEARITY);
+      }
+      return;
+
+    case Event::DecDejtterAveraging:
+      if(pressed)
+      {
+        myPJoyHandler->changePaddleDejitterAveraging(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::DEJITTER_AVERAGING);
+      }
+      return;
+
+    case Event::IncDejtterAveraging:
+      if(pressed)
+      {
+        myPJoyHandler->changePaddleDejitterAveraging(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::DEJITTER_AVERAGING);
+      }
+      return;
+
+    case Event::DecDejtterReaction:
+      if(pressed)
+      {
+        myPJoyHandler->changePaddleDejitterReaction(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::DEJITTER_REACTION);
+      }
+      return;
+
+    case Event::IncDejtterReaction:
+      if(pressed)
+      {
+        myPJoyHandler->changePaddleDejitterReaction(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::DEJITTER_REACTION);
+      }
+      return;
+
+    case Event::DecDigitalSense:
+      if(pressed)
+      {
+        myPJoyHandler->changeDigitalPaddleSensitivity(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::DIGITAL_SENSITIVITY);
+      }
+      return;
+
+    case Event::IncDigitalSense:
+      if(pressed)
+      {
+        myPJoyHandler->changeDigitalPaddleSensitivity(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::DIGITAL_SENSITIVITY);
+      }
+      return;
+
+    case Event::ToggleAutoFire:
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleAutoFire();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::AUTO_FIRE);
+      }
+      return;
+
+    case Event::DecreaseAutoFire:
+      if(pressed)
+      {
+        myOSystem.console().changeAutoFireRate(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::AUTO_FIRE);
+      }
+      return;
+
+    case Event::IncreaseAutoFire:
+      if(pressed)
+      {
+        myOSystem.console().changeAutoFireRate(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::AUTO_FIRE);
+      }
+      return;
+
+    case Event::ToggleFourDirections:
+      if(pressed && !repeated)
+      {
+        toggleAllow4JoyDirections();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::FOUR_DIRECTIONS);
+      }
+      return;
+
+    case Event::ToggleKeyCombos:
+      if(pressed && !repeated)
+      {
+        myPKeyHandler->toggleModKeys();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::MOD_KEY_COMBOS);
+      }
+      return;
+
+    case Event::ToggleSAPortOrder:
+      if(pressed && !repeated)
+      {
+        toggleSAPortOrder();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::SA_PORT_ORDER);
+      }
+      return;
+
+    case Event::PrevMouseAsController:
+      if(pressed && !repeated)
+      {
+        changeMouseControllerMode(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::USE_MOUSE);
+      }
+      return;
+
+    case Event::NextMouseAsController:
+      if(pressed && !repeated)
+      {
+        changeMouseControllerMode(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::USE_MOUSE);
+      }
+      return;
+
+    case Event::DecMousePaddleSense:
+      if(pressed)
+      {
+        myPJoyHandler->changeMousePaddleSensitivity(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::PADDLE_SENSITIVITY);
+      }
+      return;
+
+    case Event::IncMousePaddleSense:
+      if(pressed)
+      {
+        myPJoyHandler->changeMousePaddleSensitivity(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::PADDLE_SENSITIVITY);
+      }
+      return;
+
+    case Event::DecMouseTrackballSense:
+      if(pressed)
+      {
+        myPJoyHandler->changeMouseTrackballSensitivity(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::TRACKBALL_SENSITIVITY);
+      }
+      return;
+
+    case Event::IncMouseTrackballSense:
+      if(pressed)
+      {
+        myPJoyHandler->changeMouseTrackballSensitivity(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::TRACKBALL_SENSITIVITY);
+      }
+      return;
+
+    case Event::DecreaseDrivingSense:
+      if(pressed)
+      {
+        myPJoyHandler->changeDrivingSensitivity(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::DRIVING_SENSITIVITY);
+      }
+      return;
+
+    case Event::IncreaseDrivingSense:
+      if(pressed)
+      {
+        myPJoyHandler->changeDrivingSensitivity(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::DRIVING_SENSITIVITY);
+      }
+      return;
+
+    case Event::PreviousCursorVisbility:
+      if(pressed && !repeated)
+      {
+        changeMouseCursor(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::MOUSE_CURSOR);
+      }
+      return;
+
+    case Event::NextCursorVisbility:
+      if(pressed && !repeated)
+      {
+        changeMouseCursor(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::MOUSE_CURSOR);
+      }
+      return;
+
+    case Event::ToggleGrabMouse:
+      if(pressed && !repeated && !myOSystem.frameBuffer().fullScreen())
+      {
+        myOSystem.frameBuffer().toggleGrabMouse();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::GRAB_MOUSE);
+      }
+      return;
+
+    case Event::PreviousLeftPort:
+      if(pressed && !repeated)
+      {
+        myOSystem.console().changeLeftController(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::LEFT_PORT);
+      }
+      return;
+
+    case Event::NextLeftPort:
+      if(pressed && !repeated)
+      {
+        myOSystem.console().changeLeftController(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::LEFT_PORT);
+      }
+
+      return;
+
+    case Event::PreviousRightPort:
+      if(pressed && !repeated)
+      {
+        myOSystem.console().changeRightController(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::RIGHT_PORT);
+      }
+      return;
+
+    case Event::NextRightPort:
+      if(pressed && !repeated)
+      {
+        myOSystem.console().changeRightController(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::RIGHT_PORT);
+      }
+      return;
+
+    case Event::ToggleSwapPorts:
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleSwapPorts();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::SWAP_PORTS);
+      }
+      return;
+
+    case Event::ToggleSwapPaddles:
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleSwapPaddles();
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::SWAP_PADDLES);
+      }
+      return;
+
+    case Event::DecreasePaddleCenterX:
+      if(pressed)
+      {
+        myOSystem.console().changePaddleCenterX(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::PADDLE_CENTER_X);
+      }
+      return;
+
+    case Event::IncreasePaddleCenterX:
+      if(pressed)
+      {
+        myOSystem.console().changePaddleCenterX(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::PADDLE_CENTER_X);
+      }
+      return;
+
+    case Event::DecreasePaddleCenterY:
+      if(pressed)
+      {
+        myOSystem.console().changePaddleCenterY(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::PADDLE_CENTER_Y);
+      }
+      return;
+
+    case Event::IncreasePaddleCenterY:
+      if(pressed)
+      {
+        myOSystem.console().changePaddleCenterY(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::PADDLE_CENTER_Y);
+      }
+      return;
+
+    case Event::PreviousMouseControl:
+      if(pressed && !repeated)
+      {
+        changeMouseControl(-1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::MOUSE_CONTROL);
+      }
+      return;
+
+    case Event::NextMouseControl:
+      if(pressed && !repeated)
+      {
+        changeMouseControl(+1);
+        myGlobalKeyHandler->setSetting(GlobalKeyHandler::Setting::MOUSE_CONTROL);
+      }
+      return;
+
+    ///////////////////////////////////////////////////////////////////////////
+    // State events
     case Event::SaveState:
-      if(pressed && !repeated) myOSystem.state().saveState();
+      if(pressed && !repeated)
+      {
+        myOSystem.state().saveState();
+        myGlobalKeyHandler->setDirectSetting(GlobalKeyHandler::Setting::STATE);
+      }
       return;
 
     case Event::SaveAllStates:
-      if (pressed && !repeated)
-        myOSystem.frameBuffer().showMessage(myOSystem.state().rewindManager().saveAllStates());
-      return;
-
-    case Event::NextState:
-      if(pressed) myOSystem.state().changeState(1);
+      if(pressed && !repeated)
+      {
+        myOSystem.frameBuffer().showTextMessage(myOSystem.state().rewindManager().saveAllStates());
+        myGlobalKeyHandler->setDirectSetting(GlobalKeyHandler::Setting::STATE);
+      }
       return;
 
     case Event::PreviousState:
-      if (pressed) myOSystem.state().changeState(-1);
+      if(pressed)
+      {
+        myOSystem.state().changeState(-1);
+        myGlobalKeyHandler->setDirectSetting(GlobalKeyHandler::Setting::STATE);
+      }
+      return;
+
+    case Event::NextState:
+      if(pressed)
+      {
+        myOSystem.state().changeState(+1);
+        myGlobalKeyHandler->setDirectSetting(GlobalKeyHandler::Setting::STATE);
+      }
       return;
 
     case Event::ToggleAutoSlot:
-      if (pressed) myOSystem.state().toggleAutoSlot();
+      if(pressed && !repeated)
+      {
+        myOSystem.state().toggleAutoSlot();
+        myGlobalKeyHandler->setDirectSetting(GlobalKeyHandler::Setting::STATE);
+      }
       return;
 
     case Event::LoadState:
-      if(pressed && !repeated) myOSystem.state().loadState();
+      if(pressed && !repeated)
+      {
+        myOSystem.state().loadState();
+        myGlobalKeyHandler->setDirectSetting(GlobalKeyHandler::Setting::STATE);
+      }
       return;
 
     case Event::LoadAllStates:
-      if (pressed && !repeated)
-        myOSystem.frameBuffer().showMessage(myOSystem.state().rewindManager().loadAllStates());
+      if(pressed && !repeated)
+      {
+        myOSystem.frameBuffer().showTextMessage(myOSystem.state().rewindManager().loadAllStates());
+        myGlobalKeyHandler->setDirectSetting(GlobalKeyHandler::Setting::STATE);
+      }
       return;
 
     case Event::RewindPause:
-      if (pressed) myOSystem.state().rewindStates();
+      if(pressed) myOSystem.state().rewindStates();
       if (myState == EventHandlerState::EMULATION)
         setState(EventHandlerState::PAUSE);
       return;
 
     case Event::UnwindPause:
-      if (pressed) myOSystem.state().unwindStates();
+      if(pressed) myOSystem.state().unwindStates();
       if (myState == EventHandlerState::EMULATION)
         setState(EventHandlerState::PAUSE);
       return;
 
     case Event::Rewind1Menu:
-      if (pressed) enterTimeMachineMenuMode(1, false);
+      if(pressed) enterTimeMachineMenuMode(1, false);
       return;
 
     case Event::Rewind10Menu:
-      if (pressed) enterTimeMachineMenuMode(10, false);
+      if(pressed) enterTimeMachineMenuMode(10, false);
       return;
 
     case Event::RewindAllMenu:
-      if (pressed) enterTimeMachineMenuMode(1000, false);
+      if(pressed) enterTimeMachineMenuMode(1000, false);
       return;
 
     case Event::Unwind1Menu:
-      if (pressed) enterTimeMachineMenuMode(1, true);
+      if(pressed) enterTimeMachineMenuMode(1, true);
       return;
 
     case Event::Unwind10Menu:
-      if (pressed) enterTimeMachineMenuMode(10, true);
+      if(pressed) enterTimeMachineMenuMode(10, true);
       return;
 
     case Event::UnwindAllMenu:
-      if (pressed) enterTimeMachineMenuMode(1000, true);
+      if(pressed) enterTimeMachineMenuMode(1000, true);
       return;
+
+    ///////////////////////////////////////////////////////////////////////////
+    // Misc events
+    case Event::DecreaseSpeed:
+      if(pressed)
+      {
+        myOSystem.console().changeSpeed(-1);
+        myGlobalKeyHandler->setDirectSetting(GlobalKeyHandler::Setting::CHANGE_SPEED);
+      }
+      return;
+
+    case Event::IncreaseSpeed:
+      if(pressed)
+      {
+        myOSystem.console().changeSpeed(+1);
+        myGlobalKeyHandler->setDirectSetting(GlobalKeyHandler::Setting::CHANGE_SPEED);
+      }
+      return;
+
+    case Event::ToggleTurbo:
+      if(pressed && !repeated)
+      {
+        myOSystem.console().toggleTurbo();
+        myGlobalKeyHandler->setDirectSetting(GlobalKeyHandler::Setting::CHANGE_SPEED);
+      }
+      return;
+
+    case Event::Fry:
+      if(!repeated) myFryingFlag = pressed;
+      return;
+
+    case Event::ReloadConsole:
+      if(pressed && !repeated) myOSystem.reloadConsole(true);
+      return;
+
+    case Event::PreviousMultiCartRom:
+      if(pressed && !repeated) myOSystem.reloadConsole(false);
+      return;
+
+    case Event::ToggleTimeMachine:
+      if(pressed && !repeated) myOSystem.toggleTimeMachine();
+      return;
+
+  #ifdef PNG_SUPPORT
+    case Event::ToggleContSnapshots:
+      if(pressed && !repeated) myOSystem.png().toggleContinuousSnapshots(false);
+      return;
+
+    case Event::ToggleContSnapshotsFrame:
+      if(pressed && !repeated) myOSystem.png().toggleContinuousSnapshots(true);
+      return;
+  #endif
 
     case Event::TakeSnapshot:
       if(pressed && !repeated) myOSystem.frameBuffer().tiaSurface().saveSnapShot();
@@ -720,57 +1512,55 @@ void EventHandler::handleEvent(Event::Type event, Int32 value, bool repeated)
     case Event::ExitMode:
       // Special handling for Escape key
       // Basically, exit whichever mode we're currently in
-      switch (myState)
+      switch(myState)
       {
         case EventHandlerState::PAUSE:
-          if (pressed && !repeated) changeStateByEvent(Event::TogglePauseMode);
+          if(pressed && !repeated) changeStateByEvent(Event::TogglePauseMode);
           return;
 
         case EventHandlerState::CMDMENU:
-          if (pressed && !repeated) changeStateByEvent(Event::CmdMenuMode);
+          if(pressed && !repeated) changeStateByEvent(Event::CmdMenuMode);
           return;
 
         case EventHandlerState::TIMEMACHINE:
-          if (pressed && !repeated) changeStateByEvent(Event::TimeMachineMode);
+          if(pressed && !repeated) changeStateByEvent(Event::TimeMachineMode);
           return;
 
-        // this event is called when exiting a ROM from the debugger, so it acts like pressing ESC in emulation
+        case EventHandlerState::PLAYBACK:
+          if(pressed && !repeated) changeStateByEvent(Event::TogglePlayBackMode);
+          return;
+
         case EventHandlerState::EMULATION:
-        case EventHandlerState::DEBUGGER:
-          if (pressed && !repeated)
+          if(pressed && !repeated)
           {
-            if (myState == EventHandlerState::EMULATION)
-            {
 #ifdef GUI_SUPPORT
-              if (myOSystem.settings().getBool("confirmexit"))
+            if (myOSystem.settings().getBool("confirmexit"))
+            {
+              StringList msg;
+              const string saveOnExit = myOSystem.settings().getString("saveonexit");
+              bool activeTM = myOSystem.settings().getBool(
+                myOSystem.settings().getBool("dev.settings") ? "dev.timemachine" : "plr.timemachine");
+
+
+              msg.push_back("Do you really want to exit emulation?");
+              if (saveOnExit != "all" || !activeTM)
               {
-                StringList msg;
-                string saveOnExit = myOSystem.settings().getString("saveonexit");
-                bool activeTM = myOSystem.settings().getBool(
-                  myOSystem.settings().getBool("dev.settings") ? "dev.timemachine" : "plr.timemachine");
-
-
-                msg.push_back("Do you really want to exit emulation?");
-                if (saveOnExit != "all" || !activeTM)
-                {
-                  msg.push_back("");
-                  msg.push_back("You will lose all your progress.");
-                }
-                myOSystem.messageMenu().setMessage("Exit Emulation", msg, true);
-                enterMenuMode(EventHandlerState::MESSAGEMENU);
+                msg.push_back("");
+                msg.push_back("You will lose all your progress.");
               }
-              else
-#endif
-                exitEmulation(true);
+              myOSystem.messageMenu().setMessage("Exit Emulation", msg, true);
+              enterMenuMode(EventHandlerState::MESSAGEMENU);
             }
             else
+#endif
               exitEmulation(true);
+
           }
           return;
 
 #ifdef GUI_SUPPORT
         case EventHandlerState::MESSAGEMENU:
-          if (pressed && !repeated)
+          if(pressed && !repeated)
           {
             leaveMenuMode();
             if (myOSystem.messageMenu().confirmed())
@@ -793,12 +1583,14 @@ void EventHandler::handleEvent(Event::Type event, Int32 value, bool repeated)
         saveJoyMapping();
         if (myState != EventHandlerState::LAUNCHER)
           exitEmulation();
+        else
+          exitLauncher();
         myOSystem.quit();
       }
       return;
 
     case Event::StartPauseMode:
-      if (pressed && !repeated && myState == EventHandlerState::EMULATION)
+      if(pressed && !repeated && myState == EventHandlerState::EMULATION)
         setState(EventHandlerState::PAUSE);
       return;
 
@@ -821,11 +1613,13 @@ void EventHandler::handleEvent(Event::Type event, Int32 value, bool repeated)
     case Event::Combo14:
     case Event::Combo15:
     case Event::Combo16:
-      for(int i = 0, combo = event - Event::Combo1; i < EVENTS_PER_COMBO; ++i)
+    {
+      const int combo = event - Event::Combo1;
+      for(int i = 0; i < EVENTS_PER_COMBO; ++i)
         if(myComboTable[combo][i] != Event::NoType)
           handleEvent(myComboTable[combo][i], pressed, repeated);
       return;
-    ////////////////////////////////////////////////////////////////////////
+    }
 
     ////////////////////////////////////////////////////////////////////////
     // Events which relate to switches()
@@ -834,7 +1628,7 @@ void EventHandler::handleEvent(Event::Type event, Int32 value, bool repeated)
       {
         myEvent.set(Event::ConsoleBlackWhite, 0);
         myEvent.set(Event::ConsoleColor, 1);
-        myOSystem.frameBuffer().showMessage(myIs7800 ? "Pause released" : "Color Mode");
+        myOSystem.frameBuffer().showTextMessage(myIs7800 ? "Pause released" : "Color Mode");
         myOSystem.console().switches().update();
       }
       return;
@@ -843,7 +1637,7 @@ void EventHandler::handleEvent(Event::Type event, Int32 value, bool repeated)
       {
         myEvent.set(Event::ConsoleBlackWhite, 1);
         myEvent.set(Event::ConsoleColor, 0);
-        myOSystem.frameBuffer().showMessage(myIs7800 ? "Pause pushed" : "B/W Mode");
+        myOSystem.frameBuffer().showTextMessage(myIs7800 ? "Pause pushed" : "B/W Mode");
         myOSystem.console().switches().update();
       }
       return;
@@ -854,13 +1648,13 @@ void EventHandler::handleEvent(Event::Type event, Int32 value, bool repeated)
         {
           myEvent.set(Event::ConsoleBlackWhite, 1);
           myEvent.set(Event::ConsoleColor, 0);
-          myOSystem.frameBuffer().showMessage(myIs7800 ? "Pause pushed" : "B/W Mode");
+          myOSystem.frameBuffer().showTextMessage(myIs7800 ? "Pause pushed" : "B/W Mode");
         }
         else
         {
           myEvent.set(Event::ConsoleBlackWhite, 0);
           myEvent.set(Event::ConsoleColor, 1);
-          myOSystem.frameBuffer().showMessage(myIs7800 ? "Pause released" : "Color Mode");
+          myOSystem.frameBuffer().showTextMessage(myIs7800 ? "Pause released" : "Color Mode");
         }
         myOSystem.console().switches().update();
       }
@@ -872,7 +1666,7 @@ void EventHandler::handleEvent(Event::Type event, Int32 value, bool repeated)
         myEvent.set(Event::ConsoleBlackWhite, 0);
         myEvent.set(Event::ConsoleColor, 0);
         if (myIs7800)
-          myOSystem.frameBuffer().showMessage("Pause pressed");
+          myOSystem.frameBuffer().showTextMessage("Pause pressed");
         myOSystem.console().switches().update();
       }
       return;
@@ -882,7 +1676,7 @@ void EventHandler::handleEvent(Event::Type event, Int32 value, bool repeated)
       {
         myEvent.set(Event::ConsoleLeftDiffA, 1);
         myEvent.set(Event::ConsoleLeftDiffB, 0);
-        myOSystem.frameBuffer().showMessage(GUI::LEFT_DIFFICULTY + " A");
+        myOSystem.frameBuffer().showTextMessage(GUI::LEFT_DIFFICULTY + " A");
         myOSystem.console().switches().update();
       }
       return;
@@ -891,7 +1685,7 @@ void EventHandler::handleEvent(Event::Type event, Int32 value, bool repeated)
       {
         myEvent.set(Event::ConsoleLeftDiffA, 0);
         myEvent.set(Event::ConsoleLeftDiffB, 1);
-        myOSystem.frameBuffer().showMessage(GUI::LEFT_DIFFICULTY + " B");
+        myOSystem.frameBuffer().showTextMessage(GUI::LEFT_DIFFICULTY + " B");
         myOSystem.console().switches().update();
       }
       return;
@@ -902,13 +1696,13 @@ void EventHandler::handleEvent(Event::Type event, Int32 value, bool repeated)
         {
           myEvent.set(Event::ConsoleLeftDiffA, 0);
           myEvent.set(Event::ConsoleLeftDiffB, 1);
-          myOSystem.frameBuffer().showMessage(GUI::LEFT_DIFFICULTY + " B");
+          myOSystem.frameBuffer().showTextMessage(GUI::LEFT_DIFFICULTY + " B");
         }
         else
         {
           myEvent.set(Event::ConsoleLeftDiffA, 1);
           myEvent.set(Event::ConsoleLeftDiffB, 0);
-          myOSystem.frameBuffer().showMessage(GUI::LEFT_DIFFICULTY + " A");
+          myOSystem.frameBuffer().showTextMessage(GUI::LEFT_DIFFICULTY + " A");
         }
         myOSystem.console().switches().update();
       }
@@ -919,7 +1713,7 @@ void EventHandler::handleEvent(Event::Type event, Int32 value, bool repeated)
       {
         myEvent.set(Event::ConsoleRightDiffA, 1);
         myEvent.set(Event::ConsoleRightDiffB, 0);
-        myOSystem.frameBuffer().showMessage(GUI::RIGHT_DIFFICULTY + " A");
+        myOSystem.frameBuffer().showTextMessage(GUI::RIGHT_DIFFICULTY + " A");
         myOSystem.console().switches().update();
       }
       return;
@@ -928,7 +1722,7 @@ void EventHandler::handleEvent(Event::Type event, Int32 value, bool repeated)
       {
         myEvent.set(Event::ConsoleRightDiffA, 0);
         myEvent.set(Event::ConsoleRightDiffB, 1);
-        myOSystem.frameBuffer().showMessage(GUI::RIGHT_DIFFICULTY + " B");
+        myOSystem.frameBuffer().showTextMessage(GUI::RIGHT_DIFFICULTY + " B");
         myOSystem.console().switches().update();
       }
       return;
@@ -939,19 +1733,19 @@ void EventHandler::handleEvent(Event::Type event, Int32 value, bool repeated)
         {
           myEvent.set(Event::ConsoleRightDiffA, 0);
           myEvent.set(Event::ConsoleRightDiffB, 1);
-          myOSystem.frameBuffer().showMessage(GUI::RIGHT_DIFFICULTY + " B");
+          myOSystem.frameBuffer().showTextMessage(GUI::RIGHT_DIFFICULTY + " B");
         }
         else
         {
           myEvent.set(Event::ConsoleRightDiffA, 1);
           myEvent.set(Event::ConsoleRightDiffB, 0);
-          myOSystem.frameBuffer().showMessage(GUI::RIGHT_DIFFICULTY + " A");
+          myOSystem.frameBuffer().showTextMessage(GUI::RIGHT_DIFFICULTY + " A");
         }
         myOSystem.console().switches().update();
       }
       return;
-    ////////////////////////////////////////////////////////////////////////
 
+    ////////////////////////////////////////////////////////////////////////
     case Event::NoType:  // Ignore unmapped events
       return;
 
@@ -976,27 +1770,27 @@ void EventHandler::handleConsoleStartupEvents()
   const string& holdjoy0 = myOSystem.settings().getString("holdjoy0");
 
   if(BSPF::containsIgnoreCase(holdjoy0, "U"))
-    handleEvent(Event::JoystickZeroUp);
+    handleEvent(Event::LeftJoystickUp);
   if(BSPF::containsIgnoreCase(holdjoy0, "D"))
-    handleEvent(Event::JoystickZeroDown);
+    handleEvent(Event::LeftJoystickDown);
   if(BSPF::containsIgnoreCase(holdjoy0, "L"))
-    handleEvent(Event::JoystickZeroLeft);
+    handleEvent(Event::LeftJoystickLeft);
   if(BSPF::containsIgnoreCase(holdjoy0, "R"))
-    handleEvent(Event::JoystickZeroRight);
+    handleEvent(Event::LeftJoystickRight);
   if(BSPF::containsIgnoreCase(holdjoy0, "F"))
-    handleEvent(Event::JoystickZeroFire);
+    handleEvent(Event::LeftJoystickFire);
 
   const string& holdjoy1 = myOSystem.settings().getString("holdjoy1");
   if(BSPF::containsIgnoreCase(holdjoy1, "U"))
-    handleEvent(Event::JoystickOneUp);
+    handleEvent(Event::RightJoystickUp);
   if(BSPF::containsIgnoreCase(holdjoy1, "D"))
-    handleEvent(Event::JoystickOneDown);
+    handleEvent(Event::RightJoystickDown);
   if(BSPF::containsIgnoreCase(holdjoy1, "L"))
-    handleEvent(Event::JoystickOneLeft);
+    handleEvent(Event::RightJoystickLeft);
   if(BSPF::containsIgnoreCase(holdjoy1, "R"))
-    handleEvent(Event::JoystickOneRight);
+    handleEvent(Event::RightJoystickRight);
   if(BSPF::containsIgnoreCase(holdjoy1, "F"))
-    handleEvent(Event::JoystickOneFire);
+    handleEvent(Event::RightJoystickFire);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -1007,7 +1801,7 @@ bool EventHandler::changeStateByEvent(Event::Type type)
   switch(type)
   {
     case Event::TogglePauseMode:
-      if(myState == EventHandlerState::EMULATION)
+      if(myState == EventHandlerState::EMULATION || myState == EventHandlerState::PLAYBACK)
         setState(EventHandlerState::PAUSE);
       else if(myState == EventHandlerState::PAUSE)
         setState(EventHandlerState::EMULATION);
@@ -1016,14 +1810,16 @@ bool EventHandler::changeStateByEvent(Event::Type type)
       break;
 
     case Event::OptionsMenuMode:
-      if (myState == EventHandlerState::EMULATION || myState == EventHandlerState::PAUSE)
+      if (myState == EventHandlerState::EMULATION || myState == EventHandlerState::PAUSE
+          || myState == EventHandlerState::TIMEMACHINE || myState == EventHandlerState::PLAYBACK)
         enterMenuMode(EventHandlerState::OPTIONSMENU);
       else
         handled = false;
       break;
 
     case Event::CmdMenuMode:
-      if(myState == EventHandlerState::EMULATION || myState == EventHandlerState::PAUSE)
+      if(myState == EventHandlerState::EMULATION || myState == EventHandlerState::PAUSE
+         || myState == EventHandlerState::TIMEMACHINE || myState == EventHandlerState::PLAYBACK)
         enterMenuMode(EventHandlerState::CMDMENU);
       else if(myState == EventHandlerState::CMDMENU && !myOSystem.settings().getBool("minimal_ui"))
         // The extra check for "minimal_ui" allows mapping e.g. right joystick fire
@@ -1033,8 +1829,37 @@ bool EventHandler::changeStateByEvent(Event::Type type)
         handled = false;
       break;
 
+#ifdef GUI_SUPPORT
+    case Event::HighScoresMenuMode:
+      if (myState == EventHandlerState::EMULATION || myState == EventHandlerState::PAUSE
+          || myState == EventHandlerState::TIMEMACHINE)
+      {
+        if (myOSystem.highScores().enabled())
+          enterMenuMode(EventHandlerState::HIGHSCORESMENU);
+        else
+          myOSystem.frameBuffer().showTextMessage("No high scores data defined");
+      }
+      else if(myState == EventHandlerState::HIGHSCORESMENU)
+        leaveMenuMode();
+      else
+        handled = false;
+      break;
+
+    case Event::PlusRomsSetupMode:
+      if(myState == EventHandlerState::EMULATION || myState == EventHandlerState::PAUSE
+          || myState == EventHandlerState::TIMEMACHINE || myState == EventHandlerState::PLAYBACK)
+        enterMenuMode(EventHandlerState::PLUSROMSMENU);
+      else if(myState == EventHandlerState::PLUSROMSMENU)
+        leaveMenuMode();
+      else
+        handled = false;
+      break;
+
+#endif // GUI_SUPPORT
+
     case Event::TimeMachineMode:
-      if(myState == EventHandlerState::EMULATION || myState == EventHandlerState::PAUSE)
+      if(myState == EventHandlerState::EMULATION || myState == EventHandlerState::PAUSE
+         || myState == EventHandlerState::PLAYBACK)
         enterTimeMachineMenuMode(0, false);
       else if(myState == EventHandlerState::TIMEMACHINE)
         leaveMenuMode();
@@ -1042,10 +1867,24 @@ bool EventHandler::changeStateByEvent(Event::Type type)
         handled = false;
       break;
 
+    case Event::TogglePlayBackMode:
+      if (myState == EventHandlerState::EMULATION || myState == EventHandlerState::PAUSE
+          || myState == EventHandlerState::TIMEMACHINE)
+        enterPlayBackMode();
+      else if (myState == EventHandlerState::PLAYBACK)
+    #ifdef GUI_SUPPORT
+        enterMenuMode(EventHandlerState::TIMEMACHINE);
+    #else
+        setState(EventHandlerState::PAUSE);
+    #endif
+      else
+        handled = false;
+      break;
+
     case Event::DebuggerMode:
   #ifdef DEBUGGER_SUPPORT
       if(myState == EventHandlerState::EMULATION || myState == EventHandlerState::PAUSE
-         || myState == EventHandlerState::TIMEMACHINE)
+         || myState == EventHandlerState::TIMEMACHINE || myState == EventHandlerState::PLAYBACK)
         enterDebugMode();
       else if(myState == EventHandlerState::DEBUGGER && myOSystem.debugger().canExit())
         leaveDebugMode();
@@ -1070,12 +1909,12 @@ void EventHandler::setActionMappings(EventMode mode)
       // Fill the EmulActionList with the current key and joystick mappings
       for(auto& item: ourEmulActionList)
       {
-        Event::Type event = item.event;
+        const Event::Type event = item.event;
         item.key = "None";
         string key = myPKeyHandler->getMappingDesc(event, mode);
 
     #ifdef JOYSTICK_SUPPORT
-        string joydesc = myPJoyHandler->getMappingDesc(event, mode);
+        const string joydesc = myPJoyHandler->getMappingDesc(event, mode);
         if(joydesc != "")
         {
           if(key != "")
@@ -1092,12 +1931,12 @@ void EventHandler::setActionMappings(EventMode mode)
       // Fill the MenuActionList with the current key and joystick mappings
       for(auto& item: ourMenuActionList)
       {
-        Event::Type event = item.event;
+        const Event::Type event = item.event;
         item.key = "None";
         string key = myPKeyHandler->getMappingDesc(event, mode);
 
     #ifdef JOYSTICK_SUPPORT
-        string joydesc = myPJoyHandler->getMappingDesc(event, mode);
+        const string joydesc = myPJoyHandler->getMappingDesc(event, mode);
         if(joydesc != "")
         {
           if(key != "")
@@ -1118,60 +1957,103 @@ void EventHandler::setActionMappings(EventMode mode)
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 void EventHandler::setComboMap()
 {
-  // Since istringstream swallows whitespace, we have to make the
-  // delimiters be spaces
-  string list = myOSystem.settings().getString("combomap");
-  replace(list.begin(), list.end(), ':', ' ');
-  istringstream buf(list);
-  Int32 version = myOSystem.settings().getInt("event_ver");
+  const Int32 version = myOSystem.settings().getInt("event_ver");
+  const string serializedMapping = myOSystem.settings().getString("combomap");
+  json mapping;
+
+  try
+  {
+    mapping = json::parse(serializedMapping);
+  }
+  catch(const json::exception&)
+  {
+    Logger::info("converting legacy combo mapping");
+    mapping = convertLegacyComboMapping(serializedMapping);
+  }
 
   // Erase the 'combo' array
-  auto ERASE_ALL = [&]() {
+  const auto ERASE_ALL = [&]() {
     for(int i = 0; i < COMBO_SIZE; ++i)
       for(int j = 0; j < EVENTS_PER_COMBO; ++j)
         myComboTable[i][j] = Event::NoType;
   };
 
+  ERASE_ALL();
+
   // Compare if event list version has changed so that combo maps became invalid
-  if(version != Event::VERSION || !buf.good())
-    ERASE_ALL();
-  else
+  if(version == Event::VERSION)
   {
-    // Get combo count, which should be the first int in the list
-    // If it isn't, then we treat the entire list as invalid
     try
     {
-      string key;
-      buf >> key;
-      if(BSPF::stringToInt(key) == COMBO_SIZE)
+      for(const json& combo : mapping)
       {
-        // Fill the combomap table with events for as long as they exist
-        int combocount = 0;
-        while(buf >> key && combocount < COMBO_SIZE)
-        {
-          // Each event in a comboevent is separated by a comma
-          replace(key.begin(), key.end(), ',', ' ');
-          istringstream buf2(key);
+        int i = combo.at("combo").get<Event::Type>() - Event::Combo1,
+          j = 0;
+        json events = combo.at("events");
 
-          int eventcount = 0;
-          while(buf2 >> key && eventcount < EVENTS_PER_COMBO)
-          {
-            myComboTable[combocount][eventcount] = Event::Type(BSPF::stringToInt(key));
-            ++eventcount;
-          }
-          ++combocount;
-        }
+        for(const json& event : events)
+          myComboTable[i][j++] = event;
       }
-      else
-        ERASE_ALL();
     }
-    catch(...)
+    catch(const json::exception&)
     {
+      Logger::error("ignoring bad combo mapping");
       ERASE_ALL();
     }
   }
-
   saveComboMapping();
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+json EventHandler::convertLegacyComboMapping(string list)
+{
+  json convertedMapping = json::array();
+
+  // Since istringstream swallows whitespace, we have to make the
+  // delimiters be spaces
+  std::replace(list.begin(), list.end(), ':', ' ');
+  std::replace(list.begin(), list.end(), ',', ' ');
+  istringstream buf(list);
+
+  try
+  {
+    int numCombos;
+    // Get combo count, which should be the first int in the list
+    // If it isn't, then we treat the entire list as invalid
+    buf >> numCombos;
+
+    if(numCombos == COMBO_SIZE)
+    {
+      for(int i = 0; i < COMBO_SIZE; ++i)
+      {
+        json events = json::array();
+
+        for(int j = 0; j < EVENTS_PER_COMBO; ++j)
+        {
+          int event;
+
+          buf >> event;
+          // skip all NoType events
+          if(event != Event::NoType)
+            events.push_back(Event::Type(event));
+        }
+        // only store if there are any NoType events
+        if(events.size())
+        {
+          json combo;
+
+          combo["combo"] = Event::Type(Event::Combo1 + i);
+          combo["events"] = events;
+          convertedMapping.push_back(combo);
+        }
+      }
+    }
+  }
+  catch(...)
+  {
+    Logger::error("Legacy combo map conversion failed!");
+  }
+  return convertedMapping;
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -1185,7 +2067,7 @@ void EventHandler::removePhysicalJoystickFromDatabase(const string& name)
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 bool EventHandler::addKeyMapping(Event::Type event, EventMode mode, StellaKey key, StellaMod mod)
 {
-  bool mapped = myPKeyHandler->addMapping(event, mode, key, mod);
+  const bool mapped = myPKeyHandler->addMapping(event, mode, key, mod);
   if(mapped)
     setActionMappings(mode);
 
@@ -1198,7 +2080,7 @@ bool EventHandler::addJoyMapping(Event::Type event, EventMode mode,
                                  bool updateMenus)
 {
 #ifdef JOYSTICK_SUPPORT
-  bool mapped = myPJoyHandler->addJoyMapping(event, mode, stick, button, axis, adir);
+  const bool mapped = myPJoyHandler->addJoyMapping(event, mode, stick, button, axis, adir);
   if (mapped && updateMenus)
     setActionMappings(mode);
 
@@ -1214,7 +2096,7 @@ bool EventHandler::addJoyHatMapping(Event::Type event, EventMode mode,
                                     bool updateMenus)
 {
 #ifdef JOYSTICK_SUPPORT
-  bool mapped = myPJoyHandler->addJoyHatMapping(event, mode, stick, button, hat, dir);
+  const bool mapped = myPJoyHandler->addJoyHatMapping(event, mode, stick, button, hat, dir);
   if (mapped && updateMenus)
     setActionMappings(mode);
 
@@ -1278,18 +2160,32 @@ void EventHandler::saveJoyMapping()
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 void EventHandler::saveComboMapping()
 {
-  // Iterate through the combomap table and create a colon-separated list
-  // For each combo event, create a comma-separated list of its events
-  // Prepend the event count, so we can check it on next load
-  ostringstream buf;
-  buf << COMBO_SIZE;
+  json mapping = json::array();
+
+  // Iterate through the combomap table and convert into json format
   for(int i = 0; i < COMBO_SIZE; ++i)
   {
-    buf << ":" << myComboTable[i][0];
-    for(int j = 1; j < EVENTS_PER_COMBO; ++j)
-      buf << "," << myComboTable[i][j];
+    json events = json::array();
+
+    for(int j = 0; j < EVENTS_PER_COMBO; ++j)
+    {
+      const int event = myComboTable[i][j];
+
+      // skip all NoType events
+      if(event != Event::NoType)
+        events.push_back(Event::Type(event));
+    }
+    // only store if there are any NoType events
+    if(events.size())
+    {
+      json combo;
+
+      combo["combo"] = Event::Type(Event::Combo1 + i);
+      combo["events"] = events;
+      mapping.push_back(combo);
+    }
   }
-  myOSystem.settings().setValue("combomap", buf.str());
+  myOSystem.settings().setValue("combomap", mapping.dump(2));
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -1346,6 +2242,12 @@ StringList EventHandler::getActionList(Event::Group group) const
     case Event::Group::Keyboard:
       return getActionList(KeyboardEvents);
 
+    case Event::Group::Driving:
+      return getActionList(DrivingEvents);
+
+    case Event::Group::Devices:
+      return getActionList(DevicesEvents);
+
     case Event::Group::Debug:
       return getActionList(DebugEvents);
 
@@ -1387,7 +2289,7 @@ StringList EventHandler::getActionList(const Event::EventSet& events, EventMode 
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-VariantList EventHandler::getComboList(EventMode /**/) const
+VariantList EventHandler::getComboList() const
 {
   // For now, this only works in emulation mode
   VariantList l;
@@ -1396,7 +2298,7 @@ VariantList EventHandler::getComboList(EventMode /**/) const
   VarList::push_back(l, "None", "-1");
   for(uInt32 i = 0; i < ourEmulActionList.size(); ++i)
   {
-    Event::Type event = EventHandler::ourEmulActionList[i].event;
+    const Event::Type event = EventHandler::ourEmulActionList[i].event;
     // exclude combos events
     if(!(event >= Event::Combo1 && event <= Event::Combo16))
     {
@@ -1415,10 +2317,10 @@ StringList EventHandler::getComboListForEvent(Event::Type event) const
   ostringstream buf;
   if(event >= Event::Combo1 && event <= Event::Combo16)
   {
-    int combo = event - Event::Combo1;
+    const int combo = event - Event::Combo1;
     for(uInt32 i = 0; i < EVENTS_PER_COMBO; ++i)
     {
-      Event::Type e = myComboTable[combo][i];
+      const Event::Type e = myComboTable[combo][i];
       for(uInt32 j = 0; j < ourEmulActionList.size(); ++j)
       {
         if(EventHandler::ourEmulActionList[j].event == e)
@@ -1441,11 +2343,11 @@ void EventHandler::setComboListForEvent(Event::Type event, const StringList& eve
 {
   if(event >= Event::Combo1 && event <= Event::Combo16)
   {
-    assert(events.size() == 8);
-    int combo = event - Event::Combo1;
-    for(uInt32 i = 0; i < 8; ++i)
+    assert(events.size() == EVENTS_PER_COMBO);
+    const int combo = event - Event::Combo1;
+    for(uInt32 i = 0; i < EVENTS_PER_COMBO; ++i)
     {
-      uInt32 idx = BSPF::stringToInt(events[i]);
+      const uInt32 idx = BSPF::stringToInt(events[i]);
       if(idx < ourEmulActionList.size())
         myComboTable[combo][i] = EventHandler::ourEmulActionList[idx].event;
       else
@@ -1515,6 +2417,12 @@ int EventHandler::getActionListIndex(int idx, Event::Group group) const
     case Event::Group::Keyboard:
       return getEmulActionListIndex(idx, KeyboardEvents);
 
+    case Event::Group::Driving:
+      return getEmulActionListIndex(idx, DrivingEvents);
+
+    case Event::Group::Devices:
+      return getEmulActionListIndex(idx, DevicesEvents);
+
     case Event::Group::Debug:
       return getEmulActionListIndex(idx, DebugEvents);
 
@@ -1529,18 +2437,18 @@ int EventHandler::getActionListIndex(int idx, Event::Group group) const
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 Event::Type EventHandler::eventAtIndex(int idx, Event::Group group) const
 {
-  int index = getActionListIndex(idx, group);
+  const int index = getActionListIndex(idx, group);
 
   if(group == Event::Group::Menu)
   {
-    if(index < 0 || index >= int(ourMenuActionList.size()))
+    if(index < 0 || index >= static_cast<int>(ourMenuActionList.size()))
       return Event::NoType;
     else
       return ourMenuActionList[index].event;
   }
   else
   {
-    if(index < 0 || index >= int(ourEmulActionList.size()))
+    if(index < 0 || index >= static_cast<int>(ourEmulActionList.size()))
       return Event::NoType;
     else
       return ourEmulActionList[index].event;
@@ -1550,18 +2458,18 @@ Event::Type EventHandler::eventAtIndex(int idx, Event::Group group) const
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 string EventHandler::actionAtIndex(int idx, Event::Group group) const
 {
-  int index = getActionListIndex(idx, group);
+  const int index = getActionListIndex(idx, group);
 
   if(group == Event::Group::Menu)
   {
-    if(index < 0 || index >= int(ourMenuActionList.size()))
+    if(index < 0 || index >= static_cast<int>(ourMenuActionList.size()))
       return EmptyString;
     else
       return ourMenuActionList[index].action;
   }
   else
   {
-    if(index < 0 || index >= int(ourEmulActionList.size()))
+    if(index < 0 || index >= static_cast<int>(ourEmulActionList.size()))
       return EmptyString;
     else
       return ourEmulActionList[index].action;
@@ -1571,18 +2479,18 @@ string EventHandler::actionAtIndex(int idx, Event::Group group) const
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 string EventHandler::keyAtIndex(int idx, Event::Group group) const
 {
-  int index = getActionListIndex(idx, group);
+  const int index = getActionListIndex(idx, group);
 
   if(group == Event::Group::Menu)
   {
-    if(index < 0 || index >= int(ourMenuActionList.size()))
+    if(index < 0 || index >= static_cast<int>(ourMenuActionList.size()))
       return EmptyString;
     else
       return ourMenuActionList[index].key;
   }
   else
   {
-    if(index < 0 || index >= int(ourEmulActionList.size()))
+    if(index < 0 || index >= static_cast<int>(ourEmulActionList.size()))
       return EmptyString;
     else
       return ourEmulActionList[index].key;
@@ -1609,8 +2517,51 @@ void EventHandler::setMouseControllerMode(const string& enable)
       myOSystem.console().properties().get(PropType::Controller_MouseAxis) : "none";
 
     myMouseControl = make_unique<MouseControl>(myOSystem.console(), control);
-    myMouseControl->next();  // set first available mode
+    myMouseControl->change(0);  // set first available mode
   }
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+void EventHandler::changeMouseControllerMode(int direction)
+{
+  constexpr int NUM_MODES = 3;
+  const string MODES[NUM_MODES] = {"always", "analog", "never"};
+  const string MSG[NUM_MODES] = {"all", "analog", "no"};
+  string usemouse = myOSystem.settings().getString("usemouse");
+
+  int i = 0;
+  for(auto& mode : MODES)
+  {
+    if(mode == usemouse)
+    {
+      i = BSPF::clampw(i + direction, 0, NUM_MODES - 1);
+      usemouse = MODES[i];
+      break;
+    }
+    ++i;
+  }
+  myOSystem.settings().setValue("usemouse", usemouse);
+  setMouseControllerMode(usemouse);
+  myOSystem.frameBuffer().setCursorState(); // if necessary change grab mouse
+
+  ostringstream ss;
+  ss << "Mouse controls " << MSG[i] << " devices";
+  myOSystem.frameBuffer().showTextMessage(ss.str());
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+void EventHandler::changeMouseCursor(int direction)
+{
+  int cursor = BSPF::clampw(myOSystem.settings().getInt("cursor") + direction, 0, 3);
+
+  myOSystem.settings().setValue("cursor", cursor);
+  myOSystem.frameBuffer().setCursorState();
+
+  ostringstream ss;
+  ss << "Mouse cursor visibilility: "
+    << ((cursor & 2) ? "+" : "-") << "UI, "
+    << ((cursor & 1) ? "+" : "-") << "Emulation";
+  myOSystem.frameBuffer().showTextMessage(ss.str());
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -1627,6 +2578,7 @@ void EventHandler::enterMenuMode(EventHandlerState state)
 void EventHandler::leaveMenuMode()
 {
 #ifdef GUI_SUPPORT
+  myOverlay->removeDialog(); // remove the base dialog from dialog stack
   setState(EventHandlerState::EMULATION);
   myOSystem.sound().mute(false);
 #endif
@@ -1646,21 +2598,22 @@ bool EventHandler::enterDebugMode()
   myOSystem.debugger().setStartState();
   setState(EventHandlerState::DEBUGGER);
 
-  FBInitStatus fbstatus = myOSystem.createFrameBuffer();
+  const FBInitStatus fbstatus = myOSystem.createFrameBuffer();
   if(fbstatus != FBInitStatus::Success)
   {
     myOSystem.debugger().setQuitState();
     setState(EventHandlerState::EMULATION);
     if(fbstatus == FBInitStatus::FailTooLarge)
-      myOSystem.frameBuffer().showMessage("Debugger window too large for screen",
-                                          MessagePosition::BottomCenter, true);
+      myOSystem.frameBuffer().showTextMessage("Debugger window too large for screen",
+                                              MessagePosition::BottomCenter, true);
     return false;
   }
   myOverlay->reStack();
   myOSystem.sound().mute(true);
+
 #else
-  myOSystem.frameBuffer().showMessage("Debugger support not included",
-                                      MessagePosition::BottomCenter, true);
+  myOSystem.frameBuffer().showTextMessage("Debugger support not included",
+                                          MessagePosition::BottomCenter, true);
 #endif
 
   return true;
@@ -1700,6 +2653,14 @@ void EventHandler::enterTimeMachineMenuMode(uInt32 numWinds, bool unwind)
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+void EventHandler::enterPlayBackMode()
+{
+#ifdef GUI_SUPPORT
+  setState(EventHandlerState::PLAYBACK);
+#endif
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 void EventHandler::setState(EventHandlerState state)
 {
   myState = state;
@@ -1714,6 +2675,7 @@ void EventHandler::setState(EventHandlerState state)
   switch(myState)
   {
     case EventHandlerState::EMULATION:
+    case EventHandlerState::PLAYBACK:
       myOSystem.sound().mute(false);
       enableTextEvents(false);
       break;
@@ -1725,7 +2687,7 @@ void EventHandler::setState(EventHandlerState state)
 
   #ifdef GUI_SUPPORT
     case EventHandlerState::OPTIONSMENU:
-      myOverlay = &myOSystem.menu();
+      myOverlay = &myOSystem.optionsMenu();
       enableTextEvents(true);
       break;
 
@@ -1734,8 +2696,18 @@ void EventHandler::setState(EventHandlerState state)
       enableTextEvents(true);
       break;
 
+    case EventHandlerState::HIGHSCORESMENU:
+      myOverlay = &myOSystem.highscoresMenu();
+      enableTextEvents(true);
+      break;
+
     case EventHandlerState::MESSAGEMENU:
       myOverlay = &myOSystem.messageMenu();
+      enableTextEvents(true);
+      break;
+
+    case EventHandlerState::PLUSROMSMENU:
+      myOverlay = &myOSystem.plusRomsMenu();
       enableTextEvents(true);
       break;
 
@@ -1764,11 +2736,11 @@ void EventHandler::setState(EventHandlerState state)
   }
 
   // Inform various subsystems about the new state
-  myOSystem.stateChanged(myState);
-  myOSystem.frameBuffer().stateChanged(myState);
-  myOSystem.frameBuffer().setCursorState();
+  myOSystem.stateChanged(myState); // does nothing
+  myOSystem.frameBuffer().stateChanged(myState); // ignores state
+  myOSystem.frameBuffer().setCursorState(); // en/disables cursor for UI and emulation states
   if(myOSystem.hasConsole())
-    myOSystem.console().stateChanged(myState);
+    myOSystem.console().stateChanged(myState); // does nothing
 
   // Sometimes an extraneous mouse motion event is generated
   // after a state change, which should be supressed
@@ -1780,17 +2752,28 @@ void EventHandler::setState(EventHandlerState state)
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+void EventHandler::exitLauncher()
+{
+#ifdef GUI_SUPPORT
+  myOSystem.launcher().quit();
+#endif
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 void EventHandler::exitEmulation(bool checkLauncher)
 {
-  string saveOnExit = myOSystem.settings().getString("saveonexit");
-  bool activeTM = myOSystem.settings().getBool(
+  const string saveOnExit = myOSystem.settings().getString("saveonexit");
+  const bool activeTM = myOSystem.settings().getBool(
     myOSystem.settings().getBool("dev.settings") ? "dev.timemachine" : "plr.timemachine");
-
 
   if (saveOnExit == "all" && activeTM)
     handleEvent(Event::SaveAllStates);
   else if (saveOnExit == "current")
     handleEvent(Event::SaveState);
+
+#if DEBUGGER_SUPPORT
+  myOSystem.debugger().quit();
+#endif
 
   if (checkLauncher)
   {
@@ -1807,12 +2790,18 @@ void EventHandler::exitEmulation(bool checkLauncher)
 EventHandler::EmulActionList EventHandler::ourEmulActionList = { {
   { Event::Quit,                    "Quit",                                  "" },
   { Event::ReloadConsole,           "Reload current ROM/load next game",     "" },
+  { Event::PreviousMultiCartRom,    "Load previous multicart game",          "" },
   { Event::ExitMode,                "Exit current Stella menu/mode",         "" },
   { Event::OptionsMenuMode,         "Enter Options menu UI",                 "" },
   { Event::CmdMenuMode,             "Toggle Commands menu UI",               "" },
+  { Event::HighScoresMenuMode,      "Toggle High Scores UI",                 "" },
+  { Event::PlusRomsSetupMode,       "Toggle PlusROMs setup UI",              "" },
   { Event::TogglePauseMode,         "Toggle Pause mode",                     "" },
   { Event::StartPauseMode,          "Start Pause mode",                      "" },
   { Event::Fry,                     "Fry cartridge",                         "" },
+  { Event::DecreaseSpeed,           "Decrease emulation speed",              "" },
+  { Event::IncreaseSpeed,           "Increase emulation speed",              "" },
+  { Event::ToggleTurbo,             "Toggle 'Turbo' mode",                   "" },
   { Event::DebuggerMode,            "Toggle Debugger mode",                  "" },
 
   { Event::ConsoleSelect,           "Select",                                "" },
@@ -1821,12 +2810,12 @@ EventHandler::EmulActionList EventHandler::ourEmulActionList = { {
   { Event::ConsoleBlackWhite,       "Black & White TV",                      "" },
   { Event::ConsoleColorToggle,      "Toggle Color / B&W TV",                 "" },
   { Event::Console7800Pause,        "7800 Pause Key",                        "" },
-  { Event::ConsoleLeftDiffA,        "P0 Difficulty A",                       "" },
-  { Event::ConsoleLeftDiffB,        "P0 Difficulty B",                       "" },
-  { Event::ConsoleLeftDiffToggle,   "P0 Toggle Difficulty",                  "" },
-  { Event::ConsoleRightDiffA,       "P1 Difficulty A",                       "" },
-  { Event::ConsoleRightDiffB,       "P1 Difficulty B",                       "" },
-  { Event::ConsoleRightDiffToggle,  "P1 Toggle Difficulty",                  "" },
+  { Event::ConsoleLeftDiffA,        "Left Difficulty A",                     "" },
+  { Event::ConsoleLeftDiffB,        "Left Difficulty B",                     "" },
+  { Event::ConsoleLeftDiffToggle,   "Toggle Left Difficulty",                "" },
+  { Event::ConsoleRightDiffA,       "Right Difficulty A",                    "" },
+  { Event::ConsoleRightDiffB,       "Right Difficulty B",                    "" },
+  { Event::ConsoleRightDiffToggle,  "Toggle Right Difficulty",               "" },
   { Event::SaveState,               "Save state",                            "" },
   { Event::SaveAllStates,           "Save all TM states of current game",    "" },
   { Event::PreviousState,           "Change to previous state slot",         "" },
@@ -1840,100 +2829,216 @@ EventHandler::EmulActionList EventHandler::ourEmulActionList = { {
   { Event::ToggleContSnapshots,     "Save continuous snapsh. (as defined)",  "" },
   { Event::ToggleContSnapshotsFrame,"Save continuous snapsh. (every frame)", "" },
 #endif
+  // Global keys:
+  { Event::PreviousSettingGroup,    "Select previous setting group",         "" },
+  { Event::NextSettingGroup,        "Select next setting group",             "" },
+  { Event::PreviousSetting,         "Select previous setting",               "" },
+  { Event::NextSetting,             "Select next setting",                   "" },
+  { Event::SettingDecrease,         "Decrease current setting",              "" },
+  { Event::SettingIncrease,         "Increase current setting",              "" },
 
-  { Event::JoystickZeroUp,          "P0 Joystick Up",                        "" },
-  { Event::JoystickZeroDown,        "P0 Joystick Down",                      "" },
-  { Event::JoystickZeroLeft,        "P0 Joystick Left",                      "" },
-  { Event::JoystickZeroRight,       "P0 Joystick Right",                     "" },
-  { Event::JoystickZeroFire,        "P0 Joystick Fire",                      "" },
-  { Event::JoystickZeroFire5,       "P0 Booster Top Booster Button",         "" },
-  { Event::JoystickZeroFire9,       "P0 Booster Handle Grip Trigger",        "" },
+  // Controllers:
+  { Event::LeftJoystickUp,          "Left Joystick Up",                      "" },
+  { Event::LeftJoystickDown,        "Left Joystick Down",                    "" },
+  { Event::LeftJoystickLeft,        "Left Joystick Left",                    "" },
+  { Event::LeftJoystickRight,       "Left Joystick Right",                   "" },
+  { Event::LeftJoystickFire,        "Left Joystick Fire",                    "" },
+  { Event::LeftJoystickFire5,       "Left Booster Top Booster Button",       "" },
+  { Event::LeftJoystickFire9,       "Left Booster Handle Grip Trigger",      "" },
 
-  { Event::JoystickOneUp,           "P1 Joystick Up",                        "" },
-  { Event::JoystickOneDown,         "P1 Joystick Down",                      "" },
-  { Event::JoystickOneLeft,         "P1 Joystick Left",                      "" },
-  { Event::JoystickOneRight,        "P1 Joystick Right",                     "" },
-  { Event::JoystickOneFire,         "P1 Joystick Fire",                      "" },
-  { Event::JoystickOneFire5,        "P1 Booster Top Booster Button",         "" },
-  { Event::JoystickOneFire9,        "P1 Booster Handle Grip Trigger",        "" },
+  { Event::RightJoystickUp,         "Right Joystick Up",                     "" },
+  { Event::RightJoystickDown,       "Right Joystick Down",                   "" },
+  { Event::RightJoystickLeft,       "Right Joystick Left",                   "" },
+  { Event::RightJoystickRight,      "Right Joystick Right",                  "" },
+  { Event::RightJoystickFire,       "Right Joystick Fire",                   "" },
+  { Event::RightJoystickFire5,      "Right Booster Top Booster Button",      "" },
+  { Event::RightJoystickFire9,      "Right Booster Handle Grip Trigger",     "" },
 
-  { Event::PaddleZeroAnalog,        "Paddle 0 Analog",                       "" },
-  { Event::PaddleZeroIncrease,      "Paddle 0 Turn Left",                    "" },
-  { Event::PaddleZeroDecrease,      "Paddle 0 Turn Right",                   "" },
-  { Event::PaddleZeroFire,          "Paddle 0 Fire",                         "" },
+  { Event::QTJoystickThreeUp,       "QuadTari Joystick 3 Up",                "" },
+  { Event::QTJoystickThreeDown,     "QuadTari Joystick 3 Down",              "" },
+  { Event::QTJoystickThreeLeft,     "QuadTari Joystick 3 Left",              "" },
+  { Event::QTJoystickThreeRight,    "QuadTari Joystick 3 Right",             "" },
+  { Event::QTJoystickThreeFire,     "QuadTari Joystick 3 Fire",              "" },
 
-  { Event::PaddleOneAnalog,         "Paddle 1 Analog",                       "" },
-  { Event::PaddleOneIncrease,       "Paddle 1 Turn Left",                    "" },
-  { Event::PaddleOneDecrease,       "Paddle 1 Turn Right",                   "" },
-  { Event::PaddleOneFire,           "Paddle 1 Fire",                         "" },
+  { Event::QTJoystickFourUp,        "QuadTari Joystick 4 Up",                "" },
+  { Event::QTJoystickFourDown,      "QuadTari Joystick 4 Down",              "" },
+  { Event::QTJoystickFourLeft,      "QuadTari Joystick 4 Left",              "" },
+  { Event::QTJoystickFourRight,     "QuadTari Joystick 4 Right",             "" },
+  { Event::QTJoystickFourFire,      "QuadTari Joystick 4 Fire",              "" },
 
-  { Event::PaddleTwoAnalog,         "Paddle 2 Analog",                       "" },
-  { Event::PaddleTwoIncrease,       "Paddle 2 Turn Left",                    "" },
-  { Event::PaddleTwoDecrease,       "Paddle 2 Turn Right",                   "" },
-  { Event::PaddleTwoFire,           "Paddle 2 Fire",                         "" },
+  { Event::LeftPaddleAAnalog,       "Left Paddle A Analog",                  "" },
+  { Event::LeftPaddleAIncrease,     "Left Paddle A Turn Left",               "" },
+  { Event::LeftPaddleADecrease,     "Left Paddle A Turn Right",              "" },
+  { Event::LeftPaddleAFire,         "Left Paddle A Fire",                    "" },
 
-  { Event::PaddleThreeAnalog,       "Paddle 3 Analog",                       "" },
-  { Event::PaddleThreeIncrease,     "Paddle 3 Turn Left",                    "" },
-  { Event::PaddleThreeDecrease,     "Paddle 3 Turn Right",                   "" },
-  { Event::PaddleThreeFire,         "Paddle 3 Fire",                         "" },
+  { Event::LeftPaddleBAnalog,       "Left Paddle B Analog",                  "" },
+  { Event::LeftPaddleBIncrease,     "Left Paddle B Turn Left",               "" },
+  { Event::LeftPaddleBDecrease,     "Left Paddle B Turn Right",              "" },
+  { Event::LeftPaddleBFire,         "Left Paddle B Fire",                    "" },
 
-  { Event::KeyboardZero1,           "P0 Keyboard 1",                         "" },
-  { Event::KeyboardZero2,           "P0 Keyboard 2",                         "" },
-  { Event::KeyboardZero3,           "P0 Keyboard 3",                         "" },
-  { Event::KeyboardZero4,           "P0 Keyboard 4",                         "" },
-  { Event::KeyboardZero5,           "P0 Keyboard 5",                         "" },
-  { Event::KeyboardZero6,           "P0 Keyboard 6",                         "" },
-  { Event::KeyboardZero7,           "P0 Keyboard 7",                         "" },
-  { Event::KeyboardZero8,           "P0 Keyboard 8",                         "" },
-  { Event::KeyboardZero9,           "P0 Keyboard 9",                         "" },
-  { Event::KeyboardZeroStar,        "P0 Keyboard *",                         "" },
-  { Event::KeyboardZero0,           "P0 Keyboard 0",                         "" },
-  { Event::KeyboardZeroPound,       "P0 Keyboard #",                         "" },
+  { Event::RightPaddleAAnalog,      "Right Paddle A Analog",                 "" },
+  { Event::RightPaddleAIncrease,    "Right Paddle A Turn Left",              "" },
+  { Event::RightPaddleADecrease,    "Right Paddle A Turn Right",             "" },
+  { Event::RightPaddleAFire,        "Right Paddle A Fire",                   "" },
 
-  { Event::KeyboardOne1,            "P1 Keyboard 1",                         "" },
-  { Event::KeyboardOne2,            "P1 Keyboard 2",                         "" },
-  { Event::KeyboardOne3,            "P1 Keyboard 3",                         "" },
-  { Event::KeyboardOne4,            "P1 Keyboard 4",                         "" },
-  { Event::KeyboardOne5,            "P1 Keyboard 5",                         "" },
-  { Event::KeyboardOne6,            "P1 Keyboard 6",                         "" },
-  { Event::KeyboardOne7,            "P1 Keyboard 7",                         "" },
-  { Event::KeyboardOne8,            "P1 Keyboard 8",                         "" },
-  { Event::KeyboardOne9,            "P1 Keyboard 9",                         "" },
-  { Event::KeyboardOneStar,         "P1 Keyboard *",                         "" },
-  { Event::KeyboardOne0,            "P1 Keyboard 0",                         "" },
-  { Event::KeyboardOnePound,        "P1 Keyboard #",                         "" },
+  { Event::RightPaddleBAnalog,      "Right Paddle B Analog",                 "" },
+  { Event::RightPaddleBIncrease,    "Right Paddle B Turn Left",              "" },
+  { Event::RightPaddleBDecrease,    "Right Paddle B Turn Right",             "" },
+  { Event::RightPaddleBFire,        "Right Paddle B Fire",                   "" },
+
+  { Event::QTPaddle3AFire,          "QuadTari Paddle 3A Fire",               "" },
+  { Event::QTPaddle3BFire,          "QuadTari Paddle 3B Fire",               "" },
+  { Event::QTPaddle4AFire,          "QuadTari Paddle 4A Fire",               "" },
+  { Event::QTPaddle4BFire,          "QuadTari Paddle 4B Fire",               "" },
+
+  { Event::LeftKeyboard1,           "Left Keyboard 1",                       "" },
+  { Event::LeftKeyboard2,           "Left Keyboard 2",                       "" },
+  { Event::LeftKeyboard3,           "Left Keyboard 3",                       "" },
+  { Event::LeftKeyboard4,           "Left Keyboard 4",                       "" },
+  { Event::LeftKeyboard5,           "Left Keyboard 5",                       "" },
+  { Event::LeftKeyboard6,           "Left Keyboard 6",                       "" },
+  { Event::LeftKeyboard7,           "Left Keyboard 7",                       "" },
+  { Event::LeftKeyboard8,           "Left Keyboard 8",                       "" },
+  { Event::LeftKeyboard9,           "Left Keyboard 9",                       "" },
+  { Event::LeftKeyboardStar,        "Left Keyboard *",                       "" },
+  { Event::LeftKeyboard0,           "Left Keyboard 0",                       "" },
+  { Event::LeftKeyboardPound,       "Left Keyboard #",                       "" },
+
+  { Event::RightKeyboard1,          "Right Keyboard 1",                      "" },
+  { Event::RightKeyboard2,          "Right Keyboard 2",                      "" },
+  { Event::RightKeyboard3,          "Right Keyboard 3",                      "" },
+  { Event::RightKeyboard4,          "Right Keyboard 4",                      "" },
+  { Event::RightKeyboard5,          "Right Keyboard 5",                      "" },
+  { Event::RightKeyboard6,          "Right Keyboard 6",                      "" },
+  { Event::RightKeyboard7,          "Right Keyboard 7",                      "" },
+  { Event::RightKeyboard8,          "Right Keyboard 8",                      "" },
+  { Event::RightKeyboard9,          "Right Keyboard 9",                      "" },
+  { Event::RightKeyboardStar,       "Right Keyboard *",                      "" },
+  { Event::RightKeyboard0,          "Right Keyboard 0",                      "" },
+  { Event::RightKeyboardPound,      "Right Keyboard #",                      "" },
+
+  { Event::LeftDrivingAnalog,       "Left Driving Analog",                   "" },
+  { Event::LeftDrivingCCW,          "Left Driving Turn Left",                "" },
+  { Event::LeftDrivingCW,           "Left Driving Turn Right",               "" },
+  { Event::LeftDrivingFire,         "Left Driving Fire",                     "" },
+
+  { Event::RightDrivingAnalog,      "Right Driving Analog",                  "" },
+  { Event::RightDrivingCCW,         "Right Driving Turn Left",               "" },
+  { Event::RightDrivingCW,          "Right Driving Turn Right",              "" },
+  { Event::RightDrivingFire,        "Right Driving Fire",                    "" },
+
   // Video
-  { Event::ToggleFullScreen,        "Toggle fullscreen",                     "" },
-  { Event::OverscanDecrease,        "Decrease overscan in fullscreen mode",  "" },
-  { Event::OverscanIncrease,        "Increase overscan in fullscreen mode",  "" },
+  { Event::ToggleInter,             "Toggle display interpolation",          "" },
   { Event::VidmodeDecrease,         "Previous zoom level",                   "" },
   { Event::VidmodeIncrease,         "Next zoom level",                       "" },
-  { Event::ScanlineAdjustIncrease,  "Increase vertical display size",        "" },
-  { Event::ScanlineAdjustDecrease,  "Decrease vertical display size",        "" },
+  { Event::ToggleFullScreen,        "Toggle fullscreen",                     "" },
+#ifdef ADAPTABLE_REFRESH_SUPPORT
+  { Event::ToggleAdaptRefresh,      "Toggle fullscreen refresh rate adapt",  "" },
+#endif
+  { Event::OverscanDecrease,        "Decrease overscan in fullscreen mode",  "" },
+  { Event::OverscanIncrease,        "Increase overscan in fullscreen mode",  "" },
+  { Event::ToggleCorrectAspectRatio,"Toggle aspect ratio correct scaling",   "" },
+  { Event::VSizeAdjustDecrease,     "Decrease vertical display size",        "" },
+  { Event::VSizeAdjustIncrease,     "Increase vertical display size",        "" },
   { Event::VCenterDecrease,         "Move display up",                       "" },
   { Event::VCenterIncrease,         "Move display down",                     "" },
-  { Event::FormatDecrease,          "Decrease display format",               "" },
-  { Event::FormatIncrease,          "Increase display format",               "" },
-  { Event::TogglePalette,           "Switch palette (Standard/Z26/User)",    "" },
-  { Event::ToggleInter,             "Toggle display interpolation",          "" },
-
-  // TV effects:
+  { Event::FormatDecrease,          "Decrease TV format",                    "" },
+  { Event::FormatIncrease,          "Increase TV format",                    "" },
+    // Palette settings
+  { Event::PaletteDecrease,         "Switch to previous palette",            "" },
+  { Event::PaletteIncrease,         "Switch to next palette",                "" },
+  { Event::PreviousPaletteAttribute,"Select previous palette attribute",     "" },
+  { Event::NextPaletteAttribute,    "Select next palette attribute",         "" },
+  { Event::PaletteAttributeDecrease,"Decrease selected palette attribute",   "" },
+  { Event::PaletteAttributeIncrease,"Increase selected palette attribute",   "" },
+  // Blargg TV effects:
   { Event::VidmodeStd,              "Disable TV effects",                    "" },
   { Event::VidmodeRGB,              "Select 'RGB' preset",                   "" },
   { Event::VidmodeSVideo,           "Select 'S-Video' preset",               "" },
   { Event::VidModeComposite,        "Select 'Composite' preset",             "" },
   { Event::VidModeBad,              "Select 'Badly adjusted' preset",        "" },
   { Event::VidModeCustom,           "Select 'Custom' preset",                "" },
+  { Event::PreviousVideoMode,       "Select previous TV effect mode preset", "" },
+  { Event::NextVideoMode,           "Select next TV effect mode preset",     "" },
   { Event::PreviousAttribute,       "Select previous 'Custom' attribute",    "" },
   { Event::NextAttribute,           "Select next 'Custom' attribute",        "" },
   { Event::DecreaseAttribute,       "Decrease selected 'Custom' attribute",  "" },
   { Event::IncreaseAttribute,       "Increase selected 'Custom' attribute",  "" },
+  // Other TV effects
   { Event::TogglePhosphor,          "Toggle 'phosphor' effect",              "" },
   { Event::PhosphorDecrease,        "Decrease 'phosphor' blend",             "" },
   { Event::PhosphorIncrease,        "Increase 'phosphor' blend",             "" },
   { Event::ScanlinesDecrease,       "Decrease scanlines",                    "" },
   { Event::ScanlinesIncrease,       "Increase scanlines",                    "" },
-  // Developer keys:
+  { Event::PreviousScanlineMask,    "Switch to previous scanline mask",      "" },
+  { Event::NextScanlineMask,        "Switch to next scanline mask",          "" },
+  // Audio
+  { Event::SoundToggle,             "Toggle sound",                          "" },
+  { Event::VolumeDecrease,          "Decrease volume",                       "" },
+  { Event::VolumeIncrease,          "Increase volume",                       "" },
+
+  // Devices & Ports:
+  { Event::DecreaseDeadzone,        "Decrease digital dead zone",            "" },
+  { Event::IncreaseDeadzone,        "Increase digital dead zone",            "" },
+  { Event::DecAnalogDeadzone,       "Decrease analog dead zone",             "" },
+  { Event::IncAnalogDeadzone,       "Increase analog dead zone",             "" },
+  { Event::DecAnalogSense,          "Decrease analog paddle sensitivity",    "" },
+  { Event::IncAnalogSense,          "Increase analog paddle sensitivity",    "" },
+  { Event::DecAnalogLinear,         "Decrease analog paddle linearity",      "" },
+  { Event::IncAnalogLinear,         "Increase analog paddle linearity",      "" },
+  { Event::DecDejtterAveraging,     "Decrease paddle dejitter averaging",    "" },
+  { Event::IncDejtterAveraging,     "Increase paddle dejitter averaging",    "" },
+  { Event::DecDejtterReaction,      "Decrease paddle dejitter reaction",     "" },
+  { Event::IncDejtterReaction,      "Increase paddle dejitter reaction",     "" },
+  { Event::DecDigitalSense,         "Decrease digital paddle sensitivity",   "" },
+  { Event::IncDigitalSense,         "Increase digital paddle sensitivity",   "" },
+  { Event::ToggleAutoFire,          "Toggle auto fire",                      "" },
+  { Event::DecreaseAutoFire,        "Decrease auto fire speed",              "" },
+  { Event::IncreaseAutoFire,        "Increase auto fire speed",              "" },
+  { Event::ToggleFourDirections,    "Toggle allow four joystick directions", "" },
+  { Event::ToggleKeyCombos,         "Toggle use of modifier key combos",     "" },
+  { Event::ToggleSAPortOrder,       "Swap Stelladaptor port ordering",       "" },
+  // Devices & Ports related properties
+  { Event::PreviousLeftPort,        "Select previous left controller",       "" },
+  { Event::NextLeftPort,            "Select next left controller",           "" },
+  { Event::PreviousRightPort,       "Select previous right controller",      "" },
+  { Event::NextRightPort,           "Select next right controller",          "" },
+  { Event::ToggleSwapPorts,         "Toggle swap ports",                     "" },
+  { Event::ToggleSwapPaddles,       "Toggle swap paddles",                   "" },
+
+  // Mouse
+  { Event::PrevMouseAsController,   "Select previous mouse controls",        "" },
+  { Event::NextMouseAsController,   "Select next mouse controls",            "" },
+  { Event::DecMousePaddleSense,     "Decrease mouse paddle sensitivity",     "" },
+  { Event::IncMousePaddleSense,     "Increase mouse paddle sensitivity",     "" },
+  { Event::DecMouseTrackballSense,  "Decrease mouse trackball sensitivity",  "" },
+  { Event::IncMouseTrackballSense,  "Increase mouse trackball sensitivity",  "" },
+  { Event::DecreaseDrivingSense,    "Decrease driving sensitivity",          "" },
+  { Event::IncreaseDrivingSense,    "Increase driving sensitivity",          "" },
+  { Event::PreviousCursorVisbility, "Select prev. cursor visibility mode",   "" },
+  { Event::NextCursorVisbility,     "Select next cursor visibility mode",    "" },
+  { Event::ToggleGrabMouse,         "Toggle grab mouse",                     "" },
+  // Mouse related properties
+  { Event::PreviousMouseControl,    "Select previous mouse emulation mode",  "" },
+  { Event::NextMouseControl,        "Select next mouse emulation mode",      "" },
+  { Event::DecreaseMouseAxesRange,  "Decrease mouse axes range",             "" },
+  { Event::IncreaseMouseAxesRange,  "Increase mouse axes range",             "" },
+
+  // Time Machine
+  { Event::ToggleTimeMachine,       "Toggle 'Time Machine' mode",            "" },
+  { Event::TimeMachineMode,         "Toggle 'Time Machine' UI",              "" },
+  { Event::RewindPause,             "Rewind one state & enter Pause mode",   "" },
+  { Event::Rewind1Menu,             "Rewind one state & enter TM UI",        "" },
+  { Event::Rewind10Menu,            "Rewind 10 states & enter TM UI",        "" },
+  { Event::RewindAllMenu,           "Rewind all states & enter TM UI",       "" },
+  { Event::UnwindPause,             "Unwind one state & enter Pause mode",   "" },
+  { Event::Unwind1Menu,             "Unwind one state & enter TM UI",        "" },
+  { Event::Unwind10Menu,            "Unwind 10 states & enter TM UI",        "" },
+  { Event::UnwindAllMenu,           "Unwind all states & enter TM UI",       "" },
+  { Event::TogglePlayBackMode,      "Toggle 'Time Machine' playback mode",   "" },
+
+  // Developer:
+  { Event::ToggleDeveloperSet,      "Toggle developer settings sets",        "" },
   { Event::ToggleFrameStats,        "Toggle frame stats",                    "" },
   { Event::ToggleP0Bit,             "Toggle TIA Player0 object",             "" },
   { Event::ToggleP0Collision,       "Toggle TIA Player0 collisions",         "" },
@@ -1951,27 +3056,13 @@ EventHandler::EmulActionList EventHandler::ourEmulActionList = { {
   { Event::ToggleCollisions,        "Toggle all TIA collisions",             "" },
   { Event::ToggleFixedColors,       "Toggle TIA 'Fixed Debug Colors' mode",  "" },
   { Event::ToggleColorLoss,         "Toggle PAL color-loss effect",          "" },
-  { Event::ToggleJitter,            "Toggle TV 'Jitter' effect",             "" },
-  // Other keys:
-  { Event::SoundToggle,             "Toggle sound",                          "" },
-  { Event::VolumeDecrease,          "Decrease volume",                       "" },
-  { Event::VolumeIncrease,          "Increase volume",                       "" },
+  { Event::ToggleJitter,            "Toggle TV scanline 'Jitter' effect",    "" },
+  { Event::JitterSenseDecrease,     "Decrease TV 'Jitter' sensitivity",      "" },
+  { Event::JitterSenseIncrease,     "Increase TV 'Jitter' sensitivity",      "" },
+  { Event::JitterRecDecrease,       "Decrease TV 'Jitter' roll",             "" },
+  { Event::JitterRecIncrease,       "Increase TV 'Jitter' roll",             "" },
 
-  { Event::HandleMouseControl,      "Switch mouse emulation modes",          "" },
-  { Event::ToggleGrabMouse,         "Toggle grab mouse",                     "" },
-  { Event::ToggleSAPortOrder,       "Swap Stelladaptor port ordering",       "" },
-
-  { Event::ToggleTimeMachine,       "Toggle 'Time Machine' mode",            "" },
-  { Event::TimeMachineMode,         "Toggle 'Time Machine' UI",              "" },
-  { Event::RewindPause,             "Rewind one state & enter Pause mode",   "" },
-  { Event::Rewind1Menu,             "Rewind one state & enter TM UI",        "" },
-  { Event::Rewind10Menu,            "Rewind 10 states & enter TM UI",        "" },
-  { Event::RewindAllMenu,           "Rewind all states & enter TM UI",       "" },
-  { Event::UnwindPause,             "Unwind one state & enter Pause mode",   "" },
-  { Event::Unwind1Menu,             "Unwind one state & enter TM UI",        "" },
-  { Event::Unwind10Menu,            "Unwind 10 states & enter TM UI",        "" },
-  { Event::UnwindAllMenu,           "Unwind all states & enter TM UI",       "" },
-
+  // Combo
   { Event::Combo1,                  "Combo 1",                               "" },
   { Event::Combo2,                  "Combo 2",                               "" },
   { Event::Combo3,                  "Combo 3",                               "" },
@@ -1987,61 +3078,73 @@ EventHandler::EmulActionList EventHandler::ourEmulActionList = { {
   { Event::Combo13,                 "Combo 13",                              "" },
   { Event::Combo14,                 "Combo 14",                              "" },
   { Event::Combo15,                 "Combo 15",                              "" },
-  { Event::Combo16,                 "Combo 16",                              "" }
+  { Event::Combo16,                 "Combo 16",                              "" },
 } };
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 EventHandler::MenuActionList EventHandler::ourMenuActionList = { {
-  { Event::UIUp,              "Move Up",              "" },
-  { Event::UIDown,            "Move Down",            "" },
-  { Event::UILeft,            "Move Left",            "" },
-  { Event::UIRight,           "Move Right",           "" },
+  { Event::UIHelp,            "Open context-sensitive help",  "" },
 
-  { Event::UIHome,            "Home",                 "" },
-  { Event::UIEnd,             "End",                  "" },
-  { Event::UIPgUp,            "Page Up",              "" },
-  { Event::UIPgDown,          "Page Down",            "" },
+  { Event::UIUp,              "Move Up",                      "" },
+  { Event::UIDown,            "Move Down",                    "" },
+  { Event::UILeft,            "Move Left",                    "" },
+  { Event::UIRight,           "Move Right",                   "" },
 
-  { Event::UIOK,              "OK",                   "" },
-  { Event::UICancel,          "Cancel",               "" },
-  { Event::UISelect,          "Select item",          "" },
+  { Event::UIHome,            "Home",                         "" },
+  { Event::UIEnd,             "End",                          "" },
+  { Event::UIPgUp,            "Page Up",                      "" },
+  { Event::UIPgDown,          "Page Down",                    "" },
 
-  { Event::UINavPrev,         "Previous object",      "" },
-  { Event::UINavNext,         "Next object",          "" },
-  { Event::UITabPrev,         "Previous tab",         "" },
-  { Event::UITabNext,         "Next tab",             "" },
+  { Event::UIOK,              "OK",                           "" },
+  { Event::UICancel,          "Cancel",                       "" },
+  { Event::UISelect,          "Select item",                  "" },
 
-  { Event::UIPrevDir,         "Parent directory",     "" },
-  { Event::ToggleFullScreen,  "Toggle fullscreen",    "" },
-  { Event::Quit,              "Quit",                 "" }
+  { Event::UINavPrev,         "Previous object",              "" },
+  { Event::UINavNext,         "Next object",                  "" },
+  { Event::UITabPrev,         "Previous tab",                 "" },
+  { Event::UITabNext,         "Next tab",                     "" },
+
+  { Event::UIPrevDir,         "Parent directory",             "" },
+  { Event::ToggleFullScreen,  "Toggle fullscreen",            "" },
+  { Event::Quit,              "Quit",                         "" }
 } };
 
 // Event groups
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 const Event::EventSet EventHandler::MiscEvents = {
   Event::Quit, Event::ReloadConsole, Event::Fry, Event::StartPauseMode,
-  Event::TogglePauseMode, Event::OptionsMenuMode, Event::CmdMenuMode, Event::ExitMode,
+  Event::TogglePauseMode, Event::OptionsMenuMode, Event::CmdMenuMode,
+  Event::PlusRomsSetupMode, Event::ExitMode,
+  Event::ToggleTurbo, Event::DecreaseSpeed, Event::IncreaseSpeed,
   Event::TakeSnapshot, Event::ToggleContSnapshots, Event::ToggleContSnapshotsFrame,
   // Event::MouseAxisXMove, Event::MouseAxisYMove,
   // Event::MouseButtonLeftValue, Event::MouseButtonRightValue,
-  Event::HandleMouseControl, Event::ToggleGrabMouse,
-  Event::ToggleSAPortOrder,
+  Event::HighScoresMenuMode,
+  Event::PreviousMultiCartRom,
+  Event::PreviousSettingGroup, Event::NextSettingGroup,
+  Event::PreviousSetting, Event::NextSetting,
+  Event::SettingDecrease, Event::SettingIncrease,
 };
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 const Event::EventSet EventHandler::AudioVideoEvents = {
   Event::VolumeDecrease, Event::VolumeIncrease, Event::SoundToggle,
   Event::VidmodeDecrease, Event::VidmodeIncrease,
-  Event::ToggleFullScreen,
-  Event::VidmodeStd, Event::VidmodeRGB, Event::VidmodeSVideo, Event::VidModeComposite, Event::VidModeBad, Event::VidModeCustom,
-  Event::PreviousAttribute, Event::NextAttribute, Event::DecreaseAttribute, Event::IncreaseAttribute,
-  Event::ScanlinesDecrease, Event::ScanlinesIncrease,
-  Event::PhosphorDecrease, Event::PhosphorIncrease, Event::TogglePhosphor,
+  Event::ToggleFullScreen, Event::ToggleAdaptRefresh,
+  Event::OverscanDecrease, Event::OverscanIncrease,
   Event::FormatDecrease, Event::FormatIncrease,
   Event::VCenterDecrease, Event::VCenterIncrease,
-  Event::ScanlineAdjustDecrease, Event::ScanlineAdjustIncrease,
-  Event::OverscanDecrease, Event::OverscanIncrease,
-  Event::TogglePalette, Event::ToggleInter
+  Event::VSizeAdjustDecrease, Event::VSizeAdjustIncrease, Event::ToggleCorrectAspectRatio,
+  Event::PaletteDecrease, Event::PaletteIncrease,
+  Event::PreviousPaletteAttribute, Event::NextPaletteAttribute,
+  Event::PaletteAttributeDecrease, Event::PaletteAttributeIncrease,
+  Event::VidmodeStd, Event::VidmodeRGB, Event::VidmodeSVideo, Event::VidModeComposite, Event::VidModeBad, Event::VidModeCustom,
+  Event::PreviousVideoMode, Event::NextVideoMode,
+  Event::PreviousAttribute, Event::NextAttribute, Event::DecreaseAttribute, Event::IncreaseAttribute,
+  Event::PhosphorDecrease, Event::PhosphorIncrease, Event::TogglePhosphor,
+  Event::ScanlinesDecrease, Event::ScanlinesIncrease,
+  Event::PreviousScanlineMask, Event::NextScanlineMask,
+  Event::ToggleInter,
 };
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -2050,6 +3153,7 @@ const Event::EventSet EventHandler::StateEvents = {
   Event::TimeMachineMode, Event::RewindPause, Event::UnwindPause, Event::ToggleTimeMachine,
   Event::Rewind1Menu, Event::Rewind10Menu, Event::RewindAllMenu,
   Event::Unwind1Menu, Event::Unwind10Menu, Event::UnwindAllMenu,
+  Event::TogglePlayBackMode,
   Event::SaveAllStates, Event::LoadAllStates, Event::ToggleAutoSlot,
 };
 
@@ -2065,46 +3169,85 @@ const Event::EventSet EventHandler::ConsoleEvents = {
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 const Event::EventSet EventHandler::JoystickEvents = {
-  Event::JoystickZeroUp, Event::JoystickZeroDown, Event::JoystickZeroLeft, Event::JoystickZeroRight,
-  Event::JoystickZeroFire, Event::JoystickZeroFire5, Event::JoystickZeroFire9,
-  Event::JoystickOneUp, Event::JoystickOneDown, Event::JoystickOneLeft, Event::JoystickOneRight,
-  Event::JoystickOneFire, Event::JoystickOneFire5, Event::JoystickOneFire9,
+  Event::LeftJoystickUp, Event::LeftJoystickDown, Event::LeftJoystickLeft, Event::LeftJoystickRight,
+  Event::LeftJoystickFire, Event::LeftJoystickFire5, Event::LeftJoystickFire9,
+  Event::RightJoystickUp, Event::RightJoystickDown, Event::RightJoystickLeft, Event::RightJoystickRight,
+  Event::RightJoystickFire, Event::RightJoystickFire5, Event::RightJoystickFire9,
+  Event::QTJoystickThreeUp, Event::QTJoystickThreeDown, Event::QTJoystickThreeLeft, Event::QTJoystickThreeRight,
+  Event::QTJoystickThreeFire,
+  Event::QTJoystickFourUp, Event::QTJoystickFourDown, Event::QTJoystickFourLeft, Event::QTJoystickFourRight,
+  Event::QTJoystickFourFire,
 };
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 const Event::EventSet EventHandler::PaddlesEvents = {
-  Event::PaddleZeroDecrease, Event::PaddleZeroIncrease, Event::PaddleZeroAnalog, Event::PaddleZeroFire,
-  Event::PaddleOneDecrease, Event::PaddleOneIncrease, Event::PaddleOneAnalog, Event::PaddleOneFire,
-  Event::PaddleTwoDecrease, Event::PaddleTwoIncrease, Event::PaddleTwoAnalog, Event::PaddleTwoFire,
-  Event::PaddleThreeDecrease, Event::PaddleThreeIncrease, Event::PaddleThreeAnalog, Event::PaddleThreeFire,
+  Event::LeftPaddleADecrease, Event::LeftPaddleAIncrease, Event::LeftPaddleAAnalog, Event::LeftPaddleAFire,
+  Event::LeftPaddleBDecrease, Event::LeftPaddleBIncrease, Event::LeftPaddleBAnalog, Event::LeftPaddleBFire,
+  Event::RightPaddleADecrease, Event::RightPaddleAIncrease, Event::RightPaddleAAnalog, Event::RightPaddleAFire,
+  Event::RightPaddleBDecrease, Event::RightPaddleBIncrease, Event::RightPaddleBAnalog, Event::RightPaddleBFire,
+  Event::QTPaddle3AFire, Event::QTPaddle3BFire,Event::QTPaddle4AFire,Event::QTPaddle4BFire,
 };
 
 const Event::EventSet EventHandler::KeyboardEvents = {
-  Event::KeyboardZero1, Event::KeyboardZero2, Event::KeyboardZero3,
-  Event::KeyboardZero4, Event::KeyboardZero5, Event::KeyboardZero6,
-  Event::KeyboardZero7, Event::KeyboardZero8, Event::KeyboardZero9,
-  Event::KeyboardZeroStar, Event::KeyboardZero0, Event::KeyboardZeroPound,
+  Event::LeftKeyboard1, Event::LeftKeyboard2, Event::LeftKeyboard3,
+  Event::LeftKeyboard4, Event::LeftKeyboard5, Event::LeftKeyboard6,
+  Event::LeftKeyboard7, Event::LeftKeyboard8, Event::LeftKeyboard9,
+  Event::LeftKeyboardStar, Event::LeftKeyboard0, Event::LeftKeyboardPound,
 
-  Event::KeyboardOne1, Event::KeyboardOne2, Event::KeyboardOne3,
-  Event::KeyboardOne4, Event::KeyboardOne5, Event::KeyboardOne6,
-  Event::KeyboardOne7, Event::KeyboardOne8, Event::KeyboardOne9,
-  Event::KeyboardOneStar, Event::KeyboardOne0, Event::KeyboardOnePound,
+  Event::RightKeyboard1, Event::RightKeyboard2, Event::RightKeyboard3,
+  Event::RightKeyboard4, Event::RightKeyboard5, Event::RightKeyboard6,
+  Event::RightKeyboard7, Event::RightKeyboard8, Event::RightKeyboard9,
+  Event::RightKeyboardStar, Event::RightKeyboard0, Event::RightKeyboardPound,
+};
+
+const Event::EventSet EventHandler::DrivingEvents = {
+  Event::LeftDrivingAnalog, Event::LeftDrivingCCW, Event::LeftDrivingCW,
+  Event::LeftDrivingFire, Event::RightDrivingAnalog, Event::RightDrivingCCW,
+  Event::RightDrivingCW, Event::RightDrivingFire,
+};
+
+const Event::EventSet EventHandler::DevicesEvents = {
+  Event::DecreaseDeadzone, Event::IncreaseDeadzone,
+  Event::DecAnalogDeadzone, Event::IncAnalogDeadzone,
+  Event::DecAnalogSense, Event::IncAnalogSense,
+  Event::DecAnalogLinear, Event::IncAnalogLinear,
+  Event::DecDejtterAveraging, Event::IncDejtterAveraging,
+  Event::DecDejtterReaction, Event::IncDejtterReaction,
+  Event::DecDigitalSense, Event::IncDigitalSense,
+  Event::ToggleAutoFire, Event::DecreaseAutoFire, Event::IncreaseAutoFire,
+  Event::ToggleFourDirections, Event::ToggleKeyCombos, Event::ToggleSAPortOrder,
+  Event::PrevMouseAsController, Event::NextMouseAsController,
+  Event::DecMousePaddleSense, Event::IncMousePaddleSense,
+  Event::DecMouseTrackballSense, Event::IncMouseTrackballSense,
+  Event::DecreaseDrivingSense, Event::IncreaseDrivingSense,
+  Event::PreviousCursorVisbility, Event::NextCursorVisbility,
+  Event::ToggleGrabMouse,
+  Event::PreviousLeftPort, Event::NextLeftPort,
+  Event::PreviousRightPort, Event::NextRightPort,
+  Event::ToggleSwapPorts, Event::ToggleSwapPaddles,
+  Event::DecreasePaddleCenterX, Event::IncreasePaddleCenterX,
+  Event::DecreasePaddleCenterY, Event::IncreasePaddleCenterY,
+  Event::PreviousMouseControl, Event::NextMouseControl,
+  Event::DecreaseMouseAxesRange, Event::IncreaseMouseAxesRange,
 };
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 const Event::EventSet EventHandler::ComboEvents = {
-  Event::Combo1, Event::Combo2, Event::Combo3, Event::Combo4, Event::Combo5, Event::Combo6, Event::Combo7, Event::Combo8,
-  Event::Combo9, Event::Combo10, Event::Combo11, Event::Combo12, Event::Combo13, Event::Combo14, Event::Combo15, Event::Combo16,
+  Event::Combo1, Event::Combo2, Event::Combo3, Event::Combo4,
+  Event::Combo5, Event::Combo6, Event::Combo7, Event::Combo8,
+  Event::Combo9, Event::Combo10, Event::Combo11, Event::Combo12,
+  Event::Combo13, Event::Combo14, Event::Combo15, Event::Combo16,
 };
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 const Event::EventSet EventHandler::DebugEvents = {
-  Event::DebuggerMode,
+  Event::DebuggerMode, Event::ToggleDeveloperSet,
   Event::ToggleFrameStats,
   Event::ToggleP0Collision, Event::ToggleP0Bit, Event::ToggleP1Collision, Event::ToggleP1Bit,
   Event::ToggleM0Collision, Event::ToggleM0Bit, Event::ToggleM1Collision, Event::ToggleM1Bit,
   Event::ToggleBLCollision, Event::ToggleBLBit, Event::TogglePFCollision, Event::TogglePFBit,
   Event::ToggleCollisions, Event::ToggleBits, Event::ToggleFixedColors,
   Event::ToggleColorLoss,
-  Event::ToggleJitter,
+  Event::ToggleJitter, Event::JitterSenseDecrease,Event::JitterSenseIncrease,
+  Event::JitterRecDecrease,Event::JitterRecIncrease,
 };

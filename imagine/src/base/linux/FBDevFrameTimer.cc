@@ -13,93 +13,91 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "FBDevFrameTimer"
 #include <imagine/base/Screen.hh>
 #include <imagine/time/Time.hh>
 #include <imagine/thread/Thread.hh>
 #include <imagine/logger/logger.h>
 #include <imagine/base/linux/FBDevFrameTimer.hh>
-#include <imagine/util/UniqueFileDescriptor.hh>
+#include <imagine/util/memory/UniqueFileDescriptor.hh>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <linux/fb.h>
 #include <sys/eventfd.h>
 
-namespace Base
+namespace IG
 {
+
+constexpr SystemLogger log{"FBDevFrameTimer"};
 
 static UniqueFileDescriptor openDevice()
 {
 	const char *fbDevPath = "/dev/fb0";
-	logMsg("opening device path:%s", fbDevPath);
+	log.info("opening device path:{}", fbDevPath);
 	return open(fbDevPath, O_RDWR | O_CLOEXEC);
 }
 
-FBDevFrameTimer::FBDevFrameTimer(Screen &screen, EventLoop loop)
-{
-	auto fbdev = openDevice();
-	if(fbdev == -1)
+FBDevFrameTimer::FBDevFrameTimer(Screen &screen, EventLoop loop):
+	fdSrc
 	{
-		logErr("error opening device:%s", std::system_category().message(errno).c_str());
-		return;
-	}
-	int fd = eventfd(0, 0);
-	if(fd == -1)
-	{
-		logErr("error creating eventfd");
-		return;
-	}
-	sem_init(&sem, 0, 0);
-	fdSrc = {"FBDevFrameTimer", fd, loop,
-		[this, &screen](int fd, int event)
+		eventfd(0, 0), {.debugLabel = "FBDevFrameTimer", .eventLoop = loop},
+		[this, &screen](int fd, int)
 		{
 			eventfd_t timestamp;
 			auto ret = read(fd, &timestamp, sizeof(timestamp));
 			assert(ret == sizeof(timestamp));
-			//logDMsg("read frame timestamp:%lu", (long unsigned int)timestamp);
+			//log.debug("read frame timestamp:{}", timestamp);
 			requested = false;
 			if(cancelled)
 			{
 				cancelled = false;
 				return true; // frame request was cancelled
 			}
-			assert(screen.isPosted());
-			if(screen.frameUpdate(IG::Nanoseconds(timestamp)))
-				scheduleVSync();
+			if(screen.isPosted())
+			{
+				if(screen.frameUpdate(SteadyClockTimePoint{Nanoseconds{timestamp}}))
+					scheduleVSync();
+			}
 			return true;
-		}};
-	IG::makeDetachedThread(
-		[this, fd, fbdev = fbdev.release()]()
+		}
+	}
+{
+	auto fbdev = openDevice();
+	if(fbdev == -1)
+	{
+		log.error("error opening device:{}", std::generic_category().message(errno));
+		return;
+	}
+	thread = std::thread(
+		[this, fd = fdSrc.fd(), fbdev = fbdev.release()]()
 		{
-			//logMsg("ready to wait for vsync");
+			//log.info("ready to wait for vsync");
 			for(;;)
 			{
-				sem_wait(&sem);
+				sem.acquire();
 				if(quiting)
 					break;
-				//logMsg("waiting for vsync");
+				//log.info("waiting for vsync");
 				int arg = 0;
 				if(int res = ioctl(fbdev, FBIO_WAITFORVSYNC, &arg);
 					res == -1)
 				{
-					logErr("error in ioctl FBIO_WAITFORVSYNC");
+					log.error("error in ioctl FBIO_WAITFORVSYNC");
 				}
-				eventfd_t timestamp = IG::steadyClockTimestamp().count();
-				//logMsg("got vsync at time %lu", (long unsigned int)timestamp);
+				eventfd_t timestamp = SteadyClock::now().time_since_epoch().count();
+				//log.info("got vsync at time:{}", timestamp);
 				auto ret = write(fd, &timestamp, sizeof(timestamp));
 				assert(ret == sizeof(timestamp));
 			}
 			close(fbdev);
-		}
-	);
+		});
 }
 
 FBDevFrameTimer::~FBDevFrameTimer()
 {
 	quiting = true;
-	sem_post(&sem);
-	fdSrc.closeFD();
+	sem.release();
+	thread.join();
 }
 
 void FBDevFrameTimer::scheduleVSync()
@@ -111,7 +109,7 @@ void FBDevFrameTimer::scheduleVSync()
 		return;
 	}
 	requested = true;
-	sem_post(&sem);
+	sem.release();
 }
 
 void FBDevFrameTimer::cancel()
@@ -119,19 +117,24 @@ void FBDevFrameTimer::cancel()
 	cancelled = true;
 }
 
+void FBDevFrameTimer::setEventsOnThisThread(ApplicationContext)
+{
+	fdSrc.attach(EventLoop::forThread(), {});
+}
+
 bool FBDevFrameTimer::testSupport()
 {
 	auto fbdev = openDevice();
 	if(fbdev == -1)
 	{
-		logErr("error opening device:%s", std::system_category().message(errno).c_str());
+		log.error("error opening device:{}", std::generic_category().message(errno));
 		return false;
 	}
 	// test ioctl FBIO_WAITFORVSYNC
 	if(int arg = 0, res = ioctl(fbdev, FBIO_WAITFORVSYNC, &arg);
 		res == -1)
 	{
-		logErr("error in ioctl FBIO_WAITFORVSYNC, cannot use frame timer");
+		log.error("error in ioctl FBIO_WAITFORVSYNC, cannot use frame timer");
 		return false;
 	}
 	return true;

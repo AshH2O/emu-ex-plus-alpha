@@ -38,6 +38,7 @@
 #include "cartridge.h"
 #include "export.h"
 #include "log.h"
+#include "ram.h"
 #include "snapshot.h"
 #include "supersnapshot4.h"
 #include "types.h"
@@ -94,6 +95,8 @@
 #define DBG(x)
 #endif
 
+#define CART_RAM_SIZE (8 * 1024)
+
 /* Super Snapshot configuration flags.  */
 static uint8_t ramconfig = 0xff, romconfig = 9;
 
@@ -118,7 +121,8 @@ static io_source_t ss4_io1_device = {
     NULL,                          /* TODO: device state information dump function */
     CARTRIDGE_SUPER_SNAPSHOT,      /* cartridge ID */
     IO_PRIO_NORMAL,                /* normal priority, device read needs to be checked for collisions */
-    0                              /* insertion order, gets filled in by the registration function */
+    0,                             /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE                 /* NO mirroring */
 };
 
 static io_source_t ss4_io2_device = {
@@ -134,7 +138,8 @@ static io_source_t ss4_io2_device = {
     NULL,                          /* TODO: device state information dump function */
     CARTRIDGE_SUPER_SNAPSHOT,      /* cartridge ID */
     IO_PRIO_NORMAL,                /* normal priority, device read needs to be checked for collisions */
-    0                              /* insertion order, gets filled in by the registration function */
+    0,                             /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE                 /* NO mirroring */
 };
 
 static io_source_list_t *ss4_io1_list_item = NULL;
@@ -264,14 +269,33 @@ void supersnapshot_v4_roml_store(uint16_t addr, uint8_t value)
 
 /* ---------------------------------------------------------------------*/
 
+/* FIXME: this still needs to be tweaked to match the hardware */
+static RAMINITPARAM ramparam = {
+    .start_value = 255,
+    .value_invert = 2,
+    .value_offset = 1,
+
+    .pattern_invert = 0x100,
+    .pattern_invert_value = 255,
+
+    .random_start = 0,
+    .random_repeat = 0,
+    .random_chance = 0,
+};
+
+void supersnapshot_v4_powerup(void)
+{
+    ram_init_with_pattern(export_ram0, CART_RAM_SIZE, &ramparam);
+}
+
 void supersnapshot_v4_freeze(void)
 {
-    cart_config_changed_slotmain(3, 3, CMODE_READ | CMODE_EXPORT_RAM);
+    cart_config_changed_slotmain(CMODE_ULTIMAX, CMODE_ULTIMAX, CMODE_READ | CMODE_EXPORT_RAM);
 }
 
 void supersnapshot_v4_config_init(void)
 {
-    cart_config_changed_slotmain(1 | (1 << CMODE_BANK_SHIFT), 1 | (1 << CMODE_BANK_SHIFT), CMODE_READ);
+    cart_config_changed_slotmain(CMODE_16KGAME | (1 << CMODE_BANK_SHIFT), CMODE_16KGAME | (1 << CMODE_BANK_SHIFT), CMODE_READ);
 }
 
 void supersnapshot_v4_config_setup(uint8_t *rawcart)
@@ -315,7 +339,7 @@ int supersnapshot_v4_bin_attach(const char *filename, uint8_t *rawcart)
  * $006070 CHIP ROM   #003 $8000 $2000 $2010
  *
  * cartconv produced this from 2011 to 12/2015:
- * 
+ *
  * offset  sig  type  bank start size  chunklen
  * $000040 CHIP ROM   #000 $8000 $2000 $2010
  * $002050 CHIP ROM   #000 $a000 $2000 $2010
@@ -331,7 +355,8 @@ int supersnapshot_v4_bin_attach(const char *filename, uint8_t *rawcart)
  */
 int supersnapshot_v4_crt_attach(FILE *fd, uint8_t *rawcart)
 {
-    int i, pos, banks, chips;
+    int i, banks, chips;
+    size_t pos;
     crt_chip_header_t chip;
 
     /* find out how many banks and chips are in the file */
@@ -409,7 +434,7 @@ void supersnapshot_v4_detach(void)
    ARRAY | RAM        | 8192 BYTES of RAM data
  */
 
-static char snap_module_name[] = "CARTSS4";
+static const char snap_module_name[] = "CARTSS4";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   0
 

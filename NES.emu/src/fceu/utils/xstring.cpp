@@ -157,7 +157,7 @@ int chr_replace(char *str, char search, char replace) {
 
 ///Replaces all instances of 'search' with 'replace'
 ///Returns number of sub-strings modified, or -1 on error
-int str_replace(char *str, char *search, char *replace) {
+int str_replace(char *str, const char *search, const char *replace) {
 	unsigned int i=0,j=0; //mbg merge 7/17/06 changed to unsigned int
 	int searchlen,replacelen;
 	char *astr;
@@ -194,7 +194,7 @@ static const struct Base64Table
 		data[62] = '+';                             // 62
 		data[63] = '/';                             // 63
 		// create ascii->value mapping (but due to overlap, write it to highbit region)
-		for(a=0; a<64; ++a) data[data[a]^0x80] = a; // 
+		for(a=0; a<64; ++a) data[data[a]^0x80] = static_cast<unsigned char>(a); // 
 		data[((unsigned char)'=') ^ 0x80] = 0;
 	}
 	unsigned char operator[] (size_t pos) const { return data[pos]; }
@@ -580,7 +580,7 @@ std::string mass_replace(const std::string &source, const std::string &victim, c
 	return answer;
 }
 
-#ifdef WIN32 // this code tends to crash on SDL.
+#ifdef __WIN_DRIVER__ // this code tends to crash on SDL.
 //http://www.codeproject.com/KB/string/UtfConverter.aspx
 #include "ConvertUTF.h"
 namespace UtfConverter
@@ -750,12 +750,11 @@ namespace UtfConverter
 //convert a std::string to std::wstring
 std::wstring mbstowcs(std::string str) // UTF8->UTF32
 {
-	return UtfConverter::FromUtf8(str);
-	/*try {
+	try {
 		return UtfConverter::FromUtf8(str);
-	} catch(std::exception) {
+	} catch(std::exception &e) {
 		return L"(failed UTF-8 conversion)";
-	}*/
+	}
 }
 
 //convert a std::wstring to std::string

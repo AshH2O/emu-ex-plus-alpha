@@ -30,6 +30,7 @@
 #include <string.h>
 #include <assert.h>
 
+#include "archdep.h"
 #include "cartio.h"
 #include "cartridge.h"
 #include "cmdline.h"
@@ -73,6 +74,7 @@ static io_source_list_t c64io_d400_head = { NULL, NULL, NULL };
 static io_source_list_t c64io_d500_head = { NULL, NULL, NULL };
 static io_source_list_t c64io_d600_head = { NULL, NULL, NULL };
 static io_source_list_t c64io_d700_head = { NULL, NULL, NULL };
+static io_source_list_t c64io_dd00_head = { NULL, NULL, NULL };
 static io_source_list_t c64io_de00_head = { NULL, NULL, NULL };
 static io_source_list_t c64io_df00_head = { NULL, NULL, NULL };
 
@@ -96,7 +98,6 @@ static void io_source_detach(io_source_detach_t *source)
             resources_set_int(source->det_name, 0);
             break;
     }
-    ui_update_menus();
 }
 
 /*
@@ -353,8 +354,8 @@ static inline uint8_t io_read(io_source_list_t *list, uint16_t addr)
         return vicii_read_phi1();
     }
     /* only one valid I/O source was read, return value */
-    if (!(io_source_counter > 1)) {
-        return retval;
+    if (io_source_valid == 1) {
+        return firstval;
     }
     /* more than one I/O source was read, handle collision */
     if (io_source_collision_handling == IO_COLLISION_METHOD_DETACH_ALL) {
@@ -454,11 +455,21 @@ io_source_list_t *io_source_register(io_source_t *device)
         case 0xd700:
             current = &c64io_d700_head;
             break;
+        case 0xdd00:
+            current = &c64io_dd00_head;
+            break;
         case 0xde00:
             current = &c64io_de00_head;
             break;
         case 0xdf00:
             current = &c64io_df00_head;
+            break;
+        default:
+            log_error(LOG_DEFAULT,
+                    "io_source_register internal error: I/O range 0x%04x "
+                    "does not exist",
+                    device->start_address & 0xff00U);
+            archdep_vice_exit(-1);
             break;
     }
 
@@ -547,6 +558,12 @@ void cartio_shutdown(void)
     while (current) {
         io_source_unregister(current);
         current = c64io_d700_head.next;
+    }
+
+    current = c64io_dd00_head.next;
+    while (current) {
+        io_source_unregister(current);
+        current = c64io_dd00_head.next;
     }
 
     current = c64io_de00_head.next;
@@ -713,6 +730,24 @@ void c64io_d700_store(uint16_t addr, uint8_t value)
     io_store(&c64io_d700_head, addr, value);
 }
 
+uint8_t c64io_dd00_read(uint16_t addr)
+{
+    DBGRW(("IO: io-dd00 r %04x\n", addr));
+    return io_read(&c64io_dd00_head, addr);
+}
+
+uint8_t c64io_dd00_peek(uint16_t addr)
+{
+    DBGRW(("IO: io-dd00 p %04x\n", addr));
+    return io_peek(&c64io_dd00_head, addr);
+}
+
+void c64io_dd00_store(uint16_t addr, uint8_t value)
+{
+    DBGRW(("IO: io-dd00 w %04x %02x\n", addr, value));
+    io_store(&c64io_dd00_head, addr, value);
+}
+
 uint8_t c64io_de00_read(uint16_t addr)
 {
     DBGRW(("IO: io-de00 r %04x\n", addr));
@@ -761,7 +796,8 @@ static void io_source_ioreg_add_onelist(struct mem_ioreg_list_s **mem_ioreg_list
             end = current->device->start_address + current->device->address_mask;
         }
 
-        mon_ioreg_add_list(mem_ioreg_list, current->device->name, current->device->start_address, end, current->device->dump, NULL);
+        mon_ioreg_add_list(mem_ioreg_list, current->device->name, current->device->start_address,
+                           end, current->device->dump, NULL, current->device->mirror_mode);
         current = current->next;
     }
 }
@@ -777,6 +813,7 @@ void io_source_ioreg_add_list(struct mem_ioreg_list_s **mem_ioreg_list)
     io_source_ioreg_add_onelist(mem_ioreg_list, c64io_d500_head.next);
     io_source_ioreg_add_onelist(mem_ioreg_list, c64io_d600_head.next);
     io_source_ioreg_add_onelist(mem_ioreg_list, c64io_d700_head.next);
+    io_source_ioreg_add_onelist(mem_ioreg_list, c64io_dd00_head.next);
     io_source_ioreg_add_onelist(mem_ioreg_list, c64io_de00_head.next);
     io_source_ioreg_add_onelist(mem_ioreg_list, c64io_df00_head.next);
 }

@@ -15,12 +15,12 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/config/defs.hh>
-#include <imagine/audio/OutputStream.hh>
+#include <imagine/audio/defs.hh>
+#include <imagine/audio/Format.hh>
 
 struct pa_context;
 struct pa_stream;
-#ifdef CONFIG_AUDIO_PULSEAUDIO_GLIB
+#ifdef CONFIG_PACKAGE_PULSEAUDIO_GLIB
 struct pa_glib_mainloop;
 #else
 struct pa_threaded_mainloop;
@@ -29,24 +29,25 @@ struct pa_threaded_mainloop;
 namespace IG::Audio
 {
 
-class PAOutputStream : public OutputStream
+class PAOutputStream
 {
 public:
 	PAOutputStream();
 	~PAOutputStream();
-	IG::ErrorCode open(OutputStreamConfig config) final;
-	void play() final;
-	void pause() final;
-	void close() final;
-	void flush() final;
-	bool isOpen() final;
-	bool isPlaying() final;
+	PAOutputStream &operator=(PAOutputStream &&) = delete;
+	StreamError open(OutputStreamConfig config);
+	void play();
+	void pause();
+	void close();
+	void flush();
+	bool isOpen();
+	bool isPlaying();
 	explicit operator bool() const;
 
 private:
 	pa_context* context{};
 	pa_stream* stream{};
-	#ifdef CONFIG_AUDIO_PULSEAUDIO_GLIB
+	#ifdef CONFIG_PACKAGE_PULSEAUDIO_GLIB
 	pa_glib_mainloop* mainloop{};
 	bool mainLoopSignaled = false;
 	#else

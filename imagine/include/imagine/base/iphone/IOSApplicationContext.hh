@@ -20,16 +20,18 @@
 #import <UIKit/UIKit.h>
 #endif
 
-namespace Base
+namespace IG
 {
 
 class Application;
 class Window;
 
+using NativeDisplayConnection = void*;
+
 class IOSApplicationContext
 {
 public:
-	constexpr IOSApplicationContext() {}
+	constexpr IOSApplicationContext() = default;
 	#ifdef __OBJC__
 	constexpr IOSApplicationContext(UIApplication *app):uiAppPtr{(__bridge void*)app} {}
 	UIApplication *uiApp() const { return (__bridge UIApplication*)uiAppPtr; }

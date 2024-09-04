@@ -13,8 +13,8 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "AAudio"
 #include <imagine/audio/android/AAudioOutputStream.hh>
+#include <imagine/audio/OutputStream.hh>
 #include <imagine/audio/Manager.hh>
 #include <imagine/base/sharedLibrary.hh>
 #include <imagine/logger/logger.h>
@@ -22,6 +22,8 @@
 
 namespace IG::Audio
 {
+
+constexpr SystemLogger log{"AAudio"};
 
 static aaudio_result_t (*AAudio_createStreamBuilder)(AAudioStreamBuilder** builder){};
 static aaudio_result_t (*AAudioStreamBuilder_openStream)(AAudioStreamBuilder* builder, AAudioStream** stream){};
@@ -52,33 +54,33 @@ static void loadAAudioLib(const Manager &manager)
 {
 	if(loadedAAudioLib())
 		return;
-	logMsg("loading libaaudio.so functions");
-	auto lib = Base::openSharedLibrary("libaaudio.so", Base::RESOLVE_ALL_SYMBOLS_FLAG);
+	log.info("loading libaaudio.so functions");
+	auto lib = openSharedLibrary("libaaudio.so", {.resolveAllSymbols = true});
 	if(!lib)
 	{
-		logErr("error opening libaaudio.so");
+		log.error("error opening libaaudio.so");
 		return;
 	}
-	Base::loadSymbol(AAudio_createStreamBuilder, lib, "AAudio_createStreamBuilder");
-	Base::loadSymbol(AAudioStreamBuilder_openStream, lib, "AAudioStreamBuilder_openStream");
-	Base::loadSymbol(AAudioStreamBuilder_setChannelCount, lib, "AAudioStreamBuilder_setChannelCount");
-	Base::loadSymbol(AAudioStreamBuilder_setFormat, lib, "AAudioStreamBuilder_setFormat");
-	Base::loadSymbol(AAudioStreamBuilder_setPerformanceMode, lib, "AAudioStreamBuilder_setPerformanceMode");
-	Base::loadSymbol(AAudioStreamBuilder_setSampleRate, lib, "AAudioStreamBuilder_setSampleRate");
-	Base::loadSymbol(AAudioStreamBuilder_setSharingMode, lib, "AAudioStreamBuilder_setSharingMode");
-	Base::loadSymbol(AAudioStreamBuilder_setDataCallback, lib, "AAudioStreamBuilder_setDataCallback");
-	Base::loadSymbol(AAudioStreamBuilder_setErrorCallback, lib, "AAudioStreamBuilder_setErrorCallback");
-	Base::loadSymbol(AAudioStreamBuilder_delete, lib, "AAudioStreamBuilder_delete");
-	Base::loadSymbol(AAudioStream_close, lib, "AAudioStream_close");
-	Base::loadSymbol(AAudioStream_requestStart, lib, "AAudioStream_requestStart");
-	Base::loadSymbol(AAudioStream_requestPause, lib, "AAudioStream_requestPause");
-	Base::loadSymbol(AAudioStream_requestFlush, lib, "AAudioStream_requestFlush");
-	Base::loadSymbol(AAudioStream_requestStop, lib, "AAudioStream_requestStop");
-	Base::loadSymbol(AAudioStream_getState, lib, "AAudioStream_getState");
-	Base::loadSymbol(AAudioStream_waitForStateChange, lib, "AAudioStream_waitForStateChange");
+	loadSymbol(AAudio_createStreamBuilder, lib, "AAudio_createStreamBuilder");
+	loadSymbol(AAudioStreamBuilder_openStream, lib, "AAudioStreamBuilder_openStream");
+	loadSymbol(AAudioStreamBuilder_setChannelCount, lib, "AAudioStreamBuilder_setChannelCount");
+	loadSymbol(AAudioStreamBuilder_setFormat, lib, "AAudioStreamBuilder_setFormat");
+	loadSymbol(AAudioStreamBuilder_setPerformanceMode, lib, "AAudioStreamBuilder_setPerformanceMode");
+	loadSymbol(AAudioStreamBuilder_setSampleRate, lib, "AAudioStreamBuilder_setSampleRate");
+	loadSymbol(AAudioStreamBuilder_setSharingMode, lib, "AAudioStreamBuilder_setSharingMode");
+	loadSymbol(AAudioStreamBuilder_setDataCallback, lib, "AAudioStreamBuilder_setDataCallback");
+	loadSymbol(AAudioStreamBuilder_setErrorCallback, lib, "AAudioStreamBuilder_setErrorCallback");
+	loadSymbol(AAudioStreamBuilder_delete, lib, "AAudioStreamBuilder_delete");
+	loadSymbol(AAudioStream_close, lib, "AAudioStream_close");
+	loadSymbol(AAudioStream_requestStart, lib, "AAudioStream_requestStart");
+	loadSymbol(AAudioStream_requestPause, lib, "AAudioStream_requestPause");
+	loadSymbol(AAudioStream_requestFlush, lib, "AAudioStream_requestFlush");
+	loadSymbol(AAudioStream_requestStop, lib, "AAudioStream_requestStop");
+	loadSymbol(AAudioStream_getState, lib, "AAudioStream_getState");
+	loadSymbol(AAudioStream_waitForStateChange, lib, "AAudioStream_waitForStateChange");
 	if(manager.hasStreamUsage())
 	{
-		Base::loadSymbol(AAudioStreamBuilder_setUsage, lib, "AAudioStreamBuilder_setUsage");
+		loadSymbol(AAudioStreamBuilder_setUsage, lib, "AAudioStreamBuilder_setUsage");
 	}
 }
 
@@ -125,25 +127,28 @@ static const char *streamStateStr(aaudio_stream_state_t state)
 	}
 }
 
-AAudioOutputStream::AAudioOutputStream(const Manager &manager)
-{
-	loadAAudioLib(manager);
-	AAudio_createStreamBuilder(&builder);
-	disconnectEvent.attach(
-		[this]()
+AAudioOutputStream::AAudioOutputStream(const Manager &manager):
+	disconnectEvent
+	{
+		{.debugLabel = "AAudioOutputStream::disconnectEvent", .eventLoop = EventLoop::forThread()},
+		[this]
 		{
 			if(!stream)
 				return;
-			logMsg("trying to re-open stream after disconnect");
+			log.info("trying to re-open stream after disconnect");
 			AAudioStream_close(std::exchange(stream, {}));
 			if(auto res = AAudioStreamBuilder_openStream(builder, &stream);
 				res != AAUDIO_OK)
 			{
-				logErr("error:%s creating stream", streamResultStr(res));
+				log.error("error:{} creating stream", streamResultStr(res));
 				return;
 			}
 			play();
-		});
+		}
+	}
+{
+	loadAAudioLib(manager);
+	AAudio_createStreamBuilder(&builder);
 }
 
 AAudioOutputStream::~AAudioOutputStream()
@@ -152,32 +157,31 @@ AAudioOutputStream::~AAudioOutputStream()
 	AAudioStreamBuilder_delete(builder);
 }
 
-IG::ErrorCode AAudioOutputStream::open(OutputStreamConfig config)
+StreamError AAudioOutputStream::open(OutputStreamConfig config)
 {
 	assert(loadedAAudioLib());
 	if(stream)
 	{
-		logWarn("stream already open");
+		log.warn("stream already open");
 		return {};
 	}
-	bool lowLatencyMode = config.wantedLatencyHint() < IG::Microseconds{20000};
-	auto format = config.format();
+	bool lowLatencyMode = config.wantedLatencyHint < Microseconds{20000};
+	auto format = config.format;
 	if(format.sample != SampleFormats::i16 && format.sample != SampleFormats::f32)
 	{
-		logErr("only i16 and f32 sample formats are supported");
-		return {EINVAL};
+		log.error("only i16 and f32 sample formats are supported");
+		return StreamError::BadArgument;
 	}
-	logMsg("creating stream %dHz, %d channels, low-latency:%s", format.rate, format.channels,
-		lowLatencyMode ? "y" : "n");
-	onSamplesNeeded = config.onSamplesNeeded();
+	log.info("creating stream {}Hz, {} channels, low-latency:{}", format.rate, format.channels, lowLatencyMode);
+	onSamplesNeeded = config.onSamplesNeeded;
 	setBuilderData(builder, format, lowLatencyMode);
 	if(auto res = AAudioStreamBuilder_openStream(builder, &stream);
 		res != AAUDIO_OK)
 	{
-		logErr("error:%s creating stream", streamResultStr(res));
-		return {EINVAL};
+		log.error("error:{} creating stream", streamResultStr(res));
+		return StreamError::BadArgument;
 	}
-	if(config.startPlaying())
+	if(config.startPlaying)
 		play();
 	return {};
 }
@@ -206,12 +210,12 @@ static void waitUntilState(AAudioStream *stream, aaudio_stream_state_t wantedSta
 	while(res == AAUDIO_OK && currentState != wantedState)
 	{
 		res = AAudioStream_waitForStateChange(stream, inputState, &currentState, INT64_MAX);
-		logMsg("transitioned form state:%s to %s", streamStateStr(inputState), streamStateStr(currentState));
+		log.info("transitioned state:{} -> {}", streamStateStr(inputState), streamStateStr(currentState));
 		inputState = currentState;
 	}
 	if(res != AAUDIO_OK)
 	{
-		logErr("error:%s waiting for state:%s", streamResultStr(res), streamStateStr(wantedState));
+		log.error("error:{} waiting for state:{}", streamResultStr(res), streamStateStr(wantedState));
 	}
 }
 
@@ -219,7 +223,7 @@ void AAudioOutputStream::close()
 {
 	if(!stream) [[unlikely]]
 		return;
-	logMsg("closing stream:%p", stream);
+	log.info("closing stream:{}", (void*)stream);
 	isPlaying_ = false;
 	// Devices like the Samsung A3 (2017) have spurious callbacks after AAudioStream_close()
 	// To avoid this make sure the stream is fully stopped before closing
@@ -229,7 +233,7 @@ void AAudioOutputStream::close()
 	if(auto res = AAudioStream_close(std::exchange(stream, {}));
 		res != AAUDIO_OK)
 	{
-		logErr("error:%s closing stream", streamResultStr(res));
+		log.error("error:{} closing stream", streamResultStr(res));
 	}
 }
 
@@ -269,16 +273,16 @@ void AAudioOutputStream::setBuilderData(AAudioStreamBuilder *builder, Format for
 	if(AAudioStreamBuilder_setUsage) // present in API level 28+
 		AAudioStreamBuilder_setUsage(builder, AAUDIO_USAGE_GAME);
 	AAudioStreamBuilder_setDataCallback(builder,
-		[](AAudioStream *stream, void *userData, void *audioData, int32_t numFrames) -> aaudio_data_callback_result_t
+		[](AAudioStream*, void* userData, void* audioData, int32_t numFrames) -> aaudio_data_callback_result_t
 		{
 			auto thisPtr = (AAudioOutputStream*)userData;
 			thisPtr->onSamplesNeeded(audioData, numFrames);
 			return AAUDIO_CALLBACK_RESULT_CONTINUE;
 		}, this);
 	AAudioStreamBuilder_setErrorCallback(builder,
-		[](AAudioStream *stream, void *userData, aaudio_result_t error)
+		[](AAudioStream*, void* userData, aaudio_result_t error)
 		{
-			//logErr("got error:%s callback", streamResultStr(error));
+			//log.error("got error:{} callback", streamResultStr(error));
 			if(error == AAUDIO_ERROR_DISCONNECTED)
 			{
 				// can't re-open stream on worker thread callback, notify main thread

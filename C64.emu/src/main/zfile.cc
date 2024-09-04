@@ -14,49 +14,92 @@
 	along with C64.emu.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/fs/ArchiveFS.hh>
-#include <imagine/logger/logger.h>
 #include <imagine/util/string.h>
+#include <imagine/util/span.hh>
 #include <emuframework/EmuApp.hh>
 #include <emuframework/FilePicker.hh>
+#include <emuframework/OutSizeTracker.hh>
+#include "MainSystem.hh"
+#include <imagine/logger/logger.h>
 
 extern "C"
 {
 	#include "zfile.h"
 }
 
-CLINK FILE *zfile_fopen(const char *path, const char *mode)
+using namespace IG;
+using namespace EmuEx;
+
+namespace EmuEx
 {
-	if(EmuApp::hasArchiveExtension(path))
+constexpr SystemLogger log{"C64.emu"};
+}
+
+CLINK FILE *zfile_fopen(const char *path_, const char *mode_)
+{
+	using namespace IG;
+	std::string_view path{path_};
+	std::string_view mode{mode_};
+	auto appContext = gAppContext();
+	if(path == ":::N") // null output
 	{
-		if(strchr(mode, 'w'))
+		size_t *buffSizePtr;
+		std::ranges::copy(std::span{path_ + 5, sizeof(buffSizePtr)}, asWritableBytes(buffSizePtr).begin());
+		//EmuEx::log.info("decoded size ptr:{}", (void*)buffSizePtr);
+		return OutSizeTracker{buffSizePtr}.toFileStream(mode_);
+	}
+	else if(path == ":::B") // buffer input/output
+	{
+		size_t *buffSizePtr;
+		auto it = std::ranges::copy(std::span{path_ + 5, sizeof(buffSizePtr)}, asWritableBytes(buffSizePtr).begin()).in;
+		uint8_t *buffDataPtr;
+		std::ranges::copy(std::span{it, sizeof(buffDataPtr)}, asWritableBytes(buffDataPtr).begin());
+		//EmuEx::log.info("decoded size ptr:{} ({}) buff ptr:{}", (void*)buffSizePtr, *buffSizePtr, (void*)buffDataPtr);
+		return MapIO{IOBuffer{std::span<uint8_t>{buffDataPtr, *buffSizePtr},
+			[buffSizePtr](const uint8_t *, size_t size){ *buffSizePtr = size; }}}.toFileStream(mode_);
+	}
+	else if(EmuApp::hasArchiveExtension(appContext.fileUriDisplayName(path)))
+	{
+		if(mode.contains('w') || mode.contains('+'))
 		{
-			logErr("opening archive %s with write mode not supported", path);
+			EmuEx::log.error("opening archive {} with write mode not supported", path);
 			return nullptr;
 		}
-		std::error_code ec{};
-		for(auto &entry : FS::ArchiveIterator{path, ec})
+		try
 		{
-			if(entry.type() == FS::file_type::directory)
+			for(auto &entry : FS::ArchiveIterator{appContext.openFileUri(path)})
 			{
-				continue;
+				if(entry.type() == FS::file_type::directory)
+				{
+					continue;
+				}
+				if(EmuSystem::defaultFsFilter(entry.name()))
+				{
+					EmuEx::log.info("archive file entry:{}", entry.name());
+					return MapIO{std::move(entry)}.toFileStream(mode_);
+				}
 			}
-			auto name = entry.name();
-			logMsg("archive file entry:%s", name);
-			if(EmuSystem::defaultFsFilter(name))
-			{
-				return entry.moveIO().moveToMapIO().makeGeneric().moveToFileStream(mode);
-			}
+			EmuEx::log.error("no recognized file extensions in archive:{}", path);
 		}
-		if(ec)
+		catch(...)
 		{
-			logErr("error opening archive:%s", path);
-			return nullptr;
+			EmuEx::log.error("error opening archive:{}", path);
 		}
-		logErr("no recognized file extensions in archive:%s", path);
 		return nullptr;
 	}
 	else
 	{
-		return fopen(path, mode);
+		return FileUtils::fopenUri(appContext, path, mode_);
 	}
+}
+
+CLINK off_t archdep_file_size(FILE *stream)
+{
+	off_t pos = ftello(stream);
+	if(pos == -1)
+		return -1;
+	fseeko(stream, 0, SEEK_END);
+	off_t end = ftello(stream);
+	fseeko(stream, pos, SEEK_SET);
+	return end;
 }

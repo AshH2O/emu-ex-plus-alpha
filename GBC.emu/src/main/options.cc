@@ -14,31 +14,31 @@
 	along with GBC.emu.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <emuframework/EmuApp.hh>
-#include "internal.hh"
+#include <emuframework/Option.hh>
+#include "MainSystem.hh"
+#include "Palette.hh"
 
-enum
+namespace EmuEx
 {
-	CFGKEY_GB_PAL_IDX = 270, CFGKEY_REPORT_AS_GBA = 271,
-	CFGKEY_FULL_GBC_SATURATION = 272, CFGKEY_AUDIO_RESAMPLER = 273,
-	CFGKEY_USE_BUILTIN_GB_PAL = 274, CFGKEY_RENDER_PIXEL_FORMAT_UNUSED = 275
-};
-
-bool renderPixelFormatIsValid(uint8_t val);
 
 const char *EmuSystem::configFilename = "GbcEmu.config";
-const AspectRatioInfo EmuSystem::aspectRatioInfo[] =
-{
-		{"10:9 (Original)", 10, 9},
-		EMU_SYSTEM_DEFAULT_ASPECT_RATIO_INFO_INIT
-};
-const unsigned EmuSystem::aspectRatioInfos = std::size(EmuSystem::aspectRatioInfo);
-Byte1Option optionGBPal{CFGKEY_GB_PAL_IDX, 0, 0, optionIsValidWithMax<std::size(gbPal)-1>};
-Byte1Option optionUseBuiltinGBPalette{CFGKEY_USE_BUILTIN_GB_PAL, 1};
-Byte1Option optionReportAsGba{CFGKEY_REPORT_AS_GBA, 0};
-Byte1Option optionAudioResampler{CFGKEY_AUDIO_RESAMPLER, 1};
-Byte1Option optionFullGbcSaturation{CFGKEY_FULL_GBC_SATURATION, 0};
 
-bool EmuSystem::resetSessionOptions(EmuApp &)
+std::span<const AspectRatioInfo> GbcSystem::aspectRatioInfos()
+{
+	static constexpr AspectRatioInfo aspectRatioInfo[]
+	{
+		{"10:9 (Original)", {10, 9}},
+		EMU_SYSTEM_DEFAULT_ASPECT_RATIO_INFO_INIT
+	};
+	return aspectRatioInfo;
+}
+
+void GbcSystem::onOptionsLoaded()
+{
+	updateColorConversionFlags();
+}
+
+bool GbcSystem::resetSessionOptions(EmuApp &)
 {
 	optionUseBuiltinGBPalette.reset();
 	applyGBPalette();
@@ -46,38 +46,43 @@ bool EmuSystem::resetSessionOptions(EmuApp &)
 	return true;
 }
 
-bool EmuSystem::readSessionConfig(IO &io, unsigned key, unsigned readSize)
+bool GbcSystem::readConfig(ConfigType type, MapIO &io, unsigned key)
 {
-	switch(key)
+	if(type == ConfigType::MAIN)
 	{
-		default: return 0;
-		bcase CFGKEY_USE_BUILTIN_GB_PAL: optionUseBuiltinGBPalette.readFromIO(io, readSize);
-		bcase CFGKEY_REPORT_AS_GBA: optionReportAsGba.readFromIO(io, readSize);
+		switch(key)
+		{
+			case CFGKEY_GB_PAL_IDX: return readOptionValue(io, optionGBPal);
+			case CFGKEY_FULL_GBC_SATURATION: return readOptionValue(io, optionFullGbcSaturation);
+			case CFGKEY_AUDIO_RESAMPLER: return readOptionValue(io, optionAudioResampler);
+			case CFGKEY_CHEATS_PATH: return readStringOptionValue(io, cheatsDir);
+		}
 	}
-	return 1;
-}
-
-void EmuSystem::writeSessionConfig(IO &io)
-{
-	optionUseBuiltinGBPalette.writeWithKeyIfNotDefault(io);
-	optionReportAsGba.writeWithKeyIfNotDefault(io);
-}
-
-bool EmuSystem::readConfig(IO &io, unsigned key, unsigned readSize)
-{
-	switch(key)
+	else if(type == ConfigType::SESSION)
 	{
-		default: return 0;
-		bcase CFGKEY_GB_PAL_IDX: optionGBPal.readFromIO(io, readSize);
-		bcase CFGKEY_FULL_GBC_SATURATION: optionFullGbcSaturation.readFromIO(io, readSize);
-		bcase CFGKEY_AUDIO_RESAMPLER: optionAudioResampler.readFromIO(io, readSize);
+		switch(key)
+		{
+			case CFGKEY_USE_BUILTIN_GB_PAL: return readOptionValue(io, optionUseBuiltinGBPalette);
+			case CFGKEY_REPORT_AS_GBA: return readOptionValue(io, optionReportAsGba);
+		}
 	}
-	return 1;
+	return false;
 }
 
-void EmuSystem::writeConfig(IO &io)
+void GbcSystem::writeConfig(ConfigType type, FileIO &io)
 {
-	optionGBPal.writeWithKeyIfNotDefault(io);
-	optionFullGbcSaturation.writeWithKeyIfNotDefault(io);
-	optionAudioResampler.writeWithKeyIfNotDefault(io);
+	if(type == ConfigType::MAIN)
+	{
+		writeOptionValueIfNotDefault(io, optionGBPal);
+		writeOptionValueIfNotDefault(io, optionFullGbcSaturation);
+		writeOptionValueIfNotDefault(io, optionAudioResampler);
+		writeStringOptionValue(io, CFGKEY_CHEATS_PATH, cheatsDir);
+	}
+	else if(type == ConfigType::SESSION)
+	{
+		writeOptionValueIfNotDefault(io, optionUseBuiltinGBPalette);
+		writeOptionValueIfNotDefault(io, optionReportAsGba);
+	}
+}
+
 }

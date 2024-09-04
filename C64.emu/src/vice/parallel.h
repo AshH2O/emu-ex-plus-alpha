@@ -39,14 +39,11 @@
 
 #include "types.h"
 
-/* debug variable - set to 1 to generate output */
-extern int parallel_debug;
-
 /* to switch on/off IEEE488 filesystem engine */
-extern void parallel_bus_enable(int enable);
+void parallel_bus_enable(unsigned int unit, unsigned int enable);
 
-extern void parallel_trap_eof_callback_set(void (*func)(void));
-extern void parallel_trap_attention_callback_set(void (*func)(void));
+void parallel_trap_eof_callback_set(void (*func)(void));
+void parallel_trap_attention_callback_set(void (*func)(void));
 
 /* state of the bus lines -> "if (parallel_eoi) { eoi is active }" */
 extern uint8_t parallel_eoi;
@@ -66,20 +63,20 @@ extern uint8_t parallel_bus;       /* data lines */
 #define PARALLEL_DRV3   0x20
 
 /* methods to set handshake lines active for the devices */
-extern void parallel_set_eoi(uint8_t mask);
-extern void parallel_set_ndac(uint8_t mask);
-extern void parallel_set_nrfd(uint8_t mask);
-extern void parallel_set_dav(uint8_t mask);
-extern void parallel_set_atn(uint8_t mask);
-extern void parallel_restore_set_atn(uint8_t mask);
+void parallel_set_eoi(uint8_t mask);
+void parallel_set_ndac(uint8_t mask);
+void parallel_set_nrfd(uint8_t mask);
+void parallel_set_dav(uint8_t mask);
+void parallel_set_atn(uint8_t mask);
+void parallel_restore_set_atn(uint8_t mask);
 
 /* methods to set handshake lines inactive for the devices */
-extern void parallel_clr_eoi(uint8_t mask);
-extern void parallel_clr_ndac(uint8_t mask);
-extern void parallel_clr_nrfd(uint8_t mask);
-extern void parallel_clr_dav(uint8_t mask);
-extern void parallel_clr_atn(uint8_t mask);
-extern void parallel_restore_clr_atn(uint8_t mask);
+void parallel_clr_eoi(uint8_t mask);
+void parallel_clr_ndac(uint8_t mask);
+void parallel_clr_nrfd(uint8_t mask);
+void parallel_clr_dav(uint8_t mask);
+void parallel_clr_atn(uint8_t mask);
+void parallel_restore_clr_atn(uint8_t mask);
 
 
 /* methods to set output lines for the computer */
@@ -109,7 +106,7 @@ PARALLEL_SET_LINE(dav, emu, EMU)
 PARALLEL_SET_LINE(nrfd, emu, EMU)
 PARALLEL_SET_LINE(ndac, emu, EMU)
 
-extern void parallel_emu_set_bus(uint8_t b);
+void parallel_emu_set_bus(uint8_t b);
 
 /* CPU functions */
 /* The *CPU* macros advance the drive CPU to the current clock. This
@@ -121,11 +118,11 @@ PARALLEL_SET_LINE(dav, cpu, CPU)
 PARALLEL_SET_LINE(nrfd, cpu, CPU)
 PARALLEL_SET_LINE(ndac, cpu, CPU)
 
-extern void parallel_cpu_set_atn(char val);
+void parallel_cpu_set_atn(char val);
 
 PARALLEL_RESTORE_LINE(atn, cpu, CPU)
 
-extern void parallel_cpu_set_bus(uint8_t b);
+void parallel_cpu_set_bus(uint8_t b);
 
 /* Drive 0 functions */
 PARALLEL_SET_LINE(eoi, drv0, DRV0)
@@ -133,7 +130,7 @@ PARALLEL_SET_LINE(dav, drv0, DRV0)
 PARALLEL_SET_LINE(nrfd, drv0, DRV0)
 PARALLEL_SET_LINE(ndac, drv0, DRV0)
 
-extern void parallel_drv0_set_bus(uint8_t b);
+void parallel_drv0_set_bus(uint8_t b);
 
 /* Drive 1 functions */
 PARALLEL_SET_LINE(eoi, drv1, DRV1)
@@ -141,7 +138,7 @@ PARALLEL_SET_LINE(dav, drv1, DRV1)
 PARALLEL_SET_LINE(nrfd, drv1, DRV1)
 PARALLEL_SET_LINE(ndac, drv1, DRV1)
 
-extern void parallel_drv1_set_bus(uint8_t b);
+void parallel_drv1_set_bus(uint8_t b);
 
 /* Drive 2 functions */
 PARALLEL_SET_LINE(eoi, drv2, DRV2)
@@ -149,7 +146,7 @@ PARALLEL_SET_LINE(dav, drv2, DRV2)
 PARALLEL_SET_LINE(nrfd, drv2, DRV2)
 PARALLEL_SET_LINE(ndac, drv2, DRV2)
 
-extern void parallel_drv2_set_bus(uint8_t b);
+void parallel_drv2_set_bus(uint8_t b);
 
 /* Drive 3 functions */
 PARALLEL_SET_LINE(eoi, drv3, DRV3)
@@ -157,6 +154,6 @@ PARALLEL_SET_LINE(dav, drv3, DRV3)
 PARALLEL_SET_LINE(nrfd, drv3, DRV3)
 PARALLEL_SET_LINE(ndac, drv3, DRV3)
 
-extern void parallel_drv3_set_bus(uint8_t b);
+void parallel_drv3_set_bus(uint8_t b);
 
 #endif

@@ -8,12 +8,14 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
 // this file, and for a DISCLAIMER OF ALL WARRANTIES.
 //============================================================================
+
+#include <cmath>
 
 #include "Control.hxx"
 #include "Event.hxx"
@@ -27,7 +29,7 @@ PointingDevice::PointingDevice(Jack jack, const Event& event,
                                const System& system, Controller::Type type,
                                float sensitivity)
   : Controller(jack, event, system, type),
-    mySensitivity(sensitivity)
+    mySensitivity{sensitivity}
 {
   // The code in ::read() is set up to always return IOPortA values in
   // the lower 4 bits data value
@@ -37,7 +39,7 @@ PointingDevice::PointingDevice(Jack jack, const Event& event,
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 uInt8 PointingDevice::read()
 {
-  int scanline = mySystem.tia().scanlines();
+  const int scanline = mySystem.tia().scanlines();
 
   // Loop over all missed changes
   while(myScanCountH < scanline)
@@ -62,7 +64,7 @@ uInt8 PointingDevice::read()
   myCountH &= 0b11;
   myCountV &= 0b11;
 
-  uInt8 portA = ioPortA(myCountH, myCountV, myTrackBallLeft, myTrackBallDown);
+  const uInt8 portA = ioPortA(myCountH, myCountV, myTrackBallLeft, myTrackBallDown);
 
   setPin(DigitalPin::One,   portA & 0b0001);
   setPin(DigitalPin::Two,   portA & 0b0010);
@@ -79,6 +81,7 @@ void PointingDevice::update()
     return;
 
   // Update horizontal direction
+  //cerr << myEvent.get(Event::MouseAxisXMove) << ", " << myHCounterRemainder << endl;
   updateDirection( myEvent.get(Event::MouseAxisXMove), myHCounterRemainder,
       myTrackBallLeft, myTrackBallLinesH, myScanCountH, myFirstScanOffsetH);
 
@@ -86,13 +89,9 @@ void PointingDevice::update()
   updateDirection(-myEvent.get(Event::MouseAxisYMove), myVCounterRemainder,
       myTrackBallDown, myTrackBallLinesV, myScanCountV, myFirstScanOffsetV);
 
-  // Digital events (from keyboard or joystick hats & buttons)
-  setPin(DigitalPin::Six, myEvent.get(Event::JoystickZeroFire) == 0);
-
   // We allow left and right mouse buttons for fire button
-  if(myEvent.get(Event::MouseButtonLeftValue) ||
-     myEvent.get(Event::MouseButtonRightValue))
-    setPin(DigitalPin::Six, false);
+  setPin(DigitalPin::Six, !getAutoFireState(myEvent.get(Event::LeftJoystickFire) ||
+    myEvent.get(Event::MouseButtonLeftValue) || myEvent.get(Event::MouseButtonRightValue)));
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -111,7 +110,7 @@ bool PointingDevice::setMouseControl(
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 void PointingDevice::setSensitivity(int sensitivity)
 {
-  BSPF::clamp(sensitivity, 1, 20, 10);
+  BSPF::clamp(sensitivity, MIN_SENSE, MAX_SENSE, (MIN_SENSE + MAX_SENSE) / 2);
   TB_SENSITIVITY = sensitivity / 10.0F;
 }
 
@@ -120,8 +119,8 @@ void PointingDevice::updateDirection(int counter, float& counterRemainder,
     bool& trackBallDir, int& trackBallLines, int& scanCount, int& firstScanOffset)
 {
   // Apply sensitivity and calculate remainder
-  float fTrackBallCount = counter * mySensitivity * TB_SENSITIVITY + counterRemainder;
-  int trackBallCount = int(std::lround(fTrackBallCount));
+  const float fTrackBallCount = counter * mySensitivity * TB_SENSITIVITY + counterRemainder;
+  int trackBallCount = static_cast<int>(std::lround(fTrackBallCount));
   counterRemainder = fTrackBallCount - trackBallCount;
 
   if(trackBallCount)

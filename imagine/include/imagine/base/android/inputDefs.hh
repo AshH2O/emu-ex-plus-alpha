@@ -15,19 +15,16 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <chrono>
 #include <cstdint>
 
-namespace Input
+namespace IG::Input
 {
 
 using PointerIdImpl = int32_t;
 
-using Time = std::chrono::nanoseconds;
-
 using Key = uint16_t;
 
-	namespace Android
+	namespace Keycode
 	{
 	static constexpr Key
 	// SYS_HOME = 3, // Never sent to apps
@@ -199,7 +196,9 @@ using Key = uint16_t;
 	JS3_YAXIS_POS = axisKeyBase+18, JS3_YAXIS_NEG = axisKeyBase+19,
 
 	JS_LTRIGGER_AXIS = axisKeyBase+20, JS_RTRIGGER_AXIS = axisKeyBase+21,
-	JS_GAS_AXIS = axisKeyBase+22, JS_BRAKE_AXIS = axisKeyBase+23;
+	JS_GAS_AXIS = axisKeyBase+22, JS_BRAKE_AXIS = axisKeyBase+23,
+
+	BACK_KEY = BACK;
 
 	static constexpr Key LAST_KEY = JS_BRAKE_AXIS;
 	static constexpr uint32_t COUNT = LAST_KEY + 1;
@@ -215,58 +214,61 @@ using Key = uint16_t;
 		R1 = GAME_R1,
 		SELECT = GAME_SELECT,
 		START = GAME_START,
-		UP = Android::UP, RIGHT = Android::RIGHT, DOWN = Android::DOWN, LEFT = Android::LEFT;
-		}
-
-		namespace Ouya
-		{
-		static constexpr Key
-		O = GAME_A,
-		U = GAME_X,
-		Y = GAME_Y,
-		A = GAME_B,
-		L1 = GAME_L1,
-		L2 = GAME_L2,
-		L3 = GAME_LEFT_THUMB,
-		R1 = GAME_R1,
-		R2 = GAME_R2,
-		R3 = GAME_RIGHT_THUMB,
-		UP = Android::UP, RIGHT = Android::RIGHT, DOWN = Android::DOWN, LEFT = Android::LEFT,
-		SYSTEM = MENU;
-		}
-
-		namespace PS3
-		{
-		static constexpr Key
-		CROSS = GAME_X,
-		CIRCLE = GAME_Y,
-		SQUARE = GAME_A,
-		TRIANGLE = GAME_B,
-		L1 = GAME_L1,
-		L2 = GAME_L2,
-		L3 = GAME_LEFT_THUMB,
-		R1 = GAME_R1,
-		R2 = GAME_R2,
-		R3 = GAME_RIGHT_THUMB,
-		SELECT = GAME_SELECT,
-		START = GAME_START,
-		UP = Android::UP, RIGHT = Android::RIGHT, DOWN = Android::DOWN, LEFT = Android::LEFT,
-		PS = GAME_1;
+		UP = Keycode::UP, RIGHT = Keycode::RIGHT, DOWN = Keycode::DOWN, LEFT = Keycode::LEFT;
 		}
 }
-
-namespace Keycode = Android;
 
 	namespace Pointer
 	{
 	static constexpr Key
 	LBUTTON = 1,
-	MBUTTON = 2,
-	RBUTTON = 3,
-	WHEEL_UP = 4,
-	WHEEL_DOWN = 5,
+	MBUTTON = 4,
+	RBUTTON = 2,
 	DOWN_BUTTON = 8,
-	UP_BUTTON = 9; // TODO: add real mouse support
+	UP_BUTTON = 16,
+	ALL_BUTTONS = LBUTTON | MBUTTON | RBUTTON | DOWN_BUTTON | UP_BUTTON;
 	};
+
+	namespace Meta
+	{
+	static constexpr uint32_t
+	ALT = 0x2,
+	ALT_L = 0x10,
+	ALT_R = 0x20,
+	SHIFT = 0x1,
+	SHIFT_L = 0x40,
+	SHIFT_R = 0x80,
+	CTRL = 0x1000,
+	CTRL_L = 0x2000,
+	CTRL_R = 0x4000,
+	META = 0x10000,
+	META_L = 0x20000,
+	META_R = 0x40000,
+	CAPS_LOCK = 0x100000;
+	}
+
+enum class AxisId : uint8_t
+{
+	X = 0,
+	Y = 1,
+	Z = 11,
+	RX = 12,
+	RY = 13,
+	RZ = 14,
+	HAT0X = 15,
+	HAT0Y = 16,
+	HAT1X = 32,
+	HAT1Y = 33,
+	HAT2X = 34,
+	HAT2Y = 35,
+	HAT3X = 36,
+	HAT3Y = 37,
+	LTRIGGER = 17,
+	RTRIGGER = 18,
+	RUDDER = 20,
+	WHEEL = 21,
+	GAS = 22,
+	BRAKE = 23,
+};
 
 }

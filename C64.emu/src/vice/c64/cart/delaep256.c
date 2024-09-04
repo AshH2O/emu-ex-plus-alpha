@@ -121,7 +121,8 @@ static io_source_t delaep256_device = {
     delaep256_dump,            /* device state information dump function */
     CARTRIDGE_DELA_EP256,      /* cartridge ID */
     IO_PRIO_NORMAL,            /* normal priority, device read needs to be checked for collisions */
-    0                          /* insertion order, gets filled in by the registration function */
+    0,                         /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE             /* NO mirroring */
 };
 
 static io_source_list_t *delaep256_list_item = NULL;
@@ -134,14 +135,14 @@ static const export_resource_t export_res = {
 
 void delaep256_config_init(void)
 {
-    cart_config_changed_slotmain(0, 0, CMODE_READ);
+    cart_config_changed_slotmain(CMODE_8KGAME, CMODE_8KGAME, CMODE_READ);
     cart_romlbank_set_slotmain(0);
 }
 
 void delaep256_config_setup(uint8_t *rawcart)
 {
     memcpy(roml_banks, rawcart, 0x2000 * 33);
-    cart_config_changed_slotmain(0, 0, CMODE_READ);
+    cart_config_changed_slotmain(CMODE_8KGAME, CMODE_8KGAME, CMODE_READ);
     cart_romlbank_set_slotmain(0);
 }
 
@@ -210,7 +211,7 @@ void delaep256_detach(void)
    ARRAY | ROML   |   0.0+  | 262144 BYTES of ROML data
  */
 
-static char snap_module_name[] = "CARTDELAEP256";
+static const char snap_module_name[] = "CARTDELAEP256";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   1
 

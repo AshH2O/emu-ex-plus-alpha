@@ -15,36 +15,48 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/config/defs.hh>
+#include <imagine/gfx/Vec3.hh>
+#include <imagine/gfx/Vec4.hh>
+#include <imagine/util/rectangle2.h>
+#include <imagine/glm/ext/matrix_float4x4.hpp>
 
-#ifdef CONFIG_GFX_MATH_GLM
-
-#include <imagine/util/math/GLMMat4.hh>
-
-namespace Gfx
+namespace IG
 {
-using Mat4Impl = GLMMat4;
+class Viewport;
 }
 
-#elif defined CONFIG_GFX_MATH_GLKIT
-
-#include <imagine/util/math/GLKitMat4.hh>
-
-namespace Gfx
+namespace IG::Gfx
 {
-using Mat4Impl = GLKitMat4;
-}
 
-#endif
-
-namespace Gfx
-{
+using Mat4Impl = glm::mat4;
 
 class Mat4 : public Mat4Impl
 {
 public:
 	using Mat4Impl::Mat4Impl;
 	constexpr Mat4(Mat4Impl m): Mat4Impl{m} {}
+
+	static Mat4 ident();
+	static Mat4 makeTranslate(Vec3 translation);
+	static Mat4 makeTranslate(WPt p) { return makeTranslate(Vec3{float(p.x), float(p.y), 0.f}); }
+	static Mat4 makeTranslateScale(FRect r) { return makeTranslate(Vec3{r.x, r.y, 0.f}).scale(r.size()); }
+	static Mat4 makeTranslateScale(WRect r) { return makeTranslateScale(r.as<float>()); }
+	static Mat4 makePerspectiveFovRH(float fovy, float aspect, float znear, float zfar);
+	Mat4 projectionPlane(Viewport viewport, float z, float rollAngle);
+	Mat4 translate(Vec3 translation) const;
+	Mat4 scale(Vec3 factors) const;
+	Mat4 rotate(float angle, Vec3 axis) const;
+	Mat4 invert() const;
+	Vec3 project(Rect2<int> viewport, Vec3 obj) const;
+	Vec3 unproject(Rect2<int> viewport, Vec3 win, Mat4 inverse) const;
+
+	// Convenience functions
+	Mat4 scale(float s) const { return scale({s, s, 1.}); }
+	Mat4 scale(F2Size p) const { return scale({p.x, p.y, 1.}); }
+	Mat4 scale(I2Size p) const { return scale({float(p.x), float(p.y), 1.}); }
+	Mat4 pitchRotate(float t) const { return rotate(t, {1., 0., 0.}); }
+	Mat4 rollRotate(float t) const { return rotate(t, {0., 0., 1.}); }
+	Mat4 yawRotate(float t) const { return rotate(t, {0., 1., 0.}); }
 };
 
 }

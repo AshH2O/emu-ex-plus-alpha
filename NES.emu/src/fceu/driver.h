@@ -9,9 +9,13 @@
 #include <cstring>
 #include <iosfwd>
 
-class EmuSystemTask;
+namespace EmuEx
+{
+class EmuSystemTaskContext;
+class NesSystem;
 class EmuVideo;
 class EmuAudio;
+}
 
 FILE *FCEUD_UTF8fopen(const char *fn, const char *mode);
 inline FILE *FCEUD_UTF8fopen(const std::string &n, const char *mode) { return FCEUD_UTF8fopen(n.c_str(),mode); }
@@ -27,7 +31,7 @@ ArchiveScanRecord FCEUD_ScanArchive(std::string fname);
 const char *FCEUD_GetCompilerString();
 
 //This makes me feel dirty for some reason.
-void FCEU_printf(char *format, ...);
+void FCEU_printf( __FCEU_PRINTF_FORMAT const char *format, ...)  __FCEU_PRINTF_ATTRIBUTE( 1, 2 );
 #define FCEUI_printf FCEU_printf
 
 //Video interface
@@ -103,7 +107,6 @@ void FCEUI_GetRenderPlanes(bool& sprites, bool& bg);
 
 //name=path and file to load.  returns null if it failed
 FCEUGI *FCEUI_LoadGame(const char *name, int OverwriteVidMode, bool silent = false);
-FCEUGI *FCEUI_LoadGameWithFile(FCEUFILE *file, const char *name, int OverwriteVidMode, bool silent = false);
 
 //same as FCEUI_LoadGame, except that it can load from a tempfile.
 //name is the logical path to open; archiveFilename is the archive which contains name
@@ -113,7 +116,8 @@ FCEUGI *FCEUI_LoadGameVirtual(const char *name, int OverwriteVidMode, bool silen
 bool FCEUI_Initialize();
 
 //Emulates a frame.
-void FCEUI_Emulate(EmuSystemTask *task, EmuVideo *video, int skip, EmuAudio *audio);
+void FCEUI_Emulate(EmuEx::EmuSystemTaskContext, EmuEx::NesSystem &, EmuEx::EmuVideo *, int skip, EmuEx::EmuAudio *);
+void FCEUI_Emulate(EmuEx::NesSystem &, EmuEx::EmuVideo *, int skip, EmuEx::EmuAudio *);
 
 //Closes currently loaded game
 void FCEUI_CloseGame(void);
@@ -130,6 +134,7 @@ void FCEUI_SetVidSystem(int a);
 //Set variables for NTSC(0) / PAL(1) / Dendy(2)
 //Dendy has PAL framerate and resolution, but ~NTSC timings, and has 50 dummy scanlines to force 50 fps
 void FCEUI_SetRegion(int region, int notify = 1);
+int  FCEUI_GetRegion(void);
 
 //Convenience function; returns currently emulated video system(0=NTSC, 1=PAL).
 int FCEUI_GetCurrentVidSystem(int *slstart, int *slend);
@@ -147,7 +152,9 @@ void FCEUI_SetRenderedLines(int ntscf, int ntscl, int palf, int pall);
 
 //Sets the base directory(save states, snapshots, etc. are saved in directories below this directory.
 void FCEUI_SetBaseDirectory(std::string const & dir);
+const char *FCEUI_GetBaseDirectory(void);
 
+bool FCEUI_GetUserPaletteAvail(void);
 void FCEUI_SetUserPalette(uint8 *pal, int nEntries);
 
 //Sets up sound code to render sound at the specified rate, in samples
@@ -170,8 +177,8 @@ int FCEUI_SelectState(int, int);
 extern void FCEUI_SelectStateNext(int);
 
 //"fname" overrides the default save state filename code if non-NULL.
-int FCEUI_SaveState(const char *fname, bool display_message=true);
-int FCEUI_LoadState(const char *fname, bool display_message=true);
+bool FCEUI_SaveState(const char *fname, bool display_message=true);
+bool FCEUI_LoadState(const char *fname, bool display_message=true);
 
 void FCEUD_SaveStateAs(void);
 void FCEUD_LoadStateFrom(void);
@@ -185,14 +192,21 @@ void FCEUD_MovieRecordTo(void);
 void FCEUD_MovieReplayFrom(void);
 void FCEUD_LuaRunFrom(void);
 
+#ifdef _S9XLUA_H
+// lua engine
+void TaseditorAutoFunction(void);
+void TaseditorManualFunction(void);
+#endif
+
 int32 FCEUI_GetDesiredFPS(void);
 void FCEUI_SaveSnapshot(void);
 void FCEUI_SaveSnapshotAs(void);
+void FCEU_DispMessage( __FCEU_PRINTF_FORMAT const char *format, int disppos, ...) __FCEU_PRINTF_ATTRIBUTE( 1, 3 );
 #define FCEUI_DispMessage FCEU_DispMessage
 
 int FCEUI_DecodePAR(const char *code, int *a, int *v, int *c, int *type);
-int FCEUI_DecodeGG(const char *str, int *a, int *v, int *c);
-int FCEUI_AddCheat(const char *name, uint32 addr, uint8 val, int compare, int type);
+int FCEUI_DecodeGG(const char *str, uint16 *a, uint8 *v, int *c);
+int FCEUI_AddCheat(const char *name, uint32 addr, uint8 val, int compare, int type, int status = 1, bool rebuild = true);
 int FCEUI_DelCheat(uint32 which);
 int FCEUI_ToggleCheat(uint32 which);
 int FCEUI_GlobalToggleCheat(int global_enable);
@@ -202,10 +216,10 @@ void FCEUI_CheatSearchGetRange(uint32 first, uint32 last, int (*callb)(uint32 a,
 void FCEUI_CheatSearchGet(int (*callb)(uint32 a, uint8 last, uint8 current, void *data), void *data);
 void FCEUI_CheatSearchBegin(void);
 void FCEUI_CheatSearchEnd(int type, uint8 v1, uint8 v2);
-void FCEUI_ListCheats(int (*callb)(char *name, uint32 a, uint8 v, int compare, int s, int type, void *data), void *data);
+void FCEUI_ListCheats(int (*callb)(const char *name, uint32 a, uint8 v, int compare, int s, int type, void *data), void *data);
 
-int FCEUI_GetCheat(uint32 which, char **name, uint32 *a, uint8 *v, int *compare, int *s, int *type);
-int FCEUI_SetCheat(uint32 which, const char *name, int32 a, int32 v, int compare,int s, int type);
+int FCEUI_GetCheat(uint32 which, std::string *name, uint32 *a, uint8 *v, int *compare, int *s, int *type);
+int FCEUI_SetCheat(uint32 which, std::string_view name, int32 a, int32 v, int compare,int s, int type);
 
 void FCEUI_CheatSearchShowExcluded(void);
 void FCEUI_CheatSearchSetCurrentAsOriginal(void);
@@ -226,7 +240,7 @@ void FCEUI_CheatSearchSetCurrentAsOriginal(void);
 #define FCEUIOD_AVI		12	//default file for avi output
 #define FCEUIOD__COUNT  13	//base directory override?
 
-void FCEUI_SetDirOverride(int which, const char *n);
+void FCEUI_SetDirOverride(int which, char *n);
 
 void FCEUI_MemDump(uint16 a, int32 len, void (*callb)(uint16 a, uint8 v));
 uint8 FCEUI_MemSafePeek(uint16 A);
@@ -249,13 +263,15 @@ void FCEUI_VSUniToggleDIP(int w);
 uint8 FCEUI_VSUniGetDIPs(void);
 void FCEUI_VSUniSetDIP(int w, int state);
 void FCEUI_VSUniCoin(void);
+void FCEUI_VSUniCoin2(void);
+void FCEUI_VSUniService(void);
 
 void FCEUI_FDSInsert(void); //mbg merge 7/17/06 changed to void fn(void) to make it an EMUCMDFN
 //int FCEUI_FDSEject(void);
 void FCEUI_FDSSelect(void);
 int FCEUD_FDSReadBIOS(void *buff, uint32 size);
 
-int FCEUI_DatachSet(const uint8 *rcode);
+int FCEUI_DatachSet(uint8 *rcode);
 
 ///returns a flag indicating whether emulation is paused
 int FCEUI_EmulationPaused();
@@ -267,6 +283,10 @@ void FCEUI_ClearEmulationFrameStepped();
 void FCEUI_SetEmulationPaused(int val);
 ///toggles the paused bit (bit0) for EmulationPaused. caused FCEUD_DebugUpdate() to fire if the emulation pauses
 void FCEUI_ToggleEmulationPause();
+void FCEUI_PauseForDuration(int secs);
+int FCEUI_PauseFramesRemaining();
+void FCEUI_SetNetPlayPause(bool value);
+bool FCEUI_GetNetPlayPause();
 
 //indicates whether input aids should be drawn (such as crosshairs, etc; usually in fullscreen mode)
 bool FCEUD_ShouldDrawInputAids();
@@ -326,6 +346,9 @@ void FCEUD_DebugBreakpoint(int bp_num);
 ///the driver should log the current instruction, if it wants (we should move the code in the win driver that does this to the shared area)
 void FCEUD_TraceInstruction(uint8 *opcode, int size);
 
+///the driver should flush its trace log
+void FCEUD_FlushTrace();
+
 ///the driver might should update its NTView (only used if debugging support is compiled in)
 void FCEUD_UpdateNTView(int scanline, bool drawall);
 
@@ -345,7 +368,7 @@ enum EFCEUI
 	FCEUI_STOPMOVIE, FCEUI_RECORDMOVIE, FCEUI_PLAYMOVIE,
 	FCEUI_OPENGAME, FCEUI_CLOSEGAME,
 	FCEUI_TASEDITOR,
-	FCEUI_RESET, FCEUI_POWER, FCEUI_PLAYFROMBEGINNING, FCEUI_EJECT_DISK, FCEUI_SWITCH_DISK, FCEUI_INSERT_COIN,
+	FCEUI_RESET, FCEUI_POWER, FCEUI_PLAYFROMBEGINNING, FCEUI_EJECT_DISK, FCEUI_SWITCH_DISK, FCEUI_INSERT_COIN, FCEUI_INPUT_BARCODE,
 	FCEUI_TOGGLERECORDINGMOVIE, FCEUI_TRUNCATEMOVIE, FCEUI_INSERT1FRAME, FCEUI_DELETE1FRAME
 };
 
@@ -354,7 +377,11 @@ bool FCEU_IsValidUI(EFCEUI ui);
 
 #ifdef __cplusplus
 extern "C"
+{
 #endif
-FILE *FCEUI_UTF8fopen_C(const char *n, const char *m);
+	FILE *FCEUI_UTF8fopen_C(const char *n, const char *m);
+#ifdef __cplusplus
+} // extern C
+#endif
 
 #endif //__DRIVER_H_

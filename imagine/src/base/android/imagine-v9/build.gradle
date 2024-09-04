@@ -1,28 +1,28 @@
 buildscript {
     repositories {
         google()
-        mavenCentral()
+        jcenter()
     }
     dependencies {
-        classpath 'com.android.tools.build:gradle:4.2.2'
+        classpath 'com.android.tools.build:gradle:8.5.0'
     }
 }
 
 allprojects {
     repositories {
         google()
-        mavenCentral()
+        jcenter()
     }
 }
 
 apply plugin: 'android-library'
 
 android {
-    compileSdkVersion 30
+    compileSdk 34
 
     defaultConfig {
         minSdkVersion 9
-        targetSdkVersion 29
+        targetSdkVersion 34
     }
 
     buildTypes {
@@ -35,9 +35,11 @@ android {
     lintOptions {
     	abortOnError false
 	}
+
+	namespace 'com.imagine'
 }
 
 dependencies {
-    implementation "com.android.support:support-v4:23.3.+"
+    implementation "com.android.support:support-v4:28.0.+"
 }
 

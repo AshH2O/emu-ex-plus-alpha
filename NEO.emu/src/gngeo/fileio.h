@@ -26,14 +26,10 @@ int open_rom(char *romname);
 int init_game(void *contextPtr, char *rom_name, char romerror[1024]);
 void open_bios(void);
 void open_conf(void);
-void open_nvram(char *name);
-void save_nvram(char *name);
-void open_memcard(char *name);
-void save_memcard(char *name);
 void list_game(void);
 int close_game(void);
 
-const char *get_gngeo_dir(void);
+const char *get_gngeo_dir(void *contextPtr);
 void chomp(char *str);
 char *my_fgets(char *s, int size, FILE *stream);
 

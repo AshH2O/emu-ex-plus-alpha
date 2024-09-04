@@ -15,24 +15,28 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/util/bitset.hh>
+#include <imagine/util/concepts.hh>
 #include <type_traits>
 
-namespace Base
+namespace IG
 {
 
 using SharedLibraryRef = void*;
-static constexpr unsigned RESOLVE_ALL_SYMBOLS_FLAG = IG::bit(0);
 
-SharedLibraryRef openSharedLibrary(const char *name, unsigned flags = 0);
+struct OpenSharedLibraryFlags
+{
+	uint8_t
+	resolveAllSymbols:1{};
+};
+
+SharedLibraryRef openSharedLibrary(const char *name, OpenSharedLibraryFlags flags = {});
 void closeSharedLibrary(SharedLibraryRef lib);
 void *loadSymbol(SharedLibraryRef lib, const char *name);
+const char *lastOpenSharedLibraryError();
 
-template<class T>
-static bool loadSymbol(T &symPtr, SharedLibraryRef lib, const char *name)
+static bool loadSymbol(Pointer auto &symPtr, SharedLibraryRef lib, const char *name)
 {
-	static_assert(std::is_pointer_v<T>, "called loadSymbol() without pointer type");
-	symPtr = (T)loadSymbol(lib, name);
+	symPtr = reinterpret_cast<std::remove_reference_t<decltype(symPtr)>>(loadSymbol(lib, name));
 	return symPtr;
 }
 

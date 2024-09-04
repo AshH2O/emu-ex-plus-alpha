@@ -15,12 +15,12 @@
 
 #define LOGTAG "GraphicBuff"
 #include "../android.hh"
-#include "GraphicBuffer.hh"
+#include <imagine/base/android/GraphicBuffer.hh>
 #include <imagine/base/ApplicationContext.hh>
-#include <imagine/util/string.h>
+#include <imagine/pixmap/PixmapDesc.hh>
 #include <imagine/logger/logger.h>
 
-namespace Base
+namespace IG
 {
 
 static gralloc_module_t const *grallocMod{};
@@ -64,19 +64,19 @@ GraphicBuffer::GraphicBuffer()
 {
 	initAllocDev();
 	common.incRef =
-		[](struct android_native_base_t *ptr)
+		[](struct android_native_base_t*)
 		{
 			//logMsg("called incRef:%p", ptr);
 		};
 	common.decRef =
-		[](struct android_native_base_t *ptr)
+		[](struct android_native_base_t*)
 		{
 			//logMsg("called decRef:%p", ptr);
 		};
 }
 
-GraphicBuffer::GraphicBuffer(IG::PixmapDesc desc, uint32_t usage):
-	GraphicBuffer(desc.w(), desc.h(), Base::toAHardwareBufferFormat(desc.format()), usage)
+GraphicBuffer::GraphicBuffer(PixmapDesc desc, uint32_t usage):
+	GraphicBuffer(desc.w(), desc.h(), toAHardwareBufferFormat(desc.format), usage)
 {}
 
 GraphicBuffer::GraphicBuffer(uint32_t w, uint32_t h, uint32_t f, uint32_t reqUsage):
@@ -96,12 +96,12 @@ GraphicBuffer::GraphicBuffer(uint32_t w, uint32_t h, uint32_t f, uint32_t reqUsa
 	usage = reqUsage;
 }
 
-GraphicBuffer::GraphicBuffer(GraphicBuffer &&o)
+GraphicBuffer::GraphicBuffer(GraphicBuffer &&o) noexcept
 {
 	*this = std::move(o);
 }
 
-GraphicBuffer &GraphicBuffer::operator=(GraphicBuffer &&o)
+GraphicBuffer &GraphicBuffer::operator=(GraphicBuffer &&o) noexcept
 {
 	deinit();
 	android_native_buffer_t::operator=(o);
@@ -174,7 +174,7 @@ bool GraphicBuffer::hasBufferMapper()
 	return allocDev;
 }
 
-bool GraphicBuffer::canSupport(ApplicationContext ctx, const char *rendererStr)
+bool GraphicBuffer::canSupport(ApplicationContext ctx, std::string_view rendererStr)
 {
 	auto androidSDK = ctx.androidSDK();
 	if(androidSDK >= 24)
@@ -188,15 +188,13 @@ bool GraphicBuffer::canSupport(ApplicationContext ctx, const char *rendererStr)
 		auto buildDevice = ctx.androidBuildDevice();
 		if(Config::MACHINE_IS_GENERIC_ARMV7)
 		{
-			if(androidSDK >= 20 &&
-				string_equal(buildDevice.data(), "mako"))
+			if(androidSDK >= 20 && buildDevice == "mako")
 			{
 				// only Adreno 320 drivers on the Nexus 4 (mako) are confirmed to work,
 				// other devices like the HTC One M7 will crash using GraphicBuffers
 				return true;
 			}
-			if(androidSDK >= 19 &&
-				string_equal(buildDevice.data(), "ha3g"))
+			if(androidSDK >= 19 && buildDevice == "ha3g")
 			{
 				// works on Galaxy Note 3 (SM-N900) with Mali-T628
 				// but not on all devices with this GPU
@@ -205,8 +203,7 @@ bool GraphicBuffer::canSupport(ApplicationContext ctx, const char *rendererStr)
 		}
 		else if(Config::MACHINE_IS_GENERIC_X86)
 		{
-			if(androidSDK >= 19 &&
-				string_equal(buildDevice.data(), "ducati2fhd"))
+			if(androidSDK >= 19 && buildDevice == "ducati2fhd")
 			{
 				// Works on Acer Iconia Tab 8 (A1-840FHD)
 				return true;
@@ -218,11 +215,11 @@ bool GraphicBuffer::canSupport(ApplicationContext ctx, const char *rendererStr)
 		// general rules for Android 2.3 devices
 		if(Config::MACHINE_IS_GENERIC_ARMV7)
 		{
-			if(string_equal(rendererStr, "PowerVR SGX 530"))
+			if(rendererStr == "PowerVR SGX 530")
 				return true;
-			if(string_equal(rendererStr, "PowerVR SGX 540"))
+			if(rendererStr == "PowerVR SGX 540")
 				return true;
-			if(string_equal(rendererStr, "Mali-400 MP"))
+			if(rendererStr == "Mali-400 MP")
 				return true;
 		}
 	}

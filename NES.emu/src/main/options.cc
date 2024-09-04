@@ -14,109 +14,142 @@
 	along with NES.emu.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <emuframework/EmuApp.hh>
-#include "internal.hh"
+#include <emuframework/Option.hh>
+#include "MainSystem.hh"
+#include <fceu/sound.h>
+#include <fceu/fceu.h>
 
-enum
+namespace EmuEx
 {
-	CFGKEY_FDS_BIOS_PATH = 270, CFGKEY_FOUR_SCORE = 271,
-	CFGKEY_VIDEO_SYSTEM = 272, CFGKEY_SPRITE_LIMIT = 273,
-	CFGKEY_SOUND_QUALITY = 274, CFGKEY_INPUT_PORT_1 = 275,
-	CFGKEY_INPUT_PORT_2 = 276, CFGKEY_DEFAULT_PALETTE_PATH = 277,
-	CFGKEY_DEFAULT_VIDEO_SYSTEM = 278, CFGKEY_COMPATIBLE_FRAMESKIP = 279
-};
 
 const char *EmuSystem::configFilename = "NesEmu.config";
-const AspectRatioInfo EmuSystem::aspectRatioInfo[] =
-{
-		{"4:3 (Original)", 4, 3},
-		{"8:7", 8, 7},
-		EMU_SYSTEM_DEFAULT_ASPECT_RATIO_INFO_INIT
-};
-const unsigned EmuSystem::aspectRatioInfos = std::size(EmuSystem::aspectRatioInfo);
-FS::PathString fdsBiosPath{};
-PathOption optionFdsBiosPath{CFGKEY_FDS_BIOS_PATH, fdsBiosPath, ""};
-Byte1Option optionFourScore{CFGKEY_FOUR_SCORE, 0};
-SByte1Option optionInputPort1{CFGKEY_INPUT_PORT_1, -1, false, optionIsValidWithMinMax<-1, 2>};
-SByte1Option optionInputPort2{CFGKEY_INPUT_PORT_2, -1, false, optionIsValidWithMinMax<-1, 2>};
-Byte1Option optionVideoSystem{CFGKEY_VIDEO_SYSTEM, 0, false, optionIsValidWithMax<3>};
-Byte1Option optionDefaultVideoSystem{CFGKEY_DEFAULT_VIDEO_SYSTEM, 0, false, optionIsValidWithMax<3>};
-Byte1Option optionSpriteLimit{CFGKEY_SPRITE_LIMIT, 1};
-Byte1Option optionSoundQuality{CFGKEY_SOUND_QUALITY, 0, false, optionIsValidWithMax<2>};
-FS::PathString defaultPalettePath{};
-PathOption optionDefaultPalettePath{CFGKEY_DEFAULT_PALETTE_PATH, defaultPalettePath, ""};
-Byte1Option optionCompatibleFrameskip{CFGKEY_COMPATIBLE_FRAMESKIP, 0};
 
-EmuSystem::Error EmuSystem::onOptionsLoaded(Base::ApplicationContext ctx)
+std::span<const AspectRatioInfo> NesSystem::aspectRatioInfos()
+{
+	static constexpr AspectRatioInfo aspectRatioInfo[]
+	{
+		{"4:3 (Original)", {4, 3}},
+		EMU_SYSTEM_DEFAULT_ASPECT_RATIO_INFO_INIT
+	};
+	return aspectRatioInfo;
+}
+
+void NesSystem::onOptionsLoaded()
 {
 	FCEUI_SetSoundQuality(optionSoundQuality);
 	FCEUI_DisableSpriteLimitation(!optionSpriteLimit);
-	setDefaultPalette(ctx, defaultPalettePath.data());
-	return {};
+	setDefaultPalette(appContext(), defaultPalettePath);
 }
 
-void EmuSystem::onSessionOptionsLoaded(EmuApp &)
+void NesSystem::onSessionOptionsLoaded(EmuApp &app)
 {
-	nesInputPortDev[0] = (ESI)(int)optionInputPort1;
-	nesInputPortDev[1] = (ESI)(int)optionInputPort2;
+	updateVideoPixmap(app.video, optionHorizontalVideoCrop, optionVisibleVideoLines);
 }
 
-bool EmuSystem::resetSessionOptions(EmuApp &)
+bool NesSystem::resetSessionOptions(EmuApp &app)
 {
 	optionFourScore.reset();
 	setupNESFourScore();
 	optionVideoSystem.reset();
-	optionInputPort1.reset();
-	optionInputPort2.reset();
-	nesInputPortDev[0] = (ESI)(int)optionInputPort1;
-	nesInputPortDev[1] = (ESI)(int)optionInputPort2;
+	inputPort1.reset();
+	inputPort2.reset();
+	replaceP2StartWithMicrophone = false;
 	setupNESInputPorts();
 	optionCompatibleFrameskip.reset();
+	optionStartVideoLine = optionDefaultStartVideoLine;
+	optionVisibleVideoLines = optionDefaultVisibleVideoLines;
+	optionHorizontalVideoCrop.reset();
+	updateVideoPixmap(app.video, optionHorizontalVideoCrop, optionVisibleVideoLines);
+	overclock_enabled = 0;
+	postrenderscanlines = 0;
+	vblankscanlines = 0;
 	return true;
 }
 
-bool EmuSystem::readSessionConfig(IO &io, unsigned key, unsigned readSize)
+bool NesSystem::readConfig(ConfigType type, MapIO &io, unsigned key)
 {
-	switch(key)
+	if(type == ConfigType::MAIN)
 	{
-		default: return 0;
-		bcase CFGKEY_FOUR_SCORE: optionFourScore.readFromIO(io, readSize);
-		bcase CFGKEY_VIDEO_SYSTEM: optionVideoSystem.readFromIO(io, readSize);
-		bcase CFGKEY_INPUT_PORT_1: optionInputPort1.readFromIO(io, readSize);
-		bcase CFGKEY_INPUT_PORT_2: optionInputPort2.readFromIO(io, readSize);
-		bcase CFGKEY_COMPATIBLE_FRAMESKIP: optionCompatibleFrameskip.readFromIO(io, readSize);
+		switch(key)
+		{
+			case CFGKEY_FDS_BIOS_PATH:
+				return readStringOptionValue(io, fdsBiosPath);
+			case CFGKEY_SPRITE_LIMIT: return readOptionValue(io, optionSpriteLimit);
+			case CFGKEY_SOUND_QUALITY: return readOptionValue(io, optionSoundQuality);
+			case CFGKEY_DEFAULT_VIDEO_SYSTEM: return readOptionValue(io, optionDefaultVideoSystem);
+			case CFGKEY_DEFAULT_PALETTE_PATH:
+				return readStringOptionValue(io, defaultPalettePath);
+			case CFGKEY_DEFAULT_SOUND_LOW_PASS_FILTER:
+				return readOptionValue<bool>(io, [](auto val){FCEUI_SetLowPass(val);});
+			case CFGKEY_SWAP_DUTY_CYCLES: return readOptionValue(io, swapDuty);
+			case CFGKEY_START_VIDEO_LINE: return readOptionValue(io, optionDefaultStartVideoLine);
+			case CFGKEY_VISIBLE_VIDEO_LINES: return readOptionValue(io, optionDefaultVisibleVideoLines);
+			case CFGKEY_CORRECT_LINE_ASPECT: return readOptionValue(io, optionCorrectLineAspect);
+			case CFGKEY_FF_DURING_FDS_ACCESS: return readOptionValue(io, fastForwardDuringFdsAccess);
+			case CFGKEY_CHEATS_PATH: return readStringOptionValue(io, cheatsDir);
+			case CFGKEY_PATCHES_PATH: return readStringOptionValue(io, patchesDir);
+			case CFGKEY_PALETTE_PATH: return readStringOptionValue(io, palettesDir);
+		}
 	}
-	return 1;
-}
-
-void EmuSystem::writeSessionConfig(IO &io)
-{
-	optionFourScore.writeWithKeyIfNotDefault(io);
-	optionVideoSystem.writeWithKeyIfNotDefault(io);
-	optionInputPort1.writeWithKeyIfNotDefault(io);
-	optionInputPort2.writeWithKeyIfNotDefault(io);
-	optionCompatibleFrameskip.writeWithKeyIfNotDefault(io);
-}
-
-bool EmuSystem::readConfig(IO &io, unsigned key, unsigned readSize)
-{
-	switch(key)
+	else if(type == ConfigType::SESSION)
 	{
-		default: return 0;
-		bcase CFGKEY_FDS_BIOS_PATH: optionFdsBiosPath.readFromIO(io, readSize);
-		bcase CFGKEY_SPRITE_LIMIT: optionSpriteLimit.readFromIO(io, readSize);
-		bcase CFGKEY_SOUND_QUALITY: optionSoundQuality.readFromIO(io, readSize);
-		bcase CFGKEY_DEFAULT_VIDEO_SYSTEM: optionDefaultVideoSystem.readFromIO(io, readSize);
-		bcase CFGKEY_DEFAULT_PALETTE_PATH: optionDefaultPalettePath.readFromIO(io, readSize);
-		logMsg("fds bios path %s", fdsBiosPath.data());
+		switch(key)
+		{
+			case CFGKEY_FOUR_SCORE: return readOptionValue(io, optionFourScore);
+			case CFGKEY_VIDEO_SYSTEM: return readOptionValue(io, optionVideoSystem);
+			case CFGKEY_INPUT_PORT_1: return readOptionValue(io, inputPort1);
+			case CFGKEY_INPUT_PORT_2: return readOptionValue(io, inputPort2);
+			case CFGKEY_COMPATIBLE_FRAMESKIP: return readOptionValue(io, optionCompatibleFrameskip);
+			case CFGKEY_START_VIDEO_LINE: return readOptionValue(io, optionStartVideoLine);
+			case CFGKEY_VISIBLE_VIDEO_LINES: return readOptionValue(io, optionVisibleVideoLines);
+			case CFGKEY_HORIZONTAL_VIDEO_CROP: return readOptionValue(io, optionHorizontalVideoCrop);
+			case CFGKEY_OVERCLOCKING: return readOptionValue<bool>(io, [&](auto on){overclock_enabled = on;});
+			case CFGKEY_OVERCLOCK_EXTRA_LINES: return readOptionValue<int16_t>(io,
+				[&](auto v){if(v >= 0 && v <= maxExtraLinesPerFrame) postrenderscanlines = v;});
+			case CFGKEY_OVERCLOCK_VBLANK_MULTIPLIER: return readOptionValue<int8_t>(io,
+				[&](auto v){if(v >= 0 && v <= maxVBlankMultiplier) vblankscanlines = v;});
+			case CFGKEY_P2_START_AS_FC_MIC: return readOptionValue(io, replaceP2StartWithMicrophone);
+		}
 	}
-	return 1;
+	return false;
 }
 
-void EmuSystem::writeConfig(IO &io)
+void NesSystem::writeConfig(ConfigType type, FileIO &io)
 {
-	optionSpriteLimit.writeWithKeyIfNotDefault(io);
-	optionSoundQuality.writeWithKeyIfNotDefault(io);
-	optionFdsBiosPath.writeToIO(io);
-	optionDefaultVideoSystem.writeWithKeyIfNotDefault(io);
-	optionDefaultPalettePath.writeToIO(io);
+	if(type == ConfigType::MAIN)
+	{
+		writeOptionValueIfNotDefault(io, optionSpriteLimit);
+		writeOptionValueIfNotDefault(io, optionSoundQuality);
+		writeStringOptionValue(io, CFGKEY_FDS_BIOS_PATH, fdsBiosPath);
+		writeOptionValueIfNotDefault(io, optionDefaultVideoSystem);
+		writeStringOptionValue(io, CFGKEY_DEFAULT_PALETTE_PATH, defaultPalettePath);
+		if(swapDuty)
+			writeOptionValue(io, CFGKEY_SWAP_DUTY_CYCLES, swapDuty);
+		if(FSettings.lowpass)
+			writeOptionValue(io, CFGKEY_DEFAULT_SOUND_LOW_PASS_FILTER, (bool)FSettings.lowpass);
+		writeOptionValueIfNotDefault(io, optionDefaultStartVideoLine);
+		writeOptionValueIfNotDefault(io, optionDefaultVisibleVideoLines);
+		writeOptionValueIfNotDefault(io, optionCorrectLineAspect);
+		writeOptionValueIfNotDefault(io, fastForwardDuringFdsAccess);
+		writeStringOptionValue(io, CFGKEY_CHEATS_PATH, cheatsDir);
+		writeStringOptionValue(io, CFGKEY_PATCHES_PATH, patchesDir);
+		writeStringOptionValue(io, CFGKEY_PALETTE_PATH, palettesDir);
+	}
+	else if(type == ConfigType::SESSION)
+	{
+		writeOptionValueIfNotDefault(io, optionFourScore);
+		writeOptionValueIfNotDefault(io, optionVideoSystem);
+		writeOptionValueIfNotDefault(io, inputPort1);
+		writeOptionValueIfNotDefault(io, inputPort2);
+		writeOptionValueIfNotDefault(io, optionCompatibleFrameskip);
+		writeOptionValueIfNotDefault(io, optionStartVideoLine);
+		writeOptionValueIfNotDefault(io, optionVisibleVideoLines);
+		writeOptionValueIfNotDefault(io, optionHorizontalVideoCrop);
+		writeOptionValueIfNotDefault(io, CFGKEY_OVERCLOCKING, bool(overclock_enabled), 0);
+		writeOptionValueIfNotDefault(io, CFGKEY_OVERCLOCK_EXTRA_LINES, int16_t(postrenderscanlines), 0);
+		writeOptionValueIfNotDefault(io, CFGKEY_OVERCLOCK_VBLANK_MULTIPLIER, int8_t(vblankscanlines), 0);
+		writeOptionValueIfNotDefault(io, CFGKEY_P2_START_AS_FC_MIC, replaceP2StartWithMicrophone, false);
+	}
+}
+
 }

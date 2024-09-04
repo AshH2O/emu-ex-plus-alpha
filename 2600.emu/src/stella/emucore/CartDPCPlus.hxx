@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -20,13 +20,12 @@
 
 class System;
 
-#include "Thumbulator.hxx"
 #ifdef DEBUGGER_SUPPORT
   #include "CartDPCPlusWidget.hxx"
 #endif
 
 #include "bspf.hxx"
-#include "Cart.hxx"
+#include "CartARM.hxx"
 
 /**
   Cartridge class used for DPC+, derived from Pitfall II.  There are six 4K
@@ -42,10 +41,10 @@ class System;
 
   @authors  Darrell Spice Jr, Fred Quimby, Stephen Anthony, Bradford W. Mott
 */
-class CartridgeDPCPlus : public Cartridge
+class CartridgeDPCPlus : public CartridgeARM
 {
   friend class CartridgeDPCPlusWidget;
-	friend class CartridgeRamDPCPlusWidget;
+  friend class CartridgeRamDPCPlusWidget;
 
   public:
     /**
@@ -58,22 +57,13 @@ class CartridgeDPCPlus : public Cartridge
     */
     CartridgeDPCPlus(const ByteBuffer& image, size_t size, const string& md5,
                      const Settings& settings);
-    virtual ~CartridgeDPCPlus() = default;
+    ~CartridgeDPCPlus() override = default;
 
   public:
     /**
       Reset device to its power-on state
     */
     void reset() override;
-
-    /**
-      Notification method invoked by the system when the console type
-      has changed.  We need this to inform the Thumbulator that the
-      timing has changed.
-
-      @param timing  Enum representing the new console type
-    */
-    void consoleChanged(ConsoleTiming timing) override;
 
     /**
       Install cartridge in the specified system.  Invoked by the system
@@ -86,9 +76,12 @@ class CartridgeDPCPlus : public Cartridge
     /**
       Install pages for the specified bank in the system.
 
-      @param bank The bank that should be installed in the system
+      @param bank     The bank that should be installed in the system
+      @param segment  The segment the bank should be using
+
+      @return  true, if bank has changed
     */
-    bool bank(uInt16 bank) override;
+    bool bank(uInt16 bank, uInt16 segment = 0) override;
 
     /**
       Get the current bank.
@@ -100,7 +93,7 @@ class CartridgeDPCPlus : public Cartridge
     /**
       Query the number of banks supported by the cartridge.
     */
-    uInt16 bankCount() const override;
+    uInt16 romBankCount() const override;
 
     /**
       Patch the cartridge ROM.
@@ -115,9 +108,9 @@ class CartridgeDPCPlus : public Cartridge
       Access the internal ROM image for this cartridge.
 
       @param size  Set to the size of the internal ROM image data
-      @return  A pointer to the internal ROM image data
+      @return  A reference to the internal ROM image data
     */
-    const uInt8* getImage(size_t& size) const override;
+    const ByteBuffer& getImage(size_t& size) const override;
 
     /**
       Save the current state of this cart to the given Serializer.
@@ -141,6 +134,28 @@ class CartridgeDPCPlus : public Cartridge
       @return The name of the object
     */
     string name() const override { return "CartridgeDPC+"; }
+
+    /**
+      Query the internal RAM size of the cart.
+
+      @return The internal RAM size
+    */
+    uInt32 internalRamSize() const override { return static_cast<uInt32>(myDPCRAM.size()); }
+
+    /**
+      Read a byte from cart internal RAM.
+
+      @return The value of the interal RAM byte
+    */
+    uInt8 internalRamGetValue(uInt16 addr) const override;
+
+    /**
+      Answer whether this is a PlusROM cart.  Note that until the
+      initialize method has been called, this will always return false.
+
+      @return  Whether this is actually a PlusROM cart
+    */
+    bool isPlusROM() const override { return myPlusROM->isValid(); }
 
   #ifdef DEBUGGER_SUPPORT
     /**
@@ -173,9 +188,16 @@ class CartridgeDPCPlus : public Cartridge
 
   private:
     /**
+      Checks if startup bank randomization is enabled.  For this scheme,
+      randomization is not supported, since the ARM code is always in a
+      pre-defined bank, and we *must* start from there.
+    */
+    bool randomStartBank() const override { return false; }
+
+    /**
       Sets the initial state of the DPC pointers and RAM
     */
-    void setInitialState();
+    void setInitialState() override;
 
     /**
       Clocks the random number generator to move it to its next state
@@ -200,7 +222,7 @@ class CartridgeDPCPlus : public Cartridge
 
   private:
     // The ROM image and size
-    std::array<uInt8, 32_KB> myImage;
+    ByteBuffer myImage;
     size_t mySize{0};
 
     // Pointer to the 24K program ROM image of the cartridge
@@ -214,9 +236,6 @@ class CartridgeDPCPlus : public Cartridge
     //   4K Display Data
     //   1K Frequency Data
     std::array<uInt8, 8_KB> myDPCRAM;
-
-    // Pointer to the Thumb ARM emulator object
-    unique_ptr<Thumbulator> myThumbEmulator;
 
     // Pointer to the 1K frequency table
     uInt8* myFrequencyImage{nullptr};

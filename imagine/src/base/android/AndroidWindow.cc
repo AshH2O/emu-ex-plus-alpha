@@ -13,7 +13,6 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "Window"
 #include "android.hh"
 #include <imagine/logger/logger.h>
 #include <imagine/base/ApplicationContext.hh>
@@ -25,9 +24,10 @@
 #include <android/native_window_jni.h>
 #include <android/looper.h>
 
-namespace Base
+namespace IG
 {
 
+constexpr SystemLogger log{"Window"};
 static JNI::InstMethod<jobject(jobject, jlong)> jPresentation{};
 static JNI::InstMethod<void()> jPresentationDeinit{};
 static int32_t (*ANativeWindow_setFrameRate)(ANativeWindow* window, float frameRate, int8_t compatibility){};
@@ -36,7 +36,7 @@ static void initPresentationJNI(JNIEnv* env, jobject presentation)
 {
 	if(jPresentationDeinit)
 		return; // already init
-	logMsg("Setting up Presentation JNI functions");
+	log.info("Setting up Presentation JNI functions");
 	auto cls = env->GetObjectClass(presentation);
 	jPresentationDeinit = {env, cls, "deinit", "()V"};
 	JNINativeMethod method[] =
@@ -44,7 +44,7 @@ static void initPresentationJNI(JNIEnv* env, jobject presentation)
 		{
 			"onSurfaceCreated", "(JLandroid/view/Surface;)V",
 			(void*)
-			+[](JNIEnv* env, jobject thiz, jlong windowAddr, jobject surface)
+			+[](JNIEnv* env, jobject, jlong windowAddr, jobject surface)
 			{
 				auto nWin = ANativeWindow_fromSurface(env, surface);
 				auto &win = *((Window*)windowAddr);
@@ -54,7 +54,7 @@ static void initPresentationJNI(JNIEnv* env, jobject presentation)
 		{
 			"onSurfaceRedrawNeeded", "(J)V",
 			(void*)
-			+[](JNIEnv* env, jobject thiz, jlong windowAddr)
+			+[](JNIEnv*, jobject, jlong windowAddr)
 			{
 				auto &win = *((Window*)windowAddr);
 				win.systemRequestsRedraw(true);
@@ -63,7 +63,7 @@ static void initPresentationJNI(JNIEnv* env, jobject presentation)
 		{
 			"onSurfaceDestroyed", "(J)V",
 			(void*)
-			+[](JNIEnv* env, jobject thiz, jlong windowAddr)
+			+[](JNIEnv*, jobject, jlong windowAddr)
 			{
 				auto &win = *((Window*)windowAddr);
 				ANativeWindow_release(win.nativeObject());
@@ -73,7 +73,7 @@ static void initPresentationJNI(JNIEnv* env, jobject presentation)
 		{
 			"onWindowDismiss", "(J)V",
 			(void*)
-			+[](JNIEnv* env, jobject thiz, jlong windowAddr)
+			+[](JNIEnv*, jobject, jlong windowAddr)
 			{
 				auto &win = *((Window*)windowAddr);
 				win.dismiss();
@@ -83,52 +83,51 @@ static void initPresentationJNI(JNIEnv* env, jobject presentation)
 	env->RegisterNatives(cls, method, std::size(method));
 }
 
-IG::Point2D<float> Window::pixelSizeAsMM(IG::Point2D<int> size)
+Point2D<float> Window::pixelSizeAsMM(Point2D<int> size)
 {
 	auto densityDPI = screen()->densityDPI();
 	assumeExpr(densityDPI > 0);
 	return {((float)size.x / densityDPI) * 25.4f, ((float)size.y / densityDPI) * 25.4f};
 }
 
-IG::Point2D<float> Window::pixelSizeAsScaledMM(IG::Point2D<int> size)
+Point2D<float> Window::pixelSizeAsScaledMM(Point2D<int> size)
 {
 	auto densityDPI = screen()->scaledDensityDPI();
 	assumeExpr(densityDPI > 0);
 	return {((float)size.x / densityDPI) * 25.4f, ((float)size.y / densityDPI) * 25.4f};
 }
 
-bool Window::setValidOrientations(Orientation oMask)
+bool Window::setValidOrientations(Orientations o)
 {
-	using namespace Base;
-	logMsg("requested orientation change to %s", Base::orientationToStr(oMask));
-	auto maskToOrientation = [](Orientation oMask)
+	log.info("requested orientation change to {}", asString(o));
+	auto asNativeOrientations = [](Orientations o)
 		{
-			switch(oMask)
+			switch(o)
 			{
 				default: return -1; // SCREEN_ORIENTATION_UNSPECIFIED
-				case VIEW_ROTATE_0: return 1; // SCREEN_ORIENTATION_PORTRAIT
-				case VIEW_ROTATE_90: return 0; // SCREEN_ORIENTATION_LANDSCAPE
-				case VIEW_ROTATE_180: return 9; // SCREEN_ORIENTATION_REVERSE_PORTRAIT
-				case VIEW_ROTATE_270: return 8; // SCREEN_ORIENTATION_REVERSE_LANDSCAPE
-				case VIEW_ROTATE_90 | VIEW_ROTATE_270: return 6; // SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-				case VIEW_ROTATE_0 | VIEW_ROTATE_180: return 7; // SCREEN_ORIENTATION_SENSOR_PORTRAIT
-				case VIEW_ROTATE_ALL: return 10; // SCREEN_ORIENTATION_FULL_SENSOR
+				case Orientations{.portrait = 1}: return 1; // SCREEN_ORIENTATION_PORTRAIT
+				case Orientations{.landscapeRight = 1}: return 0; // SCREEN_ORIENTATION_LANDSCAPE
+				case Orientations{.portraitUpsideDown = 1}: return 9; // SCREEN_ORIENTATION_REVERSE_PORTRAIT
+				case Orientations{.landscapeLeft = 1}: return 8; // SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+				case Orientations::allLandscape(): return 6; // SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+				case Orientations::allPortrait(): return 7; // SCREEN_ORIENTATION_SENSOR_PORTRAIT
+				case Orientations::all(): return 10; // SCREEN_ORIENTATION_FULL_SENSOR
 			}
 		};
-	int toSet = maskToOrientation(oMask);
+	int toSet = asNativeOrientations(o);
 	application().setRequestedOrientation(appContext().mainThreadJniEnv(), appContext().baseActivityObject(), toSet);
 	return true;
 }
 
-bool Window::requestOrientationChange(Orientation o)
+bool Window::requestOrientationChange(Rotation)
 {
 	// no-op, OS manages orientation changes
 	return false;
 }
 
-IG::PixelFormat ApplicationContext::defaultWindowPixelFormat() const
+PixelFormat ApplicationContext::defaultWindowPixelFormat() const
 {
-	return ((Config::ARM_ARCH && Config::ARM_ARCH < 7) || androidSDK() < 11) ? PIXEL_FMT_RGB565 : PIXEL_FMT_RGBA8888;
+	return ((Config::ARM_ARCH && Config::ARM_ARCH < 7) || androidSDK() < 11) ? PixelFmtRGB565 : PixelFmtRGBA8888;
 }
 
 Window::Window(ApplicationContext ctx, WindowConfig config, InitDelegate onInit_):
@@ -146,20 +145,19 @@ Window::Window(ApplicationContext ctx, WindowConfig config, InitDelegate onInit_
 		jWin = {env, jPresentation(env, baseActivity, screen.displayObject(), (jlong)this)};
 		initPresentationJNI(env, jWin);
 		type = Type::PRESENTATION;
-		logMsg("made presentation window:%p", (jobject)jWin);
+		log.info("made presentation window:{}", (void*)jobject(jWin));
 	}
 	else
 	{
 		JNI::InstMethod<jobject(jlong)> jSetMainContentView(env, baseActivity, "setMainContentView", "(J)Landroid/view/Window;");
 		jWin = {env, jSetMainContentView(env, baseActivity, (jlong)this)};
 		type = Type::MAIN;
-		logMsg("made device window:%p", (jobject)jWin);
+		log.info("made device window:{}", (void*)jobject(jWin));
 	}
-	nPixelFormat = config.format() ? config.format() : toAHardwareBufferFormat(ctx.defaultWindowPixelFormat());
+	nPixelFormat = config.nativeFormat ? config.nativeFormat : toAHardwareBufferFormat(ctx.defaultWindowPixelFormat());
 	// default to screen's size
 	updateSize({screen.width(), screen.height()});
-	contentRect.x2 = width();
-	contentRect.y2 = height();
+	contentRect = {{0, 0}, {width(), height()}};
 	onInit = onInit_;
 }
 
@@ -169,7 +167,7 @@ AndroidWindow::~AndroidWindow()
 	{
 		if(type == Type::PRESENTATION)
 		{
-			logMsg("dismissing presentation window:%p", (jobject)jWin);
+			log.info("dismissing presentation window:{}", (void*)jobject(jWin));
 			jPresentationDeinit(jWin.jniEnv(), jWin);
 		}
 	}
@@ -184,20 +182,14 @@ void Window::show()
 	postDraw();
 }
 
-IG::WindowRect Window::contentBounds() const
+WindowRect Window::contentBounds() const
 {
-	return contentRect;
+	return contentRect.value();
 }
 
 bool Window::hasSurface() const
 {
 	return nWin;
-}
-
-void AndroidWindow::updateContentRect(const IG::WindowRect &rect)
-{
-	contentRect = rect;
-	surfaceChangeFlags |= WindowSurfaceChange::CONTENT_RECT_RESIZED;
 }
 
 bool Window::operator ==(Window const &rhs) const
@@ -216,6 +208,7 @@ void AndroidWindow::setNativeWindow(ApplicationContext ctx, ANativeWindow *nWind
 	if(nWin)
 	{
 		nWin = nullptr;
+		contentRect.cancel();
 		thisWindow.dispatchSurfaceDestroyed();
 	}
 	if(!nWindow)
@@ -224,8 +217,15 @@ void AndroidWindow::setNativeWindow(ApplicationContext ctx, ANativeWindow *nWind
 	thisWindow.setFormat(nPixelFormat);
 	if(onInit)
 	{
-		onInit(ctx, thisWindow);
-		onInit = {};
+		try
+		{
+			onInit(ctx, thisWindow);
+			onInit = {};
+		}
+		catch(std::exception &err)
+		{
+			ctx.exitWithMessage(-1, err.what());
+		}
 	}
 	else
 	{
@@ -238,23 +238,19 @@ NativeWindow Window::nativeObject() const
 	return nWin;
 }
 
-void Window::setIntendedFrameRate(double rate)
+void Window::setIntendedFrameRate(FrameRate rate)
 {
-	if(appContext().androidSDK() < 30)
-	{
-		screen()->setFrameRate(rate);
-		return;
-	}
-	if(!nWin) [[unlikely]]
+	screen()->setFrameRate(rate);
+	if(appContext().androidSDK() < 30 || !nWin)
 		return;
 	if(!ANativeWindow_setFrameRate) [[unlikely]]
 	{
-		auto lib = Base::openSharedLibrary("libnativewindow.so");
-		Base::loadSymbol(ANativeWindow_setFrameRate, lib, "ANativeWindow_setFrameRate");
+		auto lib = openSharedLibrary("libnativewindow.so");
+		loadSymbol(ANativeWindow_setFrameRate, lib, "ANativeWindow_setFrameRate");
 	}
 	if(ANativeWindow_setFrameRate(nWin, rate, 0))
 	{
-		logErr("error in ANativeWindow_setFrameRate() with window:%p rate:%.2f", nWin, rate);
+		log.error("error in ANativeWindow_setFrameRate() with window:{} rate:{:g}", (void*)nWin, rate);
 	}
 }
 
@@ -275,24 +271,23 @@ void Window::setFormat(NativeWindowFormat fmt)
 			jclass jLayoutParamsCls = env->GetObjectClass(attrs);
 			auto jFormat = env->GetFieldID(jLayoutParamsCls, "format", "I");
 			auto currFmt = env->GetIntField(attrs, jFormat);
-			logMsg("setting window format:%s -> %s",
+			log.info("setting window format:{} -> {}",
 				aHardwareBufferFormatStr(currFmt), aHardwareBufferFormatStr(fmt));
 		}
 		JNI::InstMethod<void(jint)> jSetWinFormat{env, (jobject)jWin, "setFormat", "(I)V"};
 		jSetWinFormat(env, jWin, fmt);
+		ANativeWindow_setBuffersGeometry(nWin, 0, 0, fmt);
 	}
-	if(Config::DEBUG_BUILD)
-		logMsg("setting window buffer format:%s -> %s",
-			aHardwareBufferFormatStr(ANativeWindow_getFormat(nWin)), aHardwareBufferFormatStr(fmt));
-	ANativeWindow_setBuffersGeometry(nWin, 0, 0, fmt);
+	// Note: The rendering API should set the window format when connecting to the window surface,
+	// for example eglCreateWindowSurface() will set it implicitly so no need to call ANativeWindow_setBuffersGeometry()
 }
 
-void Window::setFormat(IG::PixelFormat fmt)
+void Window::setFormat(PixelFormat fmt)
 {
 	setFormat(toAHardwareBufferFormat(fmt));
 }
 
-IG::PixelFormat Window::pixelFormat() const
+PixelFormat Window::pixelFormat() const
 {
 	return makePixelFormatFromAndroidFormat(nPixelFormat);
 }
@@ -308,10 +303,10 @@ void AndroidWindow::systemRequestsRedraw(bool sync)
 	win.setNeedsDraw(true);
 	if(!win.appContext().isRunning())
 	{
-		logMsg("deferring window surface redraw until app resumes");
+		log.info("deferring window surface redraw until app resumes");
 		return;
 	}
-	logMsg("window surface redraw needed");
+	log.info("window surface redraw needed");
 	win.dispatchOnDraw(sync);
 	if(sync)
 	{
@@ -326,23 +321,48 @@ void AndroidWindow::systemRequestsRedraw(bool sync)
 	}
 }
 
-void AndroidWindow::setContentRect(const IG::WindowRect &rect, const IG::Point2D<int> &winSize)
+void AndroidWindow::setContentRect(WindowRect rect, WSize winSize)
 {
-	logMsg("content rect changed: %d:%d:%d:%d in %dx%d",
+	log.info("content rect changed: {}:{}:{}:{} in {}x{}",
 		rect.x, rect.y, rect.x2, rect.y2, winSize.x, winSize.y);
-	updateContentRect(rect);
 	auto &win = *static_cast<Window*>(this);
-	win.updateSize(winSize);
+	if(win.updateSize(winSize))
+	{
+		contentRect = rect;
+		surfaceChangeFlags.contentRectResized = true;
+	}
+	else
+	{
+		contentRect.start(*static_cast<Window*>(this), contentRect.value(), rect, Milliseconds{165},
+			[](auto &win, [[maybe_unused]] auto newRect)
+			{
+				win.surfaceChangeFlags.contentRectResized = true;
+				win.setNeedsDraw(true);
+			});
+	}
 	win.postDraw();
 }
 
-void Window::setTitle(const char *name) {}
+void Window::setTitle(const char*) {}
 
-void Window::setAcceptDnd(bool on) {}
+void Window::setAcceptDnd(bool) {}
 
-void WindowConfig::setFormat(IG::PixelFormat fmt)
+void WindowConfig::setFormat(PixelFormat fmt)
 {
-	setFormat(toAHardwareBufferFormat(fmt));
+	nativeFormat = toAHardwareBufferFormat(fmt);
+}
+
+void Window::setSystemGestureExclusionRects(std::span<const WRect> rects)
+{
+	if(appContext().androidSDK() < 29)
+		return;
+	auto env = appContext().mainThreadJniEnv();
+	auto jCoords = env->NewIntArray(rects.size() * 4);
+	if(rects.size())
+		env->SetIntArrayRegion(jCoords, 0, rects.size() * 4, &rects[0].x);
+	auto baseActivityCls = (jclass)env->GetObjectClass(appContext().baseActivityObject());
+	JNI::ClassMethod<void(jobject, jintArray)> jSetSystemGestureExclusionRects(env, baseActivityCls, "setSystemGestureExclusionRects", "(Landroid/view/Window;[I)V");
+	jSetSystemGestureExclusionRects(env, baseActivityCls, jWin, jCoords);
 }
 
 }

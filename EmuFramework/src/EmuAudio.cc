@@ -13,18 +13,24 @@
 	You should have received a copy of the GNU General Public License
 	along with EmuFramework.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "EmuAudio"
+#include <emuframework/EmuOptions.hh>
 #include <emuframework/EmuAudio.hh>
 #include <emuframework/EmuSystem.hh>
+#include <emuframework/Option.hh>
 #include <imagine/audio/Manager.hh>
 #include <imagine/util/algorithm.h>
 #include <imagine/logger/logger.h>
 
+namespace EmuEx
+{
+
+constexpr SystemLogger log{"EmuAudio"};
+
 struct AudioStats
 {
-	constexpr AudioStats() {}
-	unsigned underruns = 0;
-	unsigned overruns = 0;
+	constexpr AudioStats() = default;
+	int underruns{};
+	int overruns{};
 	std::atomic_uint callbacks{};
 	std::atomic_uint callbackBytes{};
 
@@ -38,10 +44,10 @@ struct AudioStats
 
 #ifdef CONFIG_EMUFRAMEWORK_AUDIO_STATS
 static AudioStats audioStats{};
-static Base::Timer audioStatsTimer{"audioStatsTimer"};
+static IG::Timer audioStatsTimer{"audioStatsTimer"};
 #endif
 
-static void startAudioStats(IG::Audio::Format format)
+static void startAudioStats([[maybe_unused]] Audio::Format format)
 {
 	#ifdef CONFIG_EMUFRAMEWORK_AUDIO_STATS
 	audioStats.reset();
@@ -65,46 +71,51 @@ static void stopAudioStats()
 	#endif
 }
 
-uint32_t EmuAudio::framesFree() const
+EmuAudio::EmuAudio(ApplicationContext ctx):
+	manager{ctx},
+	defaultRate{EmuSystem::forcedSoundRate ? EmuSystem::forcedSoundRate : manager.nativeRate()},
+	rate_{defaultRate} {}
+
+size_t EmuAudio::framesFree() const
 {
 	return format().bytesToFrames(rBuff.freeSpace());
 }
 
-uint32_t EmuAudio::framesWritten() const
+size_t EmuAudio::framesWritten() const
 {
 	return format().bytesToFrames(rBuff.size());
 }
 
-uint32_t EmuAudio::framesCapacity() const
+size_t EmuAudio::framesCapacity() const
 {
 	return format().bytesToFrames(rBuff.capacity());
 }
 
-bool EmuAudio::shouldStartAudioWrites(uint32_t bytesToWrite) const
+bool EmuAudio::shouldStartAudioWrites(size_t bytesToWrite) const
 {
 	// audio starts when the buffer reaches target size
 	return rBuff.size() + bytesToWrite >= targetBufferFillBytes;
 }
 
 template<typename T>
-static void simpleResample(T * __restrict__ dest, unsigned destFrames, const T * __restrict__ src, unsigned srcFrames)
+static void simpleResample(T * __restrict__ dest, size_t destFrames, const T * __restrict__ src, size_t srcFrames)
 {
 	if(!destFrames)
 		return;
 	float ratio = (float)srcFrames/(float)destFrames;
-	iterateTimes(destFrames, i)
+	for(auto i : iotaCount(destFrames))
 	{
-		unsigned srcPos = round(i * ratio);
-		if(srcPos > srcFrames) [[unlikely]]
+		size_t srcPos = std::floor((float)i * ratio);
+		if(srcPos >= srcFrames) [[unlikely]]
 		{
-			logMsg("resample pos %u too high", srcPos);
+			log.info("resample pos {} too high", srcPos);
 			srcPos = srcFrames-1;
 		}
 		dest[i] = src[srcPos];
 	}
 }
 
-static void simpleResample(void *dest, unsigned destFrames, const void *src, unsigned srcFrames, IG::Audio::Format format)
+static void simpleResample(void *dest, size_t destFrames, const void *src, size_t srcFrames, IG::Audio::Format format)
 {
 	if(format.channels == 1)
 	{
@@ -126,44 +137,46 @@ static void simpleResample(void *dest, unsigned destFrames, const void *src, uns
 	}
 }
 
-void EmuAudio::resizeAudioBuffer(uint32_t targetBufferFillBytes)
+void EmuAudio::resizeAudioBuffer(size_t targetBufferFillBytes)
 {
 	auto oldCapacity = rBuff.capacity();
 	rBuff.setMinCapacity(targetBufferFillBytes + bufferIncrementBytes);
 	if(Config::DEBUG_BUILD && rBuff.capacity() != oldCapacity)
 	{
-		logMsg("created audio buffer:%d frames (%.4fs), fill target:%d frames (%.4fs)",
-			format().bytesToFrames(rBuff.freeSpace()), format().bytesToTime(rBuff.freeSpace()).count(),
-			format().bytesToFrames(targetBufferFillBytes), format().bytesToTime(targetBufferFillBytes).count());
+		log.info("created audio buffer:{} frames ({}), fill target:{} frames ({})",
+			format().bytesToFrames(rBuff.capacity()), format().bytesToTime(rBuff.capacity()),
+			format().bytesToFrames(targetBufferFillBytes), format().bytesToTime(targetBufferFillBytes));
 	}
 }
 
-void EmuAudio::open(IG::Audio::Api api)
+void EmuAudio::open()
 {
 	close();
-	audioStream = audioManager().makeOutputStream(api);
+	if(isEnabled())
+		audioStream.setApi(manager, outputAPI());
 }
 
-void EmuAudio::start(IG::Microseconds targetBufferFillUSecs, IG::Microseconds bufferIncrementUSecs)
+void EmuAudio::start(FloatSeconds bufferDuration)
 {
+	FloatSeconds targetBufferFillDuration = soundBuffers * bufferDuration;
 	if(!audioStream)
 	{
-		logMsg("sound is disabled");
+		log.info("sound is disabled");
 		return;
 	}
 	lastUnderrunTime = {};
 	auto inputFormat = format();
-	targetBufferFillBytes = inputFormat.timeToBytes(targetBufferFillUSecs);
-	bufferIncrementBytes = inputFormat.timeToBytes(bufferIncrementUSecs);
-	if(!audioStream->isOpen())
+	targetBufferFillBytes = inputFormat.timeToBytes(targetBufferFillDuration);
+	bufferIncrementBytes = inputFormat.timeToBytes(bufferDuration);
+	if(!audioStream.isOpen())
 	{
 		resizeAudioBuffer(targetBufferFillBytes);
 		audioWriteState = AudioWriteState::BUFFER;
-		IG::Audio::Format outputFormat{inputFormat.rate, audioManager().nativeSampleFormat(), inputFormat.channels};
+		IG::Audio::Format outputFormat{inputFormat.rate, manager.nativeSampleFormat(), inputFormat.channels};
 		IG::Audio::OutputStreamConfig outputConf
 		{
 			outputFormat,
-			[this, outputSampleFormat = outputFormat.sample, inputSampleFormat = inputFormat.sample, channels = outputFormat.channels](void *samples, unsigned frames)
+			[this, outputSampleFormat = outputFormat.sample, inputSampleFormat = inputFormat.sample, channels = outputFormat.channels](void *samples, size_t frames)
 			{
 				IG::Audio::Format outputFormat{{}, outputSampleFormat, channels};
 				#ifdef CONFIG_EMUFRAMEWORK_AUDIO_STATS
@@ -173,19 +186,19 @@ void EmuAudio::start(IG::Microseconds targetBufferFillUSecs, IG::Microseconds bu
 				if(audioWriteState == AudioWriteState::ACTIVE)
 				{
 					IG::Audio::Format inputFormat = {{}, inputSampleFormat, channels};
-					auto framesReady = inputFormat.bytesToFrames(rBuff.size());
-					auto const framesToRead = std::min(frames, framesReady);
-					auto frameEndAddr = (char*)outputFormat.copyFrames(samples, rBuff.readAddr(), framesToRead, inputFormat, volume);
-					rBuff.commitRead(inputFormat.framesToBytes(framesToRead));
+					auto span = rBuff.beginRead(inputFormat.framesToBytes(frames));
+					auto const framesToRead = inputFormat.bytesToFrames(span.size());
+					auto frameEndAddr = (char*)outputFormat.copyFrames(samples, span.data(), framesToRead, inputFormat, currentVolume);
+					rBuff.endRead(span);
 					if(framesToRead < frames) [[unlikely]]
 					{
 						auto padFrames = frames - framesToRead;
 						std::fill_n(frameEndAddr, outputFormat.framesToBytes(padFrames), 0);
-						//logMsg("underrun, %d bytes ready out of %d", bytesReady, bytes);
-						auto now = IG::steadyClockTimestamp();
+						//log.warn("underrun, {} bytes ready out of {}", span.size, inputFormat.framesToBytes(frames));
+						auto now = SteadyClock::now();
 						if(now - lastUnderrunTime < IG::Seconds(1))
 						{
-							//logWarn("multiple underruns within a short time");
+							//log.warn("multiple underruns within a short time");
 							audioWriteState = AudioWriteState::MULTI_UNDERRUN;
 						}
 						else
@@ -206,9 +219,9 @@ void EmuAudio::start(IG::Microseconds targetBufferFillUSecs, IG::Microseconds bu
 				}
 			}
 		};
-		outputConf.setWantedLatencyHint({});
+		outputConf.wantedLatencyHint = {};
 		startAudioStats(inputFormat);
-		audioStream->open(outputConf);
+		audioStream.open(outputConf);
 	}
 	else
 	{
@@ -216,14 +229,14 @@ void EmuAudio::start(IG::Microseconds targetBufferFillUSecs, IG::Microseconds bu
 		if(shouldStartAudioWrites())
 		{
 			if(Config::DEBUG_BUILD)
-				logMsg("resuming audio writes with buffer fill %u/%u bytes", rBuff.size(), rBuff.capacity());
+				log.info("resuming audio writes with buffer fill {}/{} bytes", rBuff.size(), rBuff.capacity());
 			audioWriteState = AudioWriteState::ACTIVE;
 		}
 		else
 		{
 			audioWriteState = AudioWriteState::BUFFER;
 		}
-		audioStream->play();
+		audioStream.play();
 	}
 }
 
@@ -232,7 +245,7 @@ void EmuAudio::stop()
 	stopAudioStats();
 	audioWriteState = AudioWriteState::BUFFER;
 	if(audioStream)
-		audioStream->close();
+		audioStream.close();
 	rBuff.clear();
 }
 
@@ -240,7 +253,7 @@ void EmuAudio::close()
 {
 	stop();
 	audioStream.reset();
-	rBuff = {};
+	rBuff.reset();
 }
 
 void EmuAudio::flush()
@@ -250,21 +263,23 @@ void EmuAudio::flush()
 	stopAudioStats();
 	audioWriteState = AudioWriteState::BUFFER;
 	if(audioStream)
-		audioStream->flush();
+		audioStream.flush();
 	rBuff.clear();
 }
 
-void EmuAudio::writeFrames(const void *samples, uint32_t framesToWrite)
+void EmuAudio::writeFrames(const void *samples, size_t framesToWrite)
 {
-	assumeExpr(rBuff);
+	if(!framesToWrite) [[unlikely]]
+		return;
+	assumeExpr(rBuff.capacity());
 	auto inputFormat = format();
 	switch(audioWriteState)
 	{
 		case AudioWriteState::MULTI_UNDERRUN:
-			if(speedMultiplier == 1 && addSoundBuffersOnUnderrun &&
+			if(speedMultiplier == 1. && addSoundBuffersOnUnderrun &&
 				inputFormat.bytesToTime(rBuff.capacity()).count() <= 1.) // hard cap buffer increase to 1 sec
 			{
-				logWarn("increasing buffer size due to multiple underruns within a short time");
+				log.warn("increasing buffer size due to multiple underruns within a short time");
 				targetBufferFillBytes += bufferIncrementBytes;
 				resizeAudioBuffer(targetBufferFillBytes);
 			}
@@ -275,33 +290,36 @@ void EmuAudio::writeFrames(const void *samples, uint32_t framesToWrite)
 		default:
 		break;
 	}
-	const uint32_t sampleFrames = framesToWrite;
-	if(speedMultiplier > 1) [[unlikely]]
+	const size_t sampleFrames = framesToWrite;
+	if(speedMultiplier != 1.) [[unlikely]]
 	{
 		framesToWrite = std::ceil((double)framesToWrite / speedMultiplier);
-		framesToWrite = std::max(framesToWrite, 1u);
+		framesToWrite = std::max(framesToWrite, 1zu);
 	}
 	auto bytes = inputFormat.framesToBytes(framesToWrite);
-	auto freeBytes = rBuff.freeSpace();
-	if(bytes <= freeBytes)
 	{
-		if(sampleFrames > framesToWrite)
+		auto span = rBuff.beginWrite(bytes);
+		if(bytes <= span.size())
 		{
-			simpleResample(rBuff.writeAddr(), framesToWrite, samples, sampleFrames, inputFormat);
-			rBuff.commitWrite(bytes);
+			if(sampleFrames != framesToWrite)
+			{
+				simpleResample(span.data(), framesToWrite, samples, sampleFrames, inputFormat);
+			}
+			else
+			{
+				copy_n(static_cast<const uint8_t*>(samples), bytes, span.data());
+			}
 		}
-		else
-			rBuff.writeUnchecked(samples, bytes);
-	}
-	else
-	{
-		logMsg("overrun, only %d out of %d bytes free", freeBytes, bytes);
-		#ifdef CONFIG_EMUFRAMEWORK_AUDIO_STATS
-		audioStats.overruns++;
-		#endif
-		auto freeFrames = inputFormat.bytesToFrames(freeBytes);
-		simpleResample(rBuff.writeAddr(), freeFrames, samples, sampleFrames, inputFormat);
-		rBuff.commitWrite(freeBytes);
+		else // not enough space for write
+		{
+			log.info("overrun, only {} out of {} bytes free", span.size(), bytes);
+			#ifdef CONFIG_EMUFRAMEWORK_AUDIO_STATS
+			audioStats.overruns++;
+			#endif
+			auto freeFrames = inputFormat.bytesToFrames(span.size());
+			simpleResample(span.data(), freeFrames, samples, sampleFrames, inputFormat);
+		}
+		rBuff.endWrite(span);
 	}
 	if(audioWriteState == AudioWriteState::BUFFER && shouldStartAudioWrites(bytes))
 	{
@@ -309,22 +327,25 @@ void EmuAudio::writeFrames(const void *samples, uint32_t framesToWrite)
 		{
 			auto bytes = rBuff.size();
 			auto capacity = rBuff.capacity();
-			logMsg("starting audio writes with buffer fill %u/%u bytes %.2f/%.2f secs",
-				bytes, capacity, inputFormat.bytesToTime(bytes).count(), inputFormat.bytesToTime(capacity).count());
+			log.info("starting audio writes with buffer fill {}/{} bytes {}/{} secs",
+				bytes, capacity, inputFormat.bytesToTime(bytes), inputFormat.bytesToTime(capacity));
 		}
 		audioWriteState = AudioWriteState::ACTIVE;
 	}
 }
 
-void EmuAudio::setRate(uint32_t newRate)
+void EmuAudio::setRate(int newRate)
 {
-	if(rate == newRate)
+	assert(newRate <= defaultRate);
+	if(!newRate)
+		newRate = defaultRate;
+	if(rate_ == newRate)
 		return;
-	if(rate)
-		logMsg("set rate:%u -> %u", rate, newRate);
+	if(rate_)
+		log.info("set rate:{} -> {}", rate_, newRate);
 	else
-		logMsg("set rate:%u", newRate);
-	rate = newRate;
+		log.info("set rate:{}", newRate);
+	rate_ = newRate;
 	stop();
 }
 
@@ -337,41 +358,118 @@ void EmuAudio::setStereo(bool on)
 	stop();
 }
 
-void EmuAudio::setSpeedMultiplier(uint8_t speed)
+void EmuAudio::setSpeedMultiplier(double speed)
 {
-	speedMultiplier = speed ? speed : 1;
+	if(speedMultiplier == speed)
+		return;
+	speedMultiplier = speed;
+	log.info("set speed multiplier:{}", speed);
+	updateVolume();
+	updateAddBuffersOnUnderrun();
+
 }
 
-void EmuAudio::setAddSoundBuffersOnUnderrun(bool on)
+void EmuAudio::updateVolume()
 {
-	addSoundBuffersOnUnderrun = on;
-}
-
-void EmuAudio::setVolume(uint8_t vol)
-{
-	if(vol == 100)
+	assumeExpr(maxVolume_ >= 0.f && maxVolume_ <= 1.25f);
+	if(speedMultiplier != 1.)
 	{
-		volume = 1.f;
+		if(isEnabledDuringAltSpeed())
+			currentVolume = maxVolume_ * .5f;
+		else
+			currentVolume = 0;
 	}
 	else
 	{
-		assumeExpr(vol < 100);
-		volume = vol / 100.f;
+		currentVolume = maxVolume_;
 	}
+}
+
+void EmuAudio::updateAddBuffersOnUnderrun() { addSoundBuffersOnUnderrun = speedMultiplier == 1. ? addSoundBuffersOnUnderrunSetting : false; }
+
+constexpr bool isValidVolumeSetting(int8_t vol) { return vol >= 0 && vol <= 125; }
+
+bool EmuAudio::setMaxVolume(int8_t vol)
+{
+	if(!isValidVolumeSetting(vol))
+		return false;
+	maxVolume_ = vol / 100.f;
+	updateVolume();
+	return true;
+}
+
+void EmuAudio::setOutputAPI(IG::Audio::Api api)
+{
+	audioAPI = api;
+	open();
+}
+
+bool EmuAudio::isEnabled() const
+{
+	return flags.enabled;
+}
+
+void EmuAudio::setEnabled(bool on)
+{
+	flags.enabled = on;
+	if(on)
+		open();
+	else
+		close();
+}
+
+bool EmuAudio::isEnabledDuringAltSpeed() const
+{
+	return flags.enabledDuringAltSpeed;
+}
+
+void EmuAudio::setEnabledDuringAltSpeed(bool on)
+{
+	flags.enabledDuringAltSpeed = on;
+	updateAddBuffersOnUnderrun();
 }
 
 IG::Audio::Format EmuAudio::format() const
 {
-	assumeExpr(rate);
-	return {rate, EmuSystem::audioSampleFormat, channels};
+	assumeExpr(rate_ > 0);
+	return {rate_, EmuSystem::audioSampleFormat, channels};
 }
 
-EmuAudio::operator bool() const
+constexpr bool isValidSoundRate(int rate)
 {
-	return (bool)rBuff;
+	switch(rate)
+	{
+		case 22050:
+		case 32000:
+		case 44100:
+		case 48000: return true;
+	}
+	return false;
 }
 
-const IG::Audio::Manager &EmuAudio::audioManager() const
+void EmuAudio::writeConfig(FileIO &io) const
 {
-	return *audioManagerPtr;
+	writeOptionValueIfNotDefault(io, CFGKEY_SOUND, flags, defaultAudioFlags);
+	if(!EmuSystem::forcedSoundRate)
+		writeOptionValueIfNotDefault(io, CFGKEY_SOUND_RATE, rate_, defaultRate);
+	writeOptionValueIfNotDefault(io, CFGKEY_SOUND_BUFFERS, soundBuffers, defaultSoundBuffers);
+	writeOptionValueIfNotDefault(io, CFGKEY_SOUND_VOLUME, maxVolume(), 100);
+	writeOptionValueIfNotDefault(io, CFGKEY_ADD_SOUND_BUFFERS_ON_UNDERRUN, addSoundBuffersOnUnderrunSetting, false);
+	writeOptionValueIfNotDefault(io, CFGKEY_AUDIO_API, audioAPI, Audio::Api::DEFAULT);
+}
+
+bool EmuAudio::readConfig(MapIO &io, unsigned key)
+{
+	switch(key)
+	{
+		case CFGKEY_SOUND: return readOptionValue(io, flags);
+		case CFGKEY_SOUND_RATE: return EmuSystem::forcedSoundRate ? false : readOptionValue(io, rate_, isValidSoundRate);
+		case CFGKEY_SOUND_BUFFERS: return readOptionValue(io, soundBuffers, isValidWithMinMax<1, 7, int8_t>);
+		case CFGKEY_SOUND_VOLUME: return readOptionValue<int8_t>(io, [&](auto v){ setMaxVolume(v); }, isValidVolumeSetting);
+		case CFGKEY_ADD_SOUND_BUFFERS_ON_UNDERRUN: return readOptionValue(io, addSoundBuffersOnUnderrunSetting);
+		case CFGKEY_AUDIO_API: return readOptionValue(io, audioAPI);
+	}
+	return false;
+}
+
 }

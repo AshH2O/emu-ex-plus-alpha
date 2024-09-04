@@ -17,93 +17,98 @@
 
 #include <imagine/config/defs.hh>
 #include <imagine/gfx/opengl/GLStateCache.hh>
-#include <imagine/gfx/Mat4.hh>
-#include <imagine/gfx/Viewport.hh>
+#include <imagine/gfx/Vertex.hh>
+#include <imagine/thread/Semaphore.hh>
 #include "GLSLProgram.hh"
-#include <imagine/util/typeTraits.hh>
+#include <imagine/util/used.hh>
 
 namespace IG
-{
-class Semaphore;
-}
-
-namespace Base
 {
 class GLContext;
 }
 
-namespace Gfx
+namespace IG::Gfx
 {
 
 class TextureSampler;
-class Program;
-class Renderer;
-class RendererTask;
 
 class GLRendererCommands
 {
 public:
-	constexpr GLRendererCommands() {}
-	GLRendererCommands(RendererTask &rTask, Base::Window *winPtr, Drawable drawable, Base::GLDisplay glDpy,
-		const Base::GLContext &glCtx, IG::Semaphore *drawCompleteSemPtr);
-	void discardTemporaryData();
+	constexpr GLRendererCommands() = default;
+	GLRendererCommands(RendererTask &rTask, Window *winPtr, Drawable drawable, Rect2<int> viewport,
+		GLDisplay glDpy, const GLContext &glCtx, std::binary_semaphore *drawCompleteSemPtr);
+	void bindGLVertexArray(GLuint vao);
 	void bindGLArrayBuffer(GLuint vbo);
-	#ifdef CONFIG_GFX_OPENGL_FIXED_FUNCTION_PIPELINE
-	void glcMatrixMode(GLenum mode);
-	#endif
-	void glcBindTexture(GLenum target, GLuint texture);
-	void glcDeleteTextures(GLsizei n, const GLuint *textures);
+	void bindGLIndexBuffer(GLuint ibo);
 	void glcBlendFunc(GLenum sfactor, GLenum dfactor);
 	void glcBlendEquation(GLenum mode);
 	void glcEnable(GLenum cap);
 	void glcDisable(GLenum cap);
 	GLboolean glcIsEnabled(GLenum cap);
-	#ifdef CONFIG_GFX_OPENGL_FIXED_FUNCTION_PIPELINE
-	void glcEnableClientState(GLenum cap);
-	void glcDisableClientState(GLenum cap);
-	void glcTexEnvi(GLenum target, GLenum pname, GLint param);
-	void glcTexEnvfv(GLenum target, GLenum pname, const GLfloat *params);
-	void glcColor4f(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha);
-	void glcTexCoordPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
-	void glcColorPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
-	void glcVertexPointer(GLint size, GLenum type, GLsizei stride, const GLvoid *pointer);
-	#endif
-	#ifdef CONFIG_GFX_OPENGL_SHADER_PIPELINE
-	void glcVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const GLvoid *pointer);
-	#endif
-	void setCachedProjectionMatrix(Mat4 projectionMat);
-	void setupVertexArrayPointers(const char *v, int numV, unsigned stride,
-		unsigned textureOffset, unsigned colorOffset, unsigned posOffset, bool hasTexture, bool hasColor);
-	void setupShaderVertexArrayPointers(const char *v, int numV, unsigned stride, unsigned id,
-		unsigned textureOffset, unsigned colorOffset, unsigned posOffset, bool hasTexture, bool hasColor);
+	void setupVertexArrayPointers(int stride,
+		AttribDesc textureAttrib, AttribDesc colorAttrib, AttribDesc posAttrib);
+	void setupVertexArrayPointers(int stride, VertexLayoutFlags enabledLayout, VertexLayoutDesc);
 
 protected:
-	void setCurrentDrawable(Drawable win);
+	bool setCurrentDrawable(Drawable win);
+	void setViewport(Rect2<int> v);
 	void present(Drawable win);
 	void doPresent();
 	void notifyDrawComplete();
 	void notifyPresentComplete();
-	const Base::GLContext &glContext() const;
+	const GLContext &glContext() const;
+	bool hasVAOFuncs() const;
+
+	template<VertexLayout V>
+	void setupVertexArrayPointers()
+	{
+		setupVertexArrayPointers(sizeof(V),
+			texCoordAttribDesc<V>(), colorAttribDesc<V>(), posAttribDesc<V>());
+	}
+
+	template<VertexLayout V>
+	void setVertexAttribs()
+	{
+		setupVertexArrayPointers(sizeof(V), vertexLayoutEnableMask<V>(), vertexLayoutDesc<V>());
+	}
+
+	template<class V>
+	void setVertexArray(const ObjectVertexArray<V> &verts)
+	{
+		if(hasVAOFuncs())
+		{
+			bindGLVertexArray(verts.array().name());
+		}
+		else
+		{
+			bindGLArrayBuffer(verts.name());
+			bindGLIndexBuffer(verts.array().name()); // index buffer name is stored in place of array name
+			setVertexAttribs<typename ObjectVertexArray<V>::Vertex>();
+		}
+	}
+
+	template<class V>
+	void setVertexBuffer(const Buffer<V, BufferType::vertex> &verts)
+	{
+		bindGLArrayBuffer(verts.name());
+	}
 
 	RendererTask *rTask{};
 	Renderer *r{};
-	IG::Semaphore *drawCompleteSemPtr{};
-	Base::Window *winPtr{};
-	[[no_unique_address]] Base::GLDisplay glDpy{};
-	const Base::GLContext *glContextPtr{};
+	std::binary_semaphore *drawCompleteSemPtr{};
+	Window *winPtr{};
+	[[no_unique_address]] GLDisplay glDpy{};
+	const GLContext *glContextPtr{};
 	Drawable drawable{};
-	Viewport currViewport{};
+	Rect2<int> winViewport{};
 	GLuint currSamplerName{};
-	#ifdef CONFIG_GFX_OPENGL_SHADER_PIPELINE
-	GLSLProgram currProgram{};
-	Mat4 modelMat{}, projectionMat{};
-	uint32_t currentVtxArrayPointerID = 0;
-	#endif
+	GLuint currVertexArrayName{};
+	GLuint currIndexBufferName{};
+	NativeProgram currProgram{};
+	VertexLayoutFlags currentEnabledVertexLayout{};
 	GLStateCache glState{};
-	Color vColor{}; // color when using shader pipeline
-	Color texEnvColor{}; // color when using shader pipeline
-	GLuint arrayBuffer = 0;
-	bool arrayBufferIsSet = false;
+	Color4F vColor{}; // color when using shader pipeline
 };
 
 using RendererCommandsImpl = GLRendererCommands;

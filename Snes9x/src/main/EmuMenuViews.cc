@@ -1,45 +1,57 @@
+#include <emuframework/EmuApp.hh>
+#include <emuframework/AudioOptionView.hh>
+#include <emuframework/FilePathOptionView.hh>
+#include <emuframework/DataPathSelectView.hh>
+#include <emuframework/UserPathSelectView.hh>
+#include <emuframework/SystemActionsView.hh>
+#include <emuframework/viewUtils.hh>
+#include "EmuCheatViews.hh"
+#include "MainApp.hh"
+#include <imagine/util/format.hh>
 #ifndef SNES9X_VERSION_1_4
 #include <apu/apu.h>
 #include <apu/bapu/snes/snes.hpp>
 #include <ppu.h>
 #endif
-#include <emuframework/EmuApp.hh>
-#include <emuframework/OptionView.hh>
-#include <emuframework/EmuSystemActionsView.hh>
-#include "EmuCheatViews.hh"
-#include "internal.hh"
-#include <snes9x.h>
+#include <imagine/logger/logger.h>
 
-static constexpr bool HAS_NSRT = !IS_SNES9X_VERSION_1_4;
+namespace EmuEx
+{
+
+using MainAppHelper = EmuAppHelperBase<MainApp>;
+
+constexpr bool HAS_NSRT = !IS_SNES9X_VERSION_1_4;
 
 #ifndef SNES9X_VERSION_1_4
-class CustomAudioOptionView : public AudioOptionView
+class CustomAudioOptionView : public AudioOptionView, public MainAppHelper
 {
+	using MainAppHelper::system;
+
 	void setDSPInterpolation(uint8_t val)
 	{
 		logMsg("set DSP interpolation:%u", val);
-		optionAudioDSPInterpolation = val;
+		system().optionAudioDSPInterpolation = val;
 		SNES::dsp.spc_dsp.interpolation = val;
 	}
 
 	TextMenuItem dspInterpolationItem[5]
 	{
-		{"None", &defaultFace(), [this](){ setDSPInterpolation(0); }},
-		{"Linear", &defaultFace(), [this](){ setDSPInterpolation(1); }},
-		{"Gaussian", &defaultFace(), [this](){ setDSPInterpolation(2); }},
-		{"Cubic", &defaultFace(), [this](){ setDSPInterpolation(3); }},
-		{"Sinc", &defaultFace(), [this](){ setDSPInterpolation(4); }},
+		{"None",     attachParams(), [this](){ setDSPInterpolation(0); }},
+		{"Linear",   attachParams(), [this](){ setDSPInterpolation(1); }},
+		{"Gaussian", attachParams(), [this](){ setDSPInterpolation(2); }},
+		{"Cubic",    attachParams(), [this](){ setDSPInterpolation(3); }},
+		{"Sinc",     attachParams(), [this](){ setDSPInterpolation(4); }},
 	};
 
 	MultiChoiceMenuItem dspInterpolation
 	{
-		"DSP Interpolation", &defaultFace(),
-		optionAudioDSPInterpolation,
+		"DSP Interpolation", attachParams(),
+		system().optionAudioDSPInterpolation.value(),
 		dspInterpolationItem
 	};
 
 public:
-	CustomAudioOptionView(ViewAttachParams attach): AudioOptionView{attach, true}
+	CustomAudioOptionView(ViewAttachParams attach, EmuAudio &audio): AudioOptionView{attach, audio, true}
 	{
 		loadStockItems();
 		item.emplace_back(&dspInterpolation);
@@ -47,132 +59,157 @@ public:
 };
 #endif
 
-class ConsoleOptionView : public TableView, public EmuAppHelper<ConsoleOptionView>
+class ConsoleOptionView : public TableView, public MainAppHelper
 {
 	BoolMenuItem multitap
 	{
-		"5-Player Adapter", &defaultFace(),
-		(bool)optionMultitap,
-		[this](BoolMenuItem &item, View &, Input::Event e)
+		"5-Player Adapter", attachParams(),
+		(bool)system().optionMultitap,
+		[this](BoolMenuItem &item)
 		{
-			EmuSystem::sessionOptionSet();
-			optionMultitap = item.flipBoolValue(*this);
-			setupSNESInput(app().defaultVController());
+			system().sessionOptionSet();
+			system().optionMultitap = item.flipBoolValue(*this);
+			system().setupSNESInput(app().defaultVController());
 		}
 	};
 
-	TextMenuItem inputPortsItem[HAS_NSRT ? 4 : 3]
+	TextMenuItem inputPortsItem[HAS_NSRT ? 5 : 4]
 	{
 		#ifndef SNES9X_VERSION_1_4
-		{"Auto (NSRT)", &defaultFace(), [this]() { setInputPorts(SNES_AUTO_INPUT, app().defaultVController()); }},
+		{"Auto (NSRT)", attachParams(), setInputPortsDel(), {.id = SNES_AUTO_INPUT}},
 		#endif
-		{"Gamepads", &defaultFace(), [this]() { setInputPorts(SNES_JOYPAD, app().defaultVController()); }},
-		{"Superscope", &defaultFace(), [this]() { setInputPorts(SNES_SUPERSCOPE, app().defaultVController()); }},
-		{"Mouse", &defaultFace(), [this]() { setInputPorts(SNES_MOUSE_SWAPPED, app().defaultVController()); }},
+		{"Gamepads",    attachParams(), setInputPortsDel(), {.id = SNES_JOYPAD}},
+		{"Superscope",  attachParams(), setInputPortsDel(), {.id = SNES_SUPERSCOPE}},
+		{"Justifier",   attachParams(), setInputPortsDel(), {.id = SNES_JUSTIFIER}},
+		{"Mouse",       attachParams(), setInputPortsDel(), {.id = SNES_MOUSE_SWAPPED}},
 	};
 
 	MultiChoiceMenuItem inputPorts
 	{
-		"Input Ports", &defaultFace(),
-		[]()
-		{
-			constexpr int SNES_JOYPAD_MENU_IDX = HAS_NSRT ? 1 : 0;
-			constexpr int SNES_SUPERSCOPE_MENU_IDX = HAS_NSRT ? 2 : 1;
-			constexpr int SNES_MOUSE_MENU_IDX = HAS_NSRT ? 3 : 2;
-			if(snesInputPort == SNES_JOYPAD)
-				return SNES_JOYPAD_MENU_IDX;
-			else if(snesInputPort == SNES_SUPERSCOPE)
-				return SNES_SUPERSCOPE_MENU_IDX;
-			else if(snesInputPort == SNES_MOUSE_SWAPPED)
-				return SNES_MOUSE_MENU_IDX;
-			return 0;
-		}(),
+		"Input Ports", attachParams(),
+		MenuId{system().snesInputPort},
 		inputPortsItem
 	};
 
-	static void setInputPorts(int val, VController &vCtrl)
+	TextMenuItem::SelectDelegate setInputPortsDel()
 	{
-		EmuSystem::sessionOptionSet();
-		optionInputPort = val;
-		snesInputPort = val;
-		setupSNESInput(vCtrl);
+		return [this](TextMenuItem &item)
+		{
+			system().sessionOptionSet();
+			system().optionInputPort = item.id;
+			system().snesInputPort = item.id;
+			system().setupSNESInput(app().defaultVController());
+		};
 	}
 
 	TextMenuItem videoSystemItem[4]
 	{
-		{"Auto", &defaultFace(), [this](Input::Event e){ setVideoSystem(0, e); }},
-		{"NTSC", &defaultFace(), [this](Input::Event e){ setVideoSystem(1, e); }},
-		{"PAL", &defaultFace(), [this](Input::Event e){ setVideoSystem(2, e); }},
-		{"NTSC + PAL Spoof", &defaultFace(), [this](Input::Event e){ setVideoSystem(3, e); }},
+		{"Auto",             attachParams(), [this](Input::Event e){ setVideoSystem(0, e); }},
+		{"NTSC",             attachParams(), [this](Input::Event e){ setVideoSystem(1, e); }},
+		{"PAL",              attachParams(), [this](Input::Event e){ setVideoSystem(2, e); }},
+		{"NTSC + PAL Spoof", attachParams(), [this](Input::Event e){ setVideoSystem(3, e); }},
 	};
 
 	MultiChoiceMenuItem videoSystem
 	{
-		"Video System", &defaultFace(),
-		optionVideoSystem,
+		"System", attachParams(),
+		system().optionVideoSystem.value(),
 		videoSystemItem
 	};
 
 	void setVideoSystem(int val, Input::Event e)
 	{
-		EmuSystem::sessionOptionSet();
-		optionVideoSystem = val;
+		system().sessionOptionSet();
+		system().optionVideoSystem = val;
 		app().promptSystemReloadDueToSetOption(attachParams(), e);
 	}
 
+	TextHeadingMenuItem videoHeading{"Video", attachParams()};
+
+	BoolMenuItem allowExtendedLines
+	{
+		"Allow Extended 239/478 Lines", attachParams(),
+		(bool)system().optionAllowExtendedVideoLines,
+		[this](BoolMenuItem &item)
+		{
+			system().sessionOptionSet();
+			system().optionAllowExtendedVideoLines = item.flipBoolValue(*this);
+		}
+	};
+
+	TextMenuItem deinterlaceModeItems[2]
+	{
+		{"Bob",   attachParams(), {.id = DeinterlaceMode::Bob}},
+		{"Weave", attachParams(), {.id = DeinterlaceMode::Weave}},
+	};
+
+	MultiChoiceMenuItem deinterlaceMode
+	{
+		"Deinterlace Mode", attachParams(),
+		MenuId{system().deinterlaceMode},
+		deinterlaceModeItems,
+		{
+			.defaultItemOnSelect = [this](TextMenuItem &item)
+			{
+				system().sessionOptionSet();
+				system().deinterlaceMode = DeinterlaceMode(item.id.val);
+			}
+		}
+	};
+
 	#ifndef SNES9X_VERSION_1_4
-	TextHeadingMenuItem emulationHacks{"Emulation Hacks", &defaultBoldFace()};
+	TextHeadingMenuItem emulationHacks{"Emulation Hacks", attachParams()};
 
 	BoolMenuItem blockInvalidVRAMAccess
 	{
-		"Allow Invalid VRAM Access", &defaultFace(),
-		(bool)!optionBlockInvalidVRAMAccess,
-		[this](BoolMenuItem &item, View &, Input::Event e)
+		"Allow Invalid VRAM Access", attachParams(),
+		(bool)!system().optionBlockInvalidVRAMAccess,
+		[this](BoolMenuItem &item)
 		{
-			EmuSystem::sessionOptionSet();
-			optionBlockInvalidVRAMAccess = !item.flipBoolValue(*this);
-			PPU.BlockInvalidVRAMAccess = optionBlockInvalidVRAMAccess;
+			system().sessionOptionSet();
+			system().optionBlockInvalidVRAMAccess = !item.flipBoolValue(*this);
+			PPU.BlockInvalidVRAMAccess = system().optionBlockInvalidVRAMAccess;
 		}
 	};
 
 	BoolMenuItem separateEchoBuffer
 	{
-		"Separate Echo Buffer From Ram", &defaultFace(),
-		(bool)optionSeparateEchoBuffer,
-		[this](BoolMenuItem &item, View &, Input::Event e)
+		"Separate Echo Buffer From Ram", attachParams(),
+		(bool)system().optionSeparateEchoBuffer,
+		[this](BoolMenuItem &item)
 		{
-			EmuSystem::sessionOptionSet();
-			optionSeparateEchoBuffer = item.flipBoolValue(*this);
-			SNES::dsp.spc_dsp.separateEchoBuffer = optionSeparateEchoBuffer;
+			system().sessionOptionSet();
+			system().optionSeparateEchoBuffer = item.flipBoolValue(*this);
+			SNES::dsp.spc_dsp.separateEchoBuffer = system().optionSeparateEchoBuffer;
 		}
 	};
 
 	void setSuperFXClock(unsigned val)
 	{
-		EmuSystem::sessionOptionSet();
-		optionSuperFXClockMultiplier = val;
-		setSuperFXSpeedMultiplier(optionSuperFXClockMultiplier);
+		system().sessionOptionSet();
+		system().optionSuperFXClockMultiplier = val;
+		setSuperFXSpeedMultiplier(system().optionSuperFXClockMultiplier);
 	}
 
 	TextMenuItem superFXClockItem[2]
 	{
-		{"100%", &defaultFace(), [this]() { setSuperFXClock(100); }},
-		{"Custom Value", &defaultFace(),
+		{"100%", attachParams(), [this]() { setSuperFXClock(100); }},
+		{"Custom Value", attachParams(),
 			[this](Input::Event e)
 			{
-				app().pushAndShowNewCollectValueInputView<int>(attachParams(), e, "Input 5 to 250", "",
-					[this](EmuApp &app, auto val)
+				pushAndShowNewCollectValueInputView<int>(attachParams(), e, "Input 5 to 250", "",
+					[this](CollectTextInputView&, auto val)
 					{
-						if(optionSuperFXClockMultiplier.isValidVal(val))
+						if(system().optionSuperFXClockMultiplier.isValid(val))
 						{
 							setSuperFXClock(val);
-							superFXClock.setSelected(std::size(superFXClockItem) - 1, *this);
+							superFXClock.setSelected(lastIndex(superFXClockItem), *this);
 							dismissPrevious();
 							return true;
 						}
 						else
 						{
-							app.postErrorMessage("Value not in range");
+							app().postErrorMessage("Value not in range");
 							return false;
 						}
 					});
@@ -183,28 +220,33 @@ class ConsoleOptionView : public TableView, public EmuAppHelper<ConsoleOptionVie
 
 	MultiChoiceMenuItem superFXClock
 	{
-		"SuperFX Clock Multiplier", &defaultFace(),
-		[this](uint32_t idx, Gfx::Text &t)
+		"SuperFX Clock Multiplier", attachParams(),
+		[this]()
 		{
-			t.setString(string_makePrintf<5>("%u%%", optionSuperFXClockMultiplier.val).data());
-			return true;
-		},
-		[]()
-		{
-			if(optionSuperFXClockMultiplier.val == 100)
+			if(system().optionSuperFXClockMultiplier == 100)
 				return 0;
 			else
 				return 1;
 		}(),
-		superFXClockItem
+		superFXClockItem,
+		{
+			.onSetDisplayString = [this](auto, Gfx::Text& t)
+			{
+				t.resetString(std::format("{}%", system().optionSuperFXClockMultiplier.value()));
+				return true;
+			}
+		},
 	};
 	#endif
 
-	std::array<MenuItem*, IS_SNES9X_VERSION_1_4 ? 3 : 7> menuItem
+	std::array<MenuItem*, IS_SNES9X_VERSION_1_4 ? 6 : 10> menuItem
 	{
 		&inputPorts,
 		&multitap,
+		&videoHeading,
 		&videoSystem,
+		&allowExtendedLines,
+		&deinterlaceMode,
 		#ifndef SNES9X_VERSION_1_4
 		&emulationHacks,
 		&blockInvalidVRAMAccess,
@@ -224,15 +266,15 @@ public:
 	{}
 };
 
-class CustomSystemActionsView : public EmuSystemActionsView
+class CustomSystemActionsView : public SystemActionsView
 {
 private:
 	TextMenuItem options
 	{
-		"Console Options", &defaultFace(),
+		"Console Options", attachParams(),
 		[this](TextMenuItem &, View &, Input::Event e)
 		{
-			if(EmuSystem::gameIsRunning())
+			if(system().hasContent())
 			{
 				pushAndShow(makeView<ConsoleOptionView>(), e);
 			}
@@ -240,10 +282,121 @@ private:
 	};
 
 public:
-	CustomSystemActionsView(ViewAttachParams attach): EmuSystemActionsView{attach, true}
+	CustomSystemActionsView(ViewAttachParams attach): SystemActionsView{attach, true}
 	{
 		item.emplace_back(&options);
 		loadStandardItems();
+	}
+};
+
+class CustomFilePathOptionView : public FilePathOptionView, public MainAppHelper
+{
+	using MainAppHelper::system;
+	using MainAppHelper::app;
+
+	TextMenuItem cheatsPath
+	{
+		cheatsMenuName(appContext(), system().cheatsDir), attachParams(),
+		[this](const Input::Event &e)
+		{
+			pushAndShow(makeViewWithName<UserPathSelectView>("Cheats", system().userPath(system().cheatsDir),
+				[this](CStringView path)
+				{
+					logMsg("set cheats path:%s", path.data());
+					system().cheatsDir = path;
+					cheatsPath.compile(cheatsMenuName(appContext(), path));
+				}), e);
+		}
+	};
+
+	TextMenuItem patchesPath
+	{
+		patchesMenuName(appContext(), system().patchesDir), attachParams(),
+		[this](const Input::Event &e)
+		{
+			pushAndShow(makeViewWithName<UserPathSelectView>("Patches", system().userPath(system().patchesDir),
+				[this](CStringView path)
+				{
+					logMsg("set patches path:%s", path.data());
+					system().patchesDir = path;
+					patchesPath.compile(patchesMenuName(appContext(), path));
+				}), e);
+		}
+	};
+
+	static std::string satMenuName(IG::ApplicationContext ctx, std::string_view userPath)
+	{
+		return std::format("Satellaview Files: {}", userPathToDisplayName(ctx, userPath));
+	}
+
+	TextMenuItem satPath
+	{
+		satMenuName(appContext(), system().satDir), attachParams(),
+		[this](const Input::Event &e)
+		{
+			pushAndShow(makeViewWithName<UserPathSelectView>("Satellaview Files", system().userPath(system().satDir),
+				[this](CStringView path)
+				{
+					logMsg("set satellaview files path:%s", path.data());
+					system().satDir = path;
+					satPath.compile(satMenuName(appContext(), path));
+				}), e);
+		}
+	};
+
+	TextMenuItem bsxBios
+	{
+		bsxMenuName(system().bsxBiosPath), attachParams(),
+		[this](const Input::Event &e)
+		{
+			pushAndShow(makeViewWithName<DataFileSelectView<>>("BS-X BIOS",
+				app().validSearchPath(FS::dirnameUri(system().bsxBiosPath)),
+				[this](CStringView path, FS::file_type)
+				{
+					system().bsxBiosPath = path;
+					logMsg("set BS-X bios:%s", path.data());
+					bsxBios.compile(bsxMenuName(path));
+					return true;
+				}, Snes9xSystem::hasBiosExtension), e);
+		}
+	};
+
+	std::string bsxMenuName(CStringView path) const
+	{
+		return std::format("BS-X BIOS: {}", appContext().fileUriDisplayName(path));
+	}
+
+	TextMenuItem sufamiBios
+	{
+		sufamiMenuName(system().sufamiBiosPath), attachParams(),
+		[this](const Input::Event &e)
+		{
+			pushAndShow(makeViewWithName<DataFileSelectView<>>("Sufami Turbo BIOS",
+				app().validSearchPath(FS::dirnameUri(system().sufamiBiosPath)),
+				[this](CStringView path, FS::file_type)
+				{
+					system().sufamiBiosPath = path;
+					logMsg("set Sufami Turbo bios:%s", path.data());
+					sufamiBios.compile(sufamiMenuName(path));
+					return true;
+				}, Snes9xSystem::hasBiosExtension), e);
+		}
+	};
+
+	std::string sufamiMenuName(CStringView path) const
+	{
+		return std::format("Sufami Turbo BIOS: {}", appContext().fileUriDisplayName(path));
+	}
+
+public:
+	CustomFilePathOptionView(ViewAttachParams attach): FilePathOptionView{attach, true}
+	{
+		loadStockItems();
+		item.emplace_back(&cheatsPath);
+		item.emplace_back(&patchesPath);
+		item.emplace_back(&satPath);
+		item.emplace_back(&bsxBios);
+		item.emplace_back(&sufamiBios);
 	}
 };
 
@@ -252,11 +405,12 @@ std::unique_ptr<View> EmuApp::makeCustomView(ViewAttachParams attach, ViewID id)
 	switch(id)
 	{
 		#ifndef SNES9X_VERSION_1_4
-		case ViewID::AUDIO_OPTIONS: return std::make_unique<CustomAudioOptionView>(attach);
+		case ViewID::AUDIO_OPTIONS: return std::make_unique<CustomAudioOptionView>(attach, audio);
 		#endif
+		case ViewID::FILE_PATH_OPTIONS: return std::make_unique<CustomFilePathOptionView>(attach);
 		case ViewID::SYSTEM_ACTIONS: return std::make_unique<CustomSystemActionsView>(attach);
-		case ViewID::EDIT_CHEATS: return std::make_unique<EmuEditCheatListView>(attach);
-		case ViewID::LIST_CHEATS: return std::make_unique<EmuCheatsView>(attach);
 		default: return nullptr;
 	}
+}
+
 }

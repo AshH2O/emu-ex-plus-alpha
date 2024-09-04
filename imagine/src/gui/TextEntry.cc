@@ -14,17 +14,23 @@
 	along with EmuFramework.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/gui/TextEntry.hh>
+#include <imagine/gui/ViewManager.hh>
 #include <imagine/gui/TableView.hh>
 #include <imagine/gfx/Renderer.hh>
 #include <imagine/gfx/RendererCommands.hh>
-#include <imagine/util/string.h>
+#include <imagine/gfx/GlyphTextureSet.hh>
+#include <imagine/util/variant.hh>
 #include <imagine/logger/logger.h>
 
-TextEntry::TextEntry(const char *initText, Gfx::Renderer &r, Gfx::GlyphTextureSet *face, const Gfx::ProjectionPlane &projP)
+namespace IG
 {
-	string_copy(str, initText);
-	t = {str.data(), face};
-	t.compile(r, projP);
+
+TextEntry::TextEntry(const char *initText, ViewAttachParams attach, Gfx::GlyphTextureSet *face):
+	bgQuads{attach.rendererTask, {.size = 1}},
+	t{attach.rendererTask, initText, face},
+	str{initText}
+{
+	t.compile();
 }
 
 void TextEntry::setAcceptingInput(bool on)
@@ -45,80 +51,89 @@ bool TextEntry::isAcceptingInput() const
 	return acceptingInput;
 }
 
-bool TextEntry::inputEvent(View &parentView, Input::Event e)
+bool TextEntry::inputEvent(View &parentView, const Input::Event &e)
 {
-	if(e.isPointer() && e.pushed() && b.overlaps(e.pos()))
+	return e.visit(overloaded
 	{
-		setAcceptingInput(true);
-		return true;
-	}
-	if(acceptingInput && e.pushed() && e.map() == Input::Map::SYSTEM)
-	{
-		bool updateText = false;
-
-		if(e.mapKey() == Input::Keycode::BACK_SPACE)
+		[&](const Input::MotionEvent &motionEv)
 		{
-			int len = strlen(str.data());
-			if(len > 0)
+			if(motionEv.pushed() && b.overlaps(motionEv.pos()))
 			{
-				str[len-1] = '\0';
-				updateText = true;
+				setAcceptingInput(true);
+				return true;
 			}
-		}
-		else
+			return false;
+		},
+		[&](const Input::KeyEvent &keyEv)
 		{
-			auto keyStr = e.keyString(parentView.appContext());
-			if(strlen(keyStr.data()))
+			if(acceptingInput && keyEv.pushed() && keyEv.isKeyboard())
 			{
-				if(!multiLine)
+				bool updateText = false;
+
+				if(keyEv.key() == Input::Keycode::BACK_SPACE)
 				{
-					if(keyStr[0] == '\r' || keyStr[0] == '\n')
+					auto len = str.size();
+					if(len > 0)
 					{
-						setAcceptingInput(false);
-						return true;
+						str.pop_back();
+						updateText = true;
 					}
 				}
-				string_cat(str, keyStr.data());
-				updateText = true;
-			}
-		}
+				else
+				{
+					auto keyStr = keyEv.keyString(parentView.appContext());
+					if(keyStr.size())
+					{
+						if(!multiLine)
+						{
+							if(keyStr[0] == '\r' || keyStr[0] == '\n')
+							{
+								setAcceptingInput(false);
+								return true;
+							}
+						}
+						str.append(keyStr);
+						updateText = true;
+					}
+				}
 
-		if(updateText)
-		{
-			{
-				parentView.waitForDrawFinished();
-				t.setString(str.data());
-				t.compile(parentView.renderer(), projP);
+				if(updateText)
+				{
+					{
+						t.resetString(str);
+						t.compile();
+					}
+					parentView.postDraw();
+				}
+				return true;
 			}
-			parentView.postDraw();
+			return false;
 		}
-		return true;
-	}
-	return false;
+	});
 }
 
-void TextEntry::prepareDraw(Gfx::Renderer &r)
+void TextEntry::prepareDraw()
 {
-	t.makeGlyphs(r);
+	t.makeGlyphs();
 }
 
-void TextEntry::draw(Gfx::RendererCommands &cmds)
+void TextEntry::draw(Gfx::RendererCommands &__restrict__ cmds) const
 {
 	using namespace Gfx;
-	cmds.setCommonProgram(CommonProgram::TEX_ALPHA);
-	t.draw(cmds, projP.unProjectRect(b).pos(LC2DO), LC2DO, projP);
+	cmds.basicEffect().enableAlphaTexture(cmds);
+	t.draw(cmds, b.pos(LC2DO), LC2DO, ColorName::WHITE);
 }
 
-void TextEntry::place(Gfx::Renderer &r)
+void TextEntry::place()
 {
-	t.compile(r, projP);
+	t.compile();
 }
 
-void TextEntry::place(Gfx::Renderer &r, IG::WindowRect rect, const Gfx::ProjectionPlane &projP)
+void TextEntry::place(WindowRect rect)
 {
-	this->projP = projP;
 	b = rect;
-	place(r);
+	bgQuads.write(0, {.bounds = rect.as<int16_t>()});
+	place();
 }
 
 const char *TextEntry::textStr() const
@@ -126,14 +141,27 @@ const char *TextEntry::textStr() const
 	return str.data();
 }
 
-IG::WindowRect TextEntry::bgRect() const
+WindowRect TextEntry::bgRect() const
 {
 	return b;
 }
 
-CollectTextInputView::CollectTextInputView(ViewAttachParams attach, const char *msgText, const char *initialContent,
+CollectTextInputView::CollectTextInputView(ViewAttachParams attach, CStringView msgText, CStringView initialContent,
 	Gfx::TextureSpan closeRes, OnTextDelegate onText, Gfx::GlyphTextureSet *face):
 	View{attach},
+	cancelButton
+	{
+		[&]
+		{
+			return doIfUsed(cancelButton, [&](auto &)
+			{
+				if(!attach.viewManager.needsBackControl && !closeRes)
+					return CancelButton{};
+				return CancelButton{.quad = {attach.rendererTask, {.size = 1}}, .texture = closeRes};
+			});
+		}()
+	},
+	message{attach.rendererTask, msgText, face ? face : &attach.viewManager.defaultFace},
 	textField
 	{
 		attach.appContext(),
@@ -152,142 +180,130 @@ CollectTextInputView::CollectTextInputView(ViewAttachParams attach, const char *
 			}
 		},
 		initialContent, msgText,
-		face ? face->fontSettings().pixelHeight() : attach.viewManager().defaultFace().fontSettings().pixelHeight()
+		face ? face->fontSettings().pixelHeight() : attach.viewManager.defaultFace.fontSettings().pixelHeight()
 	},
 	textEntry
 	{
 		initialContent,
-		attach.renderer(),
-		face ? face : &attach.viewManager().defaultFace(),
-		projP
+		attach,
+		face ? face : &attach.viewManager.defaultFace
 	},
 	onTextD{onText}
 {
-	face = face ? face : &attach.viewManager().defaultFace();
-	#ifndef CONFIG_BASE_ANDROID
-	if(manager().needsBackControl() && closeRes)
-	{
-		cancelSpr = {{{-.5, -.5}, {.5, .5}}, closeRes};
-		if(cancelSpr.compileDefaultProgram(Gfx::IMG_MODE_MODULATE))
-			renderer().autoReleaseShaderCompiler();
-	}
-	#endif
-	message = {msgText, face};
-	[](auto &textEntry)
-	{
-		if constexpr(!Config::Input::SYSTEM_COLLECTS_TEXT)
+	doIfUsed(textEntry,
+		[](auto &textEntry)
 		{
 			textEntry.setAcceptingInput(true);
-		}
-	}(textEntry);
+		});
 }
 
 void CollectTextInputView::place()
 {
 	using namespace Gfx;
 	auto &face = *message.face();
-	#ifndef CONFIG_BASE_ANDROID
-	if(cancelSpr.image())
-	{
-		cancelBtn.setPosRel(viewRect().pos(RT2DO), face.nominalHeight() * 1.75, RT2DO);
-		cancelSpr.setPos(projP.unProjectRect(cancelBtn));
-	}
-	#endif
-	message.setMaxLineSize(projP.width() * 0.95);
-	message.compile(renderer(), projP);
-	[&](auto &textEntry)
-	{
-		IG::WindowRect textRect;
-		int xSize = viewRect().xSize() * 0.95;
-		int ySize = face.nominalHeight() * (Config::envIsAndroid ? 2. : 1.5);
-		if constexpr(!Config::Input::SYSTEM_COLLECTS_TEXT)
+	doIfUsed(cancelButton,
+		[&](auto &cancelButton)
 		{
-			textRect.setPosRel(viewRect().pos(C2DO), {xSize, ySize}, C2DO);
-			textEntry.place(renderer(), textRect, projP);
-		}
-		else
+			if(cancelButton.texture)
+			{
+				cancelButton.bounds.setPosRel(viewRect().pos(RT2DO), face.nominalHeight() * 1.75f, RT2DO);
+				cancelButton.quad.write(0, {.bounds = cancelButton.bounds.template as<int16_t>(), .textureSpan = cancelButton.texture});
+			}
+		});
+	message.compile({.maxLineSize = int(viewRect().xSize() * 0.95f)});
+	WindowRect textRect;
+	int xSize = viewRect().xSize() * 0.95f;
+	int ySize = face.nominalHeight();
+	doIfUsedOr(textEntry,
+		[&](auto &textEntry)
 		{
-			textRect.setPosRel(viewRect().pos(C2DO) - IG::WP{0, (int)viewRect().ySize()/4}, {xSize, ySize}, C2DO);
+			textRect.setPosRel(viewRect().pos(C2DO), {xSize, int(ySize * 1.5f)}, C2DO);
+			textEntry.place(textRect);
+		},
+		[&]()
+		{
+			textRect.setPosRel(viewRect().pos(C2DO) - WPt{0, viewRect().ySize() / 4}, {xSize, ySize}, C2DO);
 			textField.place(textRect);
-		}
-	}(textEntry);
+		});
 }
 
-bool CollectTextInputView::inputEvent(Input::Event e)
+bool CollectTextInputView::inputEvent(const Input::Event& e, ViewInputEventParams)
 {
-	if(e.state() == Input::Action::PUSHED)
-	{
-		if(e.isDefaultCancelButton() || (e.isPointer() && cancelBtn.overlaps(e.pos())))
+	if(e.visit(overloaded
 		{
-			dismiss();
-			return true;
-		}
-	}
-	return [&](auto &textEntry)
-		{
-			if constexpr(!Config::Input::SYSTEM_COLLECTS_TEXT)
+			[&](const Input::MotionEvent &e) -> bool
 			{
-				bool acceptingInput = textEntry.isAcceptingInput();
-				bool handled = textEntry.inputEvent(*this, e);
-				if(!textEntry.isAcceptingInput() && acceptingInput)
+				return doIfUsed(cancelButton, [&](auto &cancelButton)
 				{
-					logMsg("calling on-text delegate");
-					if(onTextD.callCopy(*this, textEntry.textStr()))
-					{
-						textEntry.setAcceptingInput(1);
-					}
-				}
-				return handled;
-			}
-			else
+					return e.pushed() && cancelButton.bounds.overlaps(e.pos());
+				});
+			},
+			[&](const Input::KeyEvent &e)	{ return e.pushed(Input::DefaultKey::CANCEL); }
+		}))
+	{
+		dismiss();
+		return true;
+	}
+	return doIfUsedOr(textEntry,
+		[&](auto &textEntry)
+		{
+			bool acceptingInput = textEntry.isAcceptingInput();
+			bool handled = textEntry.inputEvent(*this, e);
+			if(!textEntry.isAcceptingInput() && acceptingInput)
 			{
-				return false;
+				logMsg("calling on-text delegate");
+				if(onTextD.callCopy(*this, textEntry.textStr()))
+				{
+					textEntry.setAcceptingInput(1);
+				}
 			}
-		}(textEntry);
+			return handled;
+		},
+		[]()
+		{
+			return false;
+		});
 }
 
 void CollectTextInputView::prepareDraw()
 {
-	message.makeGlyphs(renderer());
-	[this](auto &textEntry)
-	{
-		if constexpr(!Config::Input::SYSTEM_COLLECTS_TEXT)
+	message.makeGlyphs();
+	doIfUsed(textEntry,
+		[](auto &textEntry)
 		{
-			textEntry.prepareDraw(renderer());
-		}
-	}(textEntry);
+			textEntry.prepareDraw();
+		});
 }
 
-void CollectTextInputView::draw(Gfx::RendererCommands &cmds)
+void CollectTextInputView::draw(Gfx::RendererCommands &__restrict__ cmds, ViewDrawParams) const
 {
 	using namespace Gfx;
-	#ifndef CONFIG_BASE_ANDROID
-	if(cancelSpr.image())
-	{
-		cmds.set(ColorName::WHITE);
-		cmds.setBlendMode(BLEND_MODE_ALPHA);
-		cmds.set(imageCommonTextureSampler);
-		cancelSpr.setCommonProgram(cmds, IMG_MODE_MODULATE, projP.makeTranslate());
-		cancelSpr.draw(cmds);
-	}
-	#endif
-	[&](auto &textEntry)
-	{
-		if constexpr(!Config::Input::SYSTEM_COLLECTS_TEXT)
+	auto &basicEffect = cmds.basicEffect();
+	doIfUsed(cancelButton,
+		[&](auto &cancelButton)
+		{
+			if(cancelButton.texture)
+			{
+				cmds.setColor(ColorName::WHITE);
+				cmds.set(BlendMode::PREMULT_ALPHA);
+				basicEffect.drawSprite(cmds, cancelButton.quad, 0, cancelButton.texture);
+			}
+		});
+	doIfUsedOr(textEntry,
+		[&](auto &textEntry)
 		{
 			cmds.setColor(0.25);
-			cmds.setCommonProgram(CommonProgram::NO_TEX, projP.makeTranslate());
-			GeomRect::draw(cmds, textEntry.bgRect(), projP);
-			cmds.set(ColorName::WHITE);
+			basicEffect.disableTexture(cmds);
+			cmds.drawQuad(textEntry.bgQuads, 0);
 			textEntry.draw(cmds);
-			cmds.setCommonProgram(CommonProgram::TEX_ALPHA);
-			message.draw(cmds, 0, projP.unprojectY(textEntry.bgRect().pos(C2DO).y) + message.nominalHeight(), CB2DO, projP);
-		}
-		else
+			basicEffect.enableAlphaTexture(cmds);
+			message.draw(cmds, {viewRect().xCenter(), textEntry.bgRect().pos(C2DO).y - message.nominalHeight()}, CB2DO, ColorName::WHITE);
+		},
+		[&]()
 		{
-			cmds.set(ColorName::WHITE);
-			cmds.setCommonProgram(CommonProgram::TEX_ALPHA, projP.makeTranslate());
-			message.draw(cmds, 0, projP.unprojectY(textField.windowRect().pos(C2DO).y) + message.nominalHeight(), CB2DO, projP);
-		}
-	}(textEntry);
+			basicEffect.enableAlphaTexture(cmds);
+			message.draw(cmds, {viewRect().xCenter(), textField.windowRect().pos(C2DO).y - message.nominalHeight()}, CB2DO, ColorName::WHITE);
+		});
+}
+
 }

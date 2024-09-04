@@ -15,49 +15,54 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/config/defs.hh>
-#include <imagine/io/IO.hh>
-#include <imagine/util/UniqueFileDescriptor.hh>
+#include <imagine/io/IOUtils.hh>
+#include <imagine/util/memory/UniqueFileDescriptor.hh>
+#include <imagine/util/string/CStringView.hh>
 
-class PosixIO final : public IO
+namespace IG
+{
+
+struct IOMapFlags
+{
+	uint8_t
+	write:1{},
+	populatePages:1{};
+};
+
+class PosixIO : public IOUtils<PosixIO>
 {
 public:
-	using IO::read;
-	using IO::readAtPos;
-	using IO::write;
-	using IO::seek;
-	using IO::seekS;
-	using IO::seekE;
-	using IO::seekC;
-	using IO::tell;
-	using IO::send;
-	using IO::constBufferView;
-	using IO::get;
+	using IOUtilsBase = IOUtils<PosixIO>;
+	using IOUtilsBase::read;
+	using IOUtilsBase::write;
+	using IOUtilsBase::seek;
+	using IOUtilsBase::tell;
+	using IOUtilsBase::send;
+	using IOUtilsBase::buffer;
+	using IOUtilsBase::get;
+	using IOUtilsBase::toFileStream;
 
-	constexpr PosixIO() {}
-	constexpr PosixIO(int fd):fd_{fd} {}
-	GenericIO makeGeneric();
-	std::error_code open(const char *path, uint32_t mode = 0);
-	std::error_code create(const char *path, uint32_t mode = 0)
-	{
-		mode |= OPEN_WRITE | OPEN_CREATE;
-		return open(path, mode);
-	}
-	int releaseFD();
+	constexpr PosixIO() = default;
+	PosixIO(UniqueFileDescriptor fd):fd_{std::move(fd)} {}
+	PosixIO(CStringView path, OpenFlags oFlags = {});
+	UniqueFileDescriptor releaseFd();
 	int fd() const;
-
-	ssize_t read(void *buff, size_t bytes, std::error_code *ecOut) final;
-	ssize_t readAtPos(void *buff, size_t bytes, off_t offset, std::error_code *ecOut) final;
-	ssize_t write(const void *buff, size_t bytes, std::error_code *ecOut) final;
-	std::error_code truncate(off_t offset) final;
-	off_t seek(off_t offset, IO::SeekMode mode, std::error_code *ecOut) final;
-	void close() final;
-	void sync() final;
-	size_t size() final;
-	bool eof() final;
-	void advise(off_t offset, size_t bytes, Advice advice) final;
-	explicit operator bool() const final;
+	ssize_t read(void *buff, size_t bytes, std::optional<off_t> offset = {});
+	ssize_t write(const void *buff, size_t bytes, std::optional<off_t> offset = {});
+	ssize_t writeVector(std::span<const OutVector> buffs, std::optional<off_t> offset = {});
+	bool truncate(off_t offset);
+	off_t seek(off_t offset, SeekMode mode);
+	void sync();
+	size_t size();
+	bool eof();
+	void advise(off_t offset, size_t bytes, Advice advice);
+	explicit operator bool() const;
+	IOBuffer releaseBuffer();
+	IOBuffer mapRange(off_t start, size_t size, IOMapFlags);
+	static IOBuffer byteBufferFromMmap(void *data, size_t size);
 
 protected:
-	IG::UniqueFileDescriptor fd_{};
+	UniqueFileDescriptor fd_{};
 };
+
+}

@@ -19,12 +19,28 @@
 #include <imagine/gui/TableView.hh>
 #include <imagine/gui/MenuItem.hh>
 
-class StateSlotView : public TableView, public EmuAppHelper<StateSlotView>
+namespace EmuEx
+{
+
+using namespace IG;
+
+class StateSlotView : public TableView, public EmuAppHelper
 {
 public:
 	StateSlotView(ViewAttachParams attach);
+	void onShow() final;
 
 private:
-	static constexpr unsigned stateSlots = 11;
-	TextMenuItem stateSlot[stateSlots]{};
+	static constexpr int stateSlots = 10;
+	TextMenuItem load;
+	TextMenuItem save;
+	TextHeadingMenuItem slotHeading;
+	TextMenuItem stateSlot[stateSlots];
+	std::array<MenuItem*, 13> menuItems;
+
+	void refreshSlot(int slot);
+	void refreshSlots();
+	void doSaveState();
 };
+
+}

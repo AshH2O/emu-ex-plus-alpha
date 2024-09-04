@@ -13,78 +13,61 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "BaseAlertView"
-
 #include <imagine/gui/AlertView.hh>
-#include <imagine/gfx/GeomRect.hh>
+#include <imagine/gui/ViewManager.hh>
 #include <imagine/gfx/RendererCommands.hh>
-#include <imagine/input/Input.hh>
+#include <imagine/gfx/RendererTask.hh>
+#include <imagine/gfx/BasicEffect.hh>
+#include <imagine/input/Event.hh>
 #include <imagine/logger/logger.h>
-#include <imagine/util/math/int.hh>
+#include <imagine/util/math.hh>
 
-BaseAlertView::BaseAlertView(ViewAttachParams attach, const char *label, TableView::ItemsDelegate items, TableView::ItemDelegate item):
-	View{attach},
-	text{label, &attach.viewManager().defaultFace()},
-	menu
-	{
-		attach,
-		items,
-		item
-	}
+namespace IG
+{
+
+constexpr SystemLogger log{"AlertView"};
+
+void BaseAlertView::init()
 {
 	menu.setAlign(C2DO);
 	menu.setScrollableIfNeeded(true);
-	menu.setOnSelectElement(
-		[this](Input::Event e, uint32_t i, MenuItem &item)
+	menu.setOnSelectElement([this](const Input::Event& e, int i, MenuItem& item)
+	{
+		bool shouldDismiss = item.inputEvent(e, {.parentPtr = this});
+		if(shouldDismiss)
 		{
-			bool wasDismissed = false;
-			setOnDismiss(
-				[&wasDismissed](View &)
-				{
-					logMsg("called alert onDismiss");
-					wasDismissed = true;
-					return false;
-				});
-			bool shouldDismiss = item.select(*this, e);
-			if(wasDismissed)
-			{
-				logDMsg("dismissed in onSelect");
-				return;
-			}
-			setOnDismiss(nullptr);
-			if(shouldDismiss)
-			{
-				logMsg("dismissing");
-				dismiss();
-			}
-		});
+			log.info("dismissing via item #{}", i);
+			dismiss();
+		}
+	});
 }
 
 void BaseAlertView::place()
 {
-	using namespace Gfx;
+	using namespace IG::Gfx;
 	int xSize = viewRect().xSize() * .8;
-	text.setMaxLineSize(projP.unprojectXSize(xSize) * 0.95_gc);
-	text.compile(renderer(), projP);
+	text.compile({.maxLineSize = int(xSize * 0.95f)});
 
 	int menuYSize = menu.cells() * text.face()->nominalHeight()*2;
-	int labelYSize = IG::makeEvenRoundedUp(projP.projectYSize(text.fullHeight()));
-	IG::WindowRect viewFrame;
+	int labelYSize = IG::makeEvenRoundedUp(text.fullHeight());
+	WRect viewFrame;
 	viewFrame.setPosRel(viewRect().pos(C2DO),
 			{xSize, labelYSize + menuYSize}, C2DO);
 
-	labelFrame = projP.unProjectRect(viewFrame.x, viewFrame.y, viewFrame.x2, viewFrame.y + labelYSize);
+	labelFrame = {{viewFrame.x, viewFrame.y}, {viewFrame.x2, viewFrame.y + labelYSize}};
+	bgQuads.write(0, {.bounds = labelFrame.as<int16_t>()});
 
-	IG::WindowRect menuViewFrame;
+	WRect menuViewFrame;
 	menuViewFrame.setPosRel({viewFrame.x, viewFrame.y + (int)labelYSize},
 			{viewFrame.xSize(), menuYSize}, LT2DO);
-	menu.setViewRect(menuViewFrame, projP);
+	menu.setViewRect(menuViewFrame);
 	menu.place();
+	bgQuads.write(1, {.bounds = menu.viewRect().as<int16_t>()});
 }
 
-bool BaseAlertView::inputEvent(Input::Event e)
+bool BaseAlertView::inputEvent(const Input::Event& e, ViewInputEventParams)
 {
-	if(e.pushed() && e.isDefaultCancelButton())
+	if(e.keyEvent() && e.keyEvent()->pushed(Input::DefaultKey::CANCEL))
 	{
 		dismiss();
 		return true;
@@ -94,76 +77,39 @@ bool BaseAlertView::inputEvent(Input::Event e)
 
 void BaseAlertView::prepareDraw()
 {
-	text.makeGlyphs(renderer());
+	text.makeGlyphs();
 	menu.prepareDraw();
 }
 
-void BaseAlertView::draw(Gfx::RendererCommands &cmds)
+void BaseAlertView::draw(Gfx::RendererCommands &__restrict__ cmds, ViewDrawParams) const
 {
-	using namespace Gfx;
-	cmds.setBlendMode(BLEND_MODE_ALPHA);
-	cmds.setCommonProgram(CommonProgram::NO_TEX, projP.makeTranslate());
-	cmds.setColor(.4, .4, .4, .8);
-	GeomRect::draw(cmds, labelFrame);
-	cmds.setColor(.1, .1, .1, .6);
-	GeomRect::draw(cmds, menu.viewRect(), projP);
-	cmds.set(ColorName::WHITE);
-	cmds.setCommonProgram(CommonProgram::TEX_ALPHA);
-	text.draw(cmds, labelFrame.xPos(C2DO), projP.alignYToPixel(labelFrame.yPos(C2DO)), C2DO, projP);
-	//setClipRect(1);
-	//setClipRectBounds(menu.viewRect());
+	using namespace IG::Gfx;
+	auto &basicEffect = cmds.basicEffect();
+	cmds.set(BlendMode::ALPHA);
+	basicEffect.disableTexture(cmds);
+	cmds.setVertexArray(bgQuads);
+	cmds.setColor({.4, .4, .4, .8});
+	cmds.drawQuad(0);
+	cmds.setColor({.1, .1, .1, .6});
+	cmds.drawQuad(1);
+	basicEffect.enableAlphaTexture(cmds);
+	text.draw(cmds, {labelFrame.xPos(C2DO), labelFrame.yPos(C2DO)}, C2DO, ColorName::WHITE);
 	menu.draw(cmds);
-	//setClipRect(0);
 }
 
-void BaseAlertView::onAddedToController(ViewController *c, Input::Event e)
+void BaseAlertView::onAddedToController(ViewController *c, const Input::Event &e)
 {
 	menu.setController(c, e);
 }
 
-void BaseAlertView::setLabel(const char *label)
-{
-	text.setString(label);
-}
-
-AlertView::AlertView(ViewAttachParams attach, const char *label, uint32_t menuItems):
-	BaseAlertView{attach, label, item},
-	item{menuItems}
-{}
-
-void AlertView::setItem(uint32_t idx, const char *name, TextMenuItem::SelectDelegate del)
-{
-	assert(idx < item.size());
-	item[idx].setName(name, &manager().defaultFace());
-	item[idx].setOnSelect(del);
-}
-
-YesNoAlertView::YesNoAlertView(ViewAttachParams attach, const char *label, const char *yesStr, const char *noStr,
-	TextMenuItem::SelectDelegate onYes, TextMenuItem::SelectDelegate onNo):
-	BaseAlertView(attach, label,
-		[](const TableView &)
-		{
-			return 2;
-		},
-		[this](const TableView &, int idx) -> MenuItem&
-		{
-			return idx == 0 ? yes : no;
-		}),
-	yes{yesStr ? yesStr : "Yes", &defaultFace(), onYes ? onYes : makeDefaultSelectDelegate()},
-	no{noStr ? noStr : "No", &defaultFace(), onNo ? onNo : makeDefaultSelectDelegate()}
-{}
-
 void YesNoAlertView::setOnYes(TextMenuItem::SelectDelegate del)
 {
-	yes.setOnSelect(del);
+	yesNo[0].onSelect = del;
 }
 
 void YesNoAlertView::setOnNo(TextMenuItem::SelectDelegate del)
 {
-	no.setOnSelect(del);
+	yesNo[1].onSelect = del;
 }
 
-TextMenuItem::SelectDelegate YesNoAlertView::makeDefaultSelectDelegate()
-{
-	return TextMenuItem::makeSelectDelegate([](){});
 }

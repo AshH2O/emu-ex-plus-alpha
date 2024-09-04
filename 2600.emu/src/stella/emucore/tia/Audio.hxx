@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -18,11 +18,11 @@
 #ifndef TIA_AUDIO_HXX
 #define TIA_AUDIO_HXX
 
+class AudioQueue;
+
 #include "bspf.hxx"
 #include "AudioChannel.hxx"
 #include "Serializable.hxx"
-
-class AudioQueue;
 
 class Audio : public Serializable
 {
@@ -32,6 +32,17 @@ class Audio : public Serializable
     void reset();
 
     void setAudioQueue(const shared_ptr<AudioQueue>& queue);
+
+    /**
+      Enable/disable pushing audio samples. These are required for TimeMachine
+      playback with sound.
+    */
+    void setAudioRewindMode(bool enable)
+    {
+    #ifdef GUI_SUPPORT
+      myRewindMode = enable;
+    #endif
+    }
 
     void tick();
 
@@ -47,6 +58,7 @@ class Audio : public Serializable
 
   private:
     void phase1();
+    void addSample(uInt8 sample0, uInt8 sample1);
 
   private:
     shared_ptr<AudioQueue> myAudioQueue;
@@ -61,6 +73,10 @@ class Audio : public Serializable
 
     Int16* myCurrentFragment{nullptr};
     uInt32 mySampleIndex{0};
+  #ifdef GUI_SUPPORT
+    bool myRewindMode{false};
+    mutable ByteArray mySamples;
+  #endif
 
   private:
     Audio(const Audio&) = delete;

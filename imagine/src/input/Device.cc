@@ -14,14 +14,14 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/input/Device.hh>
-#include <imagine/input/Input.hh>
 #include <imagine/logger/logger.h>
-#include <imagine/util/string.h>
 
-namespace Input
+namespace IG::Input
 {
 
-static const char *keyButtonName(Key b)
+constexpr SystemLogger log{"InputDev"};
+
+constexpr auto keyButtonName(Key b)
 {
 	switch(b)
 	{
@@ -121,7 +121,7 @@ static const char *keyButtonName(Key b)
 		case Keycode::NUMPAD_COMMA: return "Numpad ,";
 		case Keycode::NUMPAD_ENTER: return "Numpad Enter";
 		case Keycode::NUMPAD_EQUALS: return "Numpad =";
-		#if defined CONFIG_BASE_X11 || defined __ANDROID__
+		#if CONFIG_PACKAGE_X11 || defined __ANDROID__
 		case Keycode::AT: return "@";
 		case Keycode::STAR: return "*";
 		case Keycode::PLUS: return "+";
@@ -135,7 +135,7 @@ static const char *keyButtonName(Key b)
 		case Keycode::VOL_UP: return "Vol Up";
 		case Keycode::VOL_DOWN: return "Vol Down";
 		#endif
-		#ifdef CONFIG_BASE_X11
+		#if CONFIG_PACKAGE_X11
 		case Keycode::NUMPAD_INSERT: return "Numpad Insert";
 		case Keycode::NUMPAD_DELETE: return "Numpad Delete";
 		case Keycode::NUMPAD_BEGIN: return "Numpad Begin";
@@ -239,42 +239,9 @@ static const char *keyButtonName(Key b)
 	return "";
 }
 
-static const char *iCadeButtonName(Key b)
+constexpr const char* ps3SysButtonName([[maybe_unused]] Key b)
 {
-	switch(b)
-	{
-		case 0: return "None";
-		#ifdef CONFIG_BASE_IOS
-		// Show the iControlPad buttons only on iOS
-		case ICade::X: return "5 (iCP A)";
-		case ICade::A: return "6 (iCP X)";
-		case ICade::Y: return "7 (iCP Y)";
-		case ICade::B: return "8 (iCP B)";
-		case ICade::Z: return "9 (iCP L)";
-		case ICade::C: return "0 (iCP R)";
-		case ICade::SELECT: return "E1 (iCP Select)";
-		case ICade::START: return "E2 (iCP Start)";
-		#else
-		case ICade::X: return "5";
-		case ICade::A: return "6";
-		case ICade::Y: return "7";
-		case ICade::B: return "8";
-		case ICade::Z: return "9";
-		case ICade::C: return "0";
-		case ICade::SELECT: return "E1";
-		case ICade::START: return "E2";
-		#endif
-		case ICade::UP: return "Up";
-		case ICade::RIGHT: return "Right";
-		case ICade::DOWN: return "Down";
-		case ICade::LEFT: return "Left";
-	}
-	return nullptr;
-}
-
-static const char *ps3SysButtonName(Key b)
-{
-	#if defined CONFIG_BASE_ANDROID
+	#if defined __ANDROID__
 	switch(b)
 	{
 		case Keycode::PS3::CROSS: return "Cross";
@@ -291,8 +258,8 @@ static const char *ps3SysButtonName(Key b)
 	#endif
 }
 
-#ifdef CONFIG_BASE_ANDROID
-static const char *xperiaPlayButtonName(Key b)
+#ifdef __ANDROID__
+constexpr const char* xperiaPlayButtonName(Key b)
 {
 	switch(b)
 	{
@@ -304,7 +271,7 @@ static const char *xperiaPlayButtonName(Key b)
 	return nullptr;
 }
 
-static const char *ouyaButtonName(Key b)
+constexpr const char* ouyaButtonName(Key b)
 {
 	switch(b)
 	{
@@ -321,7 +288,7 @@ static const char *ouyaButtonName(Key b)
 #endif
 
 #ifdef CONFIG_MACHINE_PANDORA
-static const char *openPandoraButtonName(Key b)
+constexpr const char* openPandoraButtonName(Key b)
 {
 	switch(b)
 	{
@@ -339,63 +306,177 @@ static const char *openPandoraButtonName(Key b)
 }
 #endif
 
+BaseDevice::BaseDevice(int id, Map map, DeviceTypeFlags typeFlags, std::string name):
+	name_{std::move(name)}, id_{id}, typeFlags_{typeFlags}, map_{map} {}
+
+void Device::setICadeMode(bool on)
+{
+	visit([&](auto &d)
+	{
+		if constexpr(requires {d.setICadeMode(on);})
+			d.setICadeMode(on);
+	});
+}
+
+bool Device::iCadeMode() const
+{
+	return visit([](auto &d)
+	{
+		if constexpr(requires {d.iCadeMode();})
+			return d.iCadeMode();
+		else
+			return false;
+	});
+}
+
+void Device::setJoystickAxesAsKeys(AxisSetId id, bool on)
+{
+	if(auto axis1 = motionAxis(toAxisIds(id).first))
+		axis1->setEmulatesKeys(map(), on);
+	if(auto axis2 = motionAxis(toAxisIds(id).second))
+		axis2->setEmulatesKeys(map(), on);
+}
+
+bool Device::joystickAxesAsKeys(AxisSetId id)
+{
+	if(auto axis2 = motionAxis(toAxisIds(id).second))
+		return axis2->emulatesKeys();
+	return false;
+}
+
+Axis *Device::motionAxis(AxisId id)
+{
+	auto axes = motionAxes();
+	auto it = std::ranges::find_if(axes, [&](auto &axis){ return axis.id() == id; });
+	if(it == std::end(axes))
+		return nullptr;
+	return &(*it);
+}
+
 const char *Device::keyName(Key k) const
 {
+	auto customName = visit([&](auto &d) -> const char *
+	{
+		if constexpr(requires {d.keyName(k);})
+			return d.keyName(k);
+		else
+			return nullptr;
+	});
+	if(customName)
+		return customName;
 	switch(map())
 	{
 		default: return "";
 		case Map::SYSTEM:
 		{
-			auto subtypeButtonName = [](uint32_t subtype, Key k) -> const char *
+			auto subtypeButtonName = [](Subtype subtype, [[maybe_unused]] Key k) -> const char *
 				{
 					switch(subtype)
 					{
-						#ifdef CONFIG_BASE_ANDROID
-						case Device::SUBTYPE_XPERIA_PLAY: return xperiaPlayButtonName(k);
-						case Device::SUBTYPE_OUYA_CONTROLLER: return ouyaButtonName(k);
-						case Device::SUBTYPE_PS3_CONTROLLER: return ps3SysButtonName(k);
+						#ifdef __ANDROID__
+						case Subtype::XPERIA_PLAY: return xperiaPlayButtonName(k);
+						case Subtype::OUYA_CONTROLLER: return ouyaButtonName(k);
+						case Subtype::PS3_CONTROLLER: return ps3SysButtonName(k);
 						#endif
 						#ifdef CONFIG_MACHINE_PANDORA
-						case Device::SUBTYPE_PANDORA_HANDHELD: return openPandoraButtonName(k);
+						case Subtype::PANDORA_HANDHELD: return openPandoraButtonName(k);
 						#endif
+						default: return {};
 					}
-					return {};
 				};
 			const char *name = subtypeButtonName(subtype(), k);
 			if(!name)
 				return keyButtonName(k);
 			return name;
 		}
-		case Map::ICADE:
+	}
+}
+
+std::string Device::keyString(Key k, KeyNameFlags flags) const
+{
+	if(auto name = keyName(k);
+		std::string_view{name}.size())
+	{
+		if(flags.basicModifiers)
 		{
-			auto name = iCadeButtonName(k);
-			if(!name)
+			using namespace Keycode;
+			switch(k)
 			{
-				return keyButtonName(k); // if it's not an iCade button, fall back to regular keys
+				case LALT:
+				case RALT: return "Alt";
+				case LSHIFT:
+				case RSHIFT: return "Shift";
+				case LCTRL:
+				case RCTRL: return "Ctrl";
 			}
-			return name;
 		}
+		return std::string{name};
+	}
+	else
+	{
+		return std::format("Key Code {:#X}", k);
+	}
+}
+
+std::string Device::displayName() const
+{
+	return makeDisplayName(name(), enumId());
+}
+
+std::string Device::makeDisplayName(std::string_view name, int id)
+{
+	if(id)
+	{
+		return std::format("{} #{}", name, id + 1);
+	}
+	else
+	{
+		return std::string{name};
 	}
 }
 
 Map Device::map() const
 {
-	return iCadeMode() ? Input::Map::ICADE : map_;
+	return visit([](auto &d){ return d.map_; });
 }
 
-uint32_t Device::typeBits() const
+static DeviceSubtype gamepadSubtype(std::string_view name)
 {
-	return iCadeMode() ? TYPE_BIT_GAMEPAD :	type_;
+	if(name == "Sony PLAYSTATION(R)3 Controller")
+	{
+		log.info("detected PS3 gamepad");
+		return DeviceSubtype::PS3_CONTROLLER;
+	}
+	else if(name == "OUYA Game Controller")
+	{
+		log.info("detected OUYA gamepad");
+		return DeviceSubtype::OUYA_CONTROLLER;
+	}
+	return {};
 }
 
-void Device::setICadeMode(bool on)
+static std::string_view gamepadName(uint32_t vendorProductId)
 {
-	logWarn("setICadeMode called but unimplemented");
+	if(vendorProductId == 0x054c05c4) // DualShock 4
+	{
+		log.info("detected DualShock 4 gamepad");
+		return "DualShock 4";
+	}
+	return {};
 }
 
-bool Device::operator ==(Device const& rhs) const
+void BaseDevice::updateGamepadSubtype(std::string_view name, uint32_t vendorProductId)
 {
-	return enumId() == rhs.enumId() && map_ == rhs.map_ && string_equal(name(), rhs.name());
+	if(auto updatedSubtype = gamepadSubtype(name);
+		updatedSubtype != DeviceSubtype::NONE)
+	{
+		subtype_ = updatedSubtype;
+	}
+	if(auto updatedName = gamepadName(vendorProductId);
+		updatedName.size())
+	{
+		name_ = updatedName;
+	}
 }
 
 }

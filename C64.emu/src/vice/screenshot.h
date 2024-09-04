@@ -31,6 +31,7 @@
 #include <stdio.h>
 
 #include "types.h"
+#include "viewport.h"
 
 struct palette_s;
 struct video_canvas_s;
@@ -52,13 +53,28 @@ typedef struct screenshot_s {
     unsigned int max_width;
     unsigned int max_height;
 
+    /* Size of the uncropped full screen.  */
+    unsigned int debug_width;
+    unsigned int debug_height;
+
+    /* Size of the completely cropped full screen.  */
+    unsigned int inner_width;
+    unsigned int inner_height;
+
     /* First and last displayed line.  */
     unsigned int first_displayed_line;
     unsigned int last_displayed_line;
 
+    /* Position of the graphics area. */
+    position_t gfx_position;
+
     /* Offset to the overall screen.  */
     unsigned int x_offset;
     unsigned int y_offset;
+
+    /* Offset to the unbordered screen, from the uncropped size.  */
+    unsigned int debug_offset_x;
+    unsigned int debug_offset_y;
 
     /* Pixel size.  */
     unsigned int size_width;
@@ -108,18 +124,17 @@ typedef struct screenshot_s {
 #define SCREENSHOT_MODE_RGB24   2
 
 /* Functions called by external emulator code.  */
-extern int screenshot_init(void);
-extern void screenshot_shutdown(void);
-extern int screenshot_save(const char *drvname, const char *filename,
-                           struct video_canvas_s *canvas);
-extern int screenshot_record(void);
-extern void screenshot_stop_recording(void);
-extern int screenshot_is_recording(void);
-extern void screenshot_prepare_reopen(void);
-extern void screenshot_try_reopen(void);
+int screenshot_init(void);
+void screenshot_shutdown(void);
+int screenshot_save(const char *drvname, const char *filename, struct video_canvas_s *canvas);
+int screenshot_record(void);
+void screenshot_stop_recording(void);
+int screenshot_is_recording(void);
+void screenshot_prepare_reopen(void);
+void screenshot_try_reopen(void);
 
 #ifdef FEATURE_CPUMEMHISTORY
-extern int memmap_screenshot_save(const char *drvname, const char *filename, int x_size, int y_size, uint8_t *gfx, uint8_t *palette);
+int memmap_screenshot_save(const char *drvname, const char *filename, int x_size, int y_size, uint8_t *gfx, uint8_t *palette);
 #endif
 
 #endif

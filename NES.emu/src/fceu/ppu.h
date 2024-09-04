@@ -1,13 +1,18 @@
 #pragma once
 
-class EmuSystemTask;
+namespace EmuEx
+{
+class EmuSystemTaskContext;
+class NesSystem;
 class EmuVideo;
+class EmuAudio;
+}
 
 void FCEUPPU_Init(void);
 void FCEUPPU_Reset(void);
 void FCEUPPU_Power(void);
-int FCEUPPU_Loop(EmuSystemTask *task, EmuVideo *video, int skip);
-void FCEUPPU_FrameReady(EmuSystemTask *task, EmuVideo *video, uint8 *data);
+int FCEUPPU_Loop(EmuEx::EmuSystemTaskContext, EmuEx::NesSystem &, EmuEx::EmuVideo *, EmuEx::EmuAudio *, int skip);
+void FCEUPPU_FrameReady(EmuEx::EmuSystemTaskContext, EmuEx::NesSystem &, EmuEx::EmuVideo *, uint8 *data);
 
 void FCEUPPU_LineUpdate();
 void FCEUPPU_SetVideoSystem(int w);
@@ -54,3 +59,7 @@ enum PPUPHASE {
 };
 
 extern PPUPHASE ppuphase;
+
+extern unsigned char *cdloggervdata;
+extern unsigned int cdloggerVideoDataSize;
+extern volatile int rendercount, vromreadcount, undefinedvromcount;

@@ -6,9 +6,6 @@ ifeq ($(origin AR), default)
  AR := $(CHOST_PREFIX)gcc-ar
 endif
 
-CFLAGS_OPTIMIZE_DEBUG_DEFAULT ?= -Og
-CFLAGS_OPTIMIZE_MISC_RELEASE_DEFAULT += -funsafe-loop-optimizations -fno-ident
-
 # Four possible LTO_MODE values when using GCC
 ifeq ($(LTO_MODE),lto)
  ltoMode := lto
@@ -21,21 +18,20 @@ else
 endif
 
 ifeq ($(ltoMode),lto)
- CFLAGS_CODEGEN += -flto
+ CFLAGS_CODEGEN += -flto=auto -fuse-linker-plugin
 else ifeq ($(ltoMode),lto-fat)
- CFLAGS_CODEGEN += -flto -ffat-lto-objects
+ CFLAGS_CODEGEN += -flto=auto -ffat-lto-objects -fuse-linker-plugin
 else ifeq ($(ltoMode),lto-link)
  # link thin LTO objects with non-LTO objects
- LDFLAGS_SYSTEM += -flto
+ LDFLAGS_SYSTEM += -flto=auto
 else
  LDFLAGS_SYSTEM += -fno-lto
 endif
 
-CFLAGS_WARN += $(if $(ccNoStrictAliasing),,-Werror=strict-aliasing) -fmax-errors=15
+CFLAGS_WARN += -fmax-errors=15
 
 ifdef RELEASE
  CXXFLAGS_LANG += -fno-enforce-eh-specs
- CFLAGS_WARN += -Wunsafe-loop-optimizations
 endif
 
 ifndef RELEASE

@@ -64,7 +64,7 @@ static void set_ca2(via_context_t *via_context, int state)
     parallel_cpu_set_atn((char)(state ? 0 : 1));
 }
 
-static void set_cb2(via_context_t *via_context, int state)
+static void set_cb2(via_context_t *via_context, int state, int offset)
 {
     parallel_cpu_set_eoi((uint8_t)(state ? 0 : 1));
 }
@@ -162,7 +162,7 @@ static uint8_t read_pra(via_context_t *via_context, uint16_t addr)
 void ieeevia2_init(via_context_t *via_context)
 {
     viacore_init(machine_context.ieeevia2, maincpu_alarm_context,
-                 maincpu_int_status, maincpu_clk_guard);
+                 maincpu_int_status);
 }
 
 void vic20ieeevia2_setup_context(machine_context_t *machinecontext)

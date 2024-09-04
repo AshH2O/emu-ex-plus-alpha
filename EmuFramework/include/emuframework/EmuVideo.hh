@@ -16,93 +16,91 @@
 	along with EmuFramework.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <emuframework/EmuAppHelper.hh>
+#include <emuframework/EmuSystemTask.hh>
+#include <emuframework/EmuSystemTaskContext.hh>
 #include <imagine/gfx/PixmapBufferTexture.hh>
 #include <imagine/gfx/SyncFence.hh>
-#include <optional>
 
-namespace Base
+namespace EmuEx
 {
-class ApplicationContext;
-}
 
+using namespace IG;
 class EmuVideo;
-class EmuSystemTask;
+class EmuSystem;
 
 class [[nodiscard]] EmuVideoImage
 {
 public:
-	constexpr EmuVideoImage() {}
-	EmuVideoImage(EmuSystemTask *task, EmuVideo &vid, Gfx::LockedTextureBuffer texBuff);
-	IG::Pixmap pixmap() const;
+	constexpr EmuVideoImage() = default;
+	EmuVideoImage(EmuSystemTaskContext taskCtx, EmuVideo &vid, Gfx::LockedTextureBuffer texBuff);
+	IG::MutablePixmapView pixmap() const;
 	explicit operator bool() const;
 	void endFrame();
 
 protected:
-	EmuSystemTask *task{};
+	EmuSystemTaskContext taskCtx;
 	EmuVideo *emuVideo{};
-	Gfx::LockedTextureBuffer texBuff{};
+	Gfx::LockedTextureBuffer texBuff;
 };
 
-class EmuVideo : public EmuAppHelper<EmuVideo>
+class EmuVideo : public EmuAppHelper
 {
 public:
 	using FrameFinishedDelegate = DelegateFunc<void (EmuVideo &)>;
 	using FormatChangedDelegate = DelegateFunc<void (EmuVideo &)>;
 
-	constexpr EmuVideo() {}
+	constexpr EmuVideo() = default;
 	void setRendererTask(Gfx::RendererTask &);
 	bool hasRendererTask() const;
-	bool setFormat(IG::PixmapDesc desc, EmuSystemTask *task = {});
-	void dispatchFormatChanged();
+	bool setFormat(IG::PixmapDesc desc, EmuSystemTaskContext task = {});
+	void dispatchFormatChanged() { onFormatChanged(*this); }
 	void resetImage(IG::PixelFormat newFmt = {});
 	IG::PixmapDesc deleteImage();
-	EmuVideoImage startFrame(EmuSystemTask *task);
-	void startFrame(EmuSystemTask *task, IG::Pixmap pix);
-	EmuVideoImage startFrameWithFormat(EmuSystemTask *task, IG::PixmapDesc desc);
-	void startFrameWithFormat(EmuSystemTask *task, IG::Pixmap pix);
-	void startFrameWithAltFormat(EmuSystemTask *task, IG::Pixmap pix);
-	void startUnchangedFrame(EmuSystemTask *task);
-	void finishFrame(EmuSystemTask *task, Gfx::LockedTextureBuffer texBuff);
-	void finishFrame(EmuSystemTask *task, IG::Pixmap pix);
-	void dispatchFrameFinished();
-	bool addFence(Gfx::RendererCommands &cmds);
+	EmuVideoImage startFrame(EmuSystemTaskContext);
+	void startFrame(EmuSystemTaskContext, IG::PixmapView pix);
+	EmuVideoImage startFrameWithFormat(EmuSystemTaskContext, IG::PixmapDesc desc);
+	void startFrameWithFormat(EmuSystemTaskContext, IG::PixmapView pix);
+	void startFrameWithAltFormat(EmuSystemTaskContext, IG::PixmapView pix);
+	void startUnchangedFrame(EmuSystemTaskContext);
+	void finishFrame(EmuSystemTaskContext, Gfx::LockedTextureBuffer texBuff);
+	void finishFrame(EmuSystemTaskContext, IG::PixmapView pix);
+	void dispatchFrameFinished() { onFrameFinished(*this); }
 	void clear();
 	void takeGameScreenshot();
 	bool isExternalTexture() const;
 	Gfx::PixmapBufferTexture &image();
 	Gfx::Renderer &renderer() const;
-	Base::ApplicationContext appContext() const;
-	IG::WP size() const;
+	IG::ApplicationContext appContext() const;
+	WSize size() const;
 	bool formatIsEqual(IG::PixmapDesc desc) const;
-	void setOnFrameFinished(FrameFinishedDelegate del);
-	void setOnFormatChanged(FormatChangedDelegate del);
-	bool setTextureBufferMode(Gfx::TextureBufferMode mode);
-	bool setImageBuffers(unsigned num);
-	unsigned imageBuffers() const;
-	void setCompatTextureSampler(const Gfx::TextureSampler &);
-	void setSrgbColorSpaceOutput(bool);
-	bool isSrgbFormat() const;
-	void setRenderPixelFormat(IG::PixelFormat);
+	void setTextureBufferMode(EmuSystem &, Gfx::TextureBufferMode mode);
+	void setSampler(Gfx::TextureSamplerConfig);
+	constexpr auto colorSpace() const { return colSpace; }
+	bool setRenderPixelFormat(EmuSystem &, IG::PixelFormat, Gfx::ColorSpace);
 	IG::PixelFormat renderPixelFormat() const;
 	IG::PixelFormat internalRenderPixelFormat() const;
+	static Gfx::TextureSamplerConfig samplerConfigForLinearFilter(bool useLinearFilter);
+	static MutablePixmapView takeInterlacedFields(MutablePixmapView, bool isOddField);
 
 protected:
 	Gfx::RendererTask *rTask{};
-	const Gfx::TextureSampler *texSampler{};
-	Gfx::SyncFence fence{};
-	Gfx::PixmapBufferTexture vidImg{};
-	FrameFinishedDelegate onFrameFinished{};
-	FormatChangedDelegate onFormatChanged{};
-	IG::PixelFormat renderFmt{};
+	Gfx::PixmapBufferTexture vidImg;
+public:
+	FrameFinishedDelegate onFrameFinished;
+	FormatChangedDelegate onFormatChanged;
+protected:
+	IG::PixelFormat renderFmt;
 	Gfx::TextureBufferMode bufferMode{};
 	bool screenshotNextFrame{};
-	bool singleBuffer{};
-	bool needsFence{};
-	bool useSrgbColorSpace{};
-	Gfx::ColorSpace colorSpace_{};
+	Gfx::ColorSpace colSpace{Gfx::ColorSpace::LINEAR};
+	bool useLinearFilter{true};
 
-	void doScreenshot(EmuSystemTask *task, IG::Pixmap pix);
-	void postFrameFinished(EmuSystemTask *task);
-	void syncImageAccess();
-	void updateNeedsFence();
+	void doScreenshot(EmuSystemTaskContext, IG::PixmapView pix);
+	void postFrameFinished(EmuSystemTaskContext);
+	Gfx::TextureSamplerConfig samplerConfig() const { return samplerConfigForLinearFilter(useLinearFilter); }
+
+public:
+	bool isOddField{};
 };
+
+}

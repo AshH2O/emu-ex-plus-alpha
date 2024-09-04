@@ -23,11 +23,11 @@
 namespace IG::Audio
 {
 
-static constexpr uint32_t defaultOutputBufferFrames = 192; // default used in Google Oboe library
+static constexpr int defaultOutputBufferFrames = 192; // default used in Google Oboe library
 static constexpr int AUDIOFOCUS_GAIN = 1;
 static constexpr int STREAM_MUSIC = 3;
 
-AndroidManager::AndroidManager(Base::ApplicationContext ctx_):
+AndroidManager::AndroidManager(ApplicationContext ctx_):
 	ctx{ctx_}
 {
 	auto env = ctx.mainThreadJniEnv();
@@ -46,9 +46,9 @@ SampleFormat Manager::nativeSampleFormat() const
 	return ctx.androidSDK() >= 21 ? SampleFormats::f32 : SampleFormats::i16;
 }
 
-uint32_t Manager::nativeRate() const
+int Manager::nativeRate() const
 {
-	uint32_t rate = 44100;
+	int rate = 44100;
 	if(ctx.androidSDK() >= 17)
 	{
 		auto env = ctx.mainThreadJniEnv();
@@ -95,7 +95,6 @@ bool Manager::soloMix() const
 
 void Manager::setMusicVolumeControlHint()
 {
-	using namespace Base;
 	auto env = ctx.mainThreadJniEnv();
 	auto baseActivity = ctx.baseActivityObject();
 	JNI::InstMethod<void(jint)> jSetVolumeControlStream{env, baseActivity, "setVolumeControlStream", "(I)V"};
@@ -130,16 +129,16 @@ std::vector<ApiDesc> Manager::audioAPIs() const
 	if(ctx.androidSDK() >= 26)
 	{
 		desc.reserve(2);
-		desc.emplace_back("AAudio", Api::AAUDIO);
+		desc.emplace_back(ApiDesc{"AAudio", Api::AAUDIO});
 	}
-	desc.emplace_back("OpenSL ES", Api::OPENSL_ES);
+	desc.emplace_back(ApiDesc{"OpenSL ES", Api::OPENSL_ES});
 	return desc;
 }
 
 Api Manager::makeValidAPI(Api api) const
 {
 	// Don't default to AAudio on Android 8.0 (SDK 26) due
-	// too various device-specific driver bugs:
+	// to various device-specific driver bugs:
 	// ASUS ZenFone 4 (ZE554KL) crashes randomly ~5 mins after playback starts
 	// Samsung Galaxy S7 may crash when closing audio stream even when stopping it beforehand
 	if(ctx.androidSDK() >= 27)
@@ -154,7 +153,7 @@ Api Manager::makeValidAPI(Api api) const
 	}
 }
 
-uint32_t AndroidManager::nativeOutputFramesPerBuffer() const
+int AndroidManager::nativeOutputFramesPerBuffer() const
 {
 	if(ctx.androidSDK() >= 17)
 	{
@@ -191,7 +190,7 @@ int AndroidManager::audioManagerIntProperty(JNIEnv* env, const char *propStr) co
 
 void AndroidManager::requestAudioFocus(JNIEnv* env, jobject baseActivity) const
 {
-	auto res = jRequestAudioFocus(env, audioManager, baseActivity, STREAM_MUSIC, AUDIOFOCUS_GAIN);
+	[[maybe_unused]] auto res = jRequestAudioFocus(env, audioManager, baseActivity, STREAM_MUSIC, AUDIOFOCUS_GAIN);
 	//logMsg("%d from requestAudioFocus()", (int)res);
 }
 
@@ -205,7 +204,7 @@ bool AndroidManager::hasStreamUsage() const
 	return ctx.androidSDK() >= 28;
 }
 
-unsigned AndroidManager::defaultOutputBuffers() const
+int AndroidManager::defaultOutputBuffers() const
 {
 	return ctx.androidSDK() >= 18 ? 1 : 2;
 }

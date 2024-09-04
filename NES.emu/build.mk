@@ -6,7 +6,6 @@ include $(IMAGINE_PATH)/make/imagineAppBase.mk
 SRC += main/Main.cc \
 main/input.cc \
 main/options.cc \
-main/EmuControls.cc \
 main/EmuMenuViews.cc \
 main/FceuApi.cc \
 main/Cheats.cc \
@@ -19,7 +18,8 @@ CPPFLAGS += -I$(projectPath)/src \
 -DFRAMESKIP \
 -I$(projectPath)/src/fceu
 
-CXXFLAGS_WARN += -Wno-register -Wno-sign-compare -Wno-missing-field-initializers -Wno-switch -Wno-bitwise-op-parentheses
+CXXFLAGS_WARN += -Wno-register -Wno-sign-compare -Wno-missing-field-initializers -Wno-switch \
+ -Wno-bitwise-op-parentheses -Wno-expansion-to-defined -Wno-unused-local-typedefs -Wno-unused-parameter
 
 ifneq ($(config_compiler), clang)
  CXXFLAGS_WARN += -Wno-volatile
@@ -36,6 +36,7 @@ fceu/file.cpp \
 fceu/filter.cpp \
 fceu/ines.cpp \
 fceu/input.cpp \
+fceu/nsf.cpp \
 fceu/palette.cpp \
 fceu/ppu.cpp \
 fceu/sound.cpp \
@@ -70,7 +71,8 @@ fceu/input/cursor.cpp \
 fceu/input/snesmouse.cpp \
 fceu/input/fns.cpp \
 fceu/input/pec586kb.cpp \
-fceu/input/virtualboy.cpp
+fceu/input/virtualboy.cpp \
+fceu/input/lcdcompzapper.cpp
 
 BOARDS_SRC := $(subst $(projectPath)/src/,,$(filter %.cpp %.c, $(wildcard $(projectPath)/src/fceu/boards/*)))
 FCEUX_SRC += $(BOARDS_SRC)

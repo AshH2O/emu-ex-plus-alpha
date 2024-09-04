@@ -15,7 +15,6 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <compare>
 #include <cstdint>
 
 namespace IG::Audio
@@ -24,46 +23,44 @@ namespace IG::Audio
 class SampleFormat
 {
 public:
-	constexpr SampleFormat() {}
+	constexpr SampleFormat() = default;
 	constexpr SampleFormat(uint8_t bytes, bool isFloat = false):
-		bytesWithFlags{(uint8_t)((bytes & BYTES_MASK) | (isFloat ? IS_FLOAT_BIT : 0))}
-	{}
+		bytes_{bytes}, isFloat_{isFloat}{}
 
-	constexpr uint8_t bytes() const
+	constexpr int bytes() const
 	{
-		return bytesWithFlags & BYTES_MASK;
+		return bytes_;
 	}
 
-	constexpr uint8_t bits() const
+	constexpr int bits() const
 	{
 		return bytes() * 8;
 	}
 
 	constexpr bool isFloat() const
 	{
-		return bytesWithFlags & IS_FLOAT_BIT;
+		return isFloat_;
 	}
 
 	constexpr bool operator ==(SampleFormat const& rhs) const = default;
 
 	constexpr explicit operator bool() const
 	{
-		return bytesWithFlags;
+		return bytes();
 	}
 
 protected:
-	static constexpr uint8_t BYTES_MASK = 0xF;
-	static constexpr uint8_t IS_FLOAT_BIT = 0x80;
-	uint8_t bytesWithFlags = 0;
+	uint8_t bytes_:7{};
+	uint8_t isFloat_:1{};
 };
 
 namespace SampleFormats
 {
-	static constexpr SampleFormat   i8 {1};
-	static constexpr SampleFormat  i16 {2};
-	static constexpr SampleFormat  i32 {4};
-	static constexpr SampleFormat  f32 {4, true};
-	static constexpr SampleFormat none {};
+	constexpr SampleFormat   i8{1};
+	constexpr SampleFormat  i16{2};
+	constexpr SampleFormat  i32{4};
+	constexpr SampleFormat  f32{4, true};
+	constexpr SampleFormat none;
 }
 
 }

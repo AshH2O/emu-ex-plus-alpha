@@ -38,7 +38,6 @@
 #include "videoarch.h"
 
 #include "archdep.h"
-#include "clkguard.h"
 #include "lib.h"
 #include "log.h"
 #include "machine.h"
@@ -72,13 +71,6 @@ vic_t vic;
 
 static void vic_set_geometry(void);
 
-static void clk_overflow_callback(CLOCK sub, void *unused_data)
-{
-    if (vic.light_pen.trigger_cycle < CLOCK_MAX) {
-        vic.light_pen.trigger_cycle -= sub;
-    }
-}
-
 void vic_change_timing(machine_timing_t *machine_timing, int border_mode)
 {
     vic_timing_set(machine_timing, border_mode);
@@ -86,6 +78,8 @@ void vic_change_timing(machine_timing_t *machine_timing, int border_mode)
         vic_set_geometry();
         raster_mode_change();
     }
+    /* this should go to vic_chip_model_init() incase we ever go that far */
+    vic_color_update_palette(vic.raster.canvas);
 }
 
 /* return pixel aspect ratio for current video mode
@@ -155,11 +149,11 @@ void vic_raster_draw_handler(void)
     /* emulate the line */
     raster_line_emulate(&vic.raster);
 
+    vsync_do_end_of_line();
+
     /* handle start of frame */
     if (vic.raster.current_line == 0) {
-        raster_skip_frame(&vic.raster,
-                          vsync_do_vsync(vic.raster.canvas,
-                                         vic.raster.skip_frame));
+        vsync_do_vsync(vic.raster.canvas);
     }
 }
 
@@ -196,8 +190,6 @@ static int init_raster(void)
     vic_set_geometry();
 
     vic_color_update_palette(raster->canvas);
-
-    raster_set_title(raster, machine_name);
 
     if (raster_realize(raster) < 0) {
         return -1;
@@ -250,8 +242,6 @@ raster_t *vic_init(void)
     vic_draw_init();
 
     vic.initialized = 1;
-
-    clk_guard_add_callback(maincpu_clk_guard, clk_overflow_callback, NULL);
 
     resources_touch("VICDoubleSize");
 

@@ -14,8 +14,13 @@
 	along with NEO.emu.  If not, see <http://www.gnu.org/licenses/> */
 
 #define LOGTAG "unzip"
+#include <imagine/base/ApplicationContext.hh>
+#include <imagine/io/IO.hh>
+#include <imagine/io/FileIO.hh>
 #include <imagine/fs/ArchiveFS.hh>
+#include <imagine/fs/FS.hh>
 #include <imagine/util/ScopeGuard.hh>
+#include <imagine/util/bit.hh>
 #include <imagine/logger/logger.h>
 #include <imagine/util/string.h>
 #include <cstdlib>
@@ -23,7 +28,10 @@
 extern "C"
 {
 	#include <gngeo/unzip.h>
+	#include <gngeo/state.h>
 }
+
+using namespace IG;
 
 struct PKZIP : public FS::ArchiveIterator {};
 
@@ -43,14 +51,13 @@ ZFILE *gn_unzip_fopen(PKZIP *archPtr, const char *filename, uint32_t fileCRC)
 		{
 			continue;
 		}
-		auto name = entry.name();
 		auto crc = entry.crc32();
 		//logMsg("archive file entry:%s crc32:0x%X", name, crc);
 		int loadByName = fileCRC == (uint32_t)-1 || !gn_strictROMChecking();
-		if((loadByName && (string_equal(name, filename))) || crc == fileCRC)
+		if((loadByName && entry.name() == filename) || crc == fileCRC)
 		{
 			//logMsg("opened archive entry file:%s crc32:0x%X", name, crc);
-			return new ZFILE{entry.moveIO(), archPtr};
+			return new ZFILE{std::move(entry), archPtr};
 		}
 	}
 	logMsg("file:%s crc32:0x%X not found in archive", filename, fileCRC);
@@ -60,7 +67,7 @@ ZFILE *gn_unzip_fopen(PKZIP *archPtr, const char *filename, uint32_t fileCRC)
 void gn_unzip_fclose(ZFILE *z)
 {
 	//logMsg("done with archive entry");
-	*z->arch = z->io.releaseArchive();
+	*z->arch = std::move(z->io);
 	delete z;
 }
 
@@ -70,16 +77,19 @@ int gn_unzip_fread(ZFILE *z, uint8_t *data, unsigned int size)
 	return z->io.read(data, size);
 }
 
-PKZIP *gn_open_zip(const char *path)
+PKZIP *gn_open_zip(void *contextPtr, const char *path)
 {
-	std::error_code ec{};
-	auto arch = std::make_unique<FS::ArchiveIterator>(path, ec);
-	if(ec)
+	auto &ctx = *((IG::ApplicationContext*)contextPtr);
+	try
+	{
+		auto arch = std::make_unique<FS::ArchiveIterator>(ctx.openFileUri(path));
+		return static_cast<PKZIP*>(arch.release());
+	}
+	catch(...)
 	{
 		logErr("error opening archive:%s", path);
 		return nullptr;
 	}
-	return static_cast<PKZIP*>(arch.release());
 }
 
 void gn_close_zip(PKZIP *archPtr)
@@ -105,4 +115,33 @@ uint8_t *gn_unzip_file_malloc(PKZIP *archPtr, const char *filename, uint32_t fil
 	}
 	*outlen = size;
 	return buff;
+}
+
+struct PKZIP *open_rom_zip(void *contextPtr, char *romPath, char *name)
+{
+	auto baseUri = FS::uriString(romPath, name);
+	// Try to open each possible archive type
+	if(auto gz = gn_open_zip(contextPtr, FS::PathString{baseUri + ".zip"}.data());
+		gz)
+	{
+		return gz;
+	}
+	if(auto gz = gn_open_zip(contextPtr, FS::PathString{baseUri + ".7z"}.data());
+		gz)
+	{
+		return gz;
+	}
+	if(auto gz = gn_open_zip(contextPtr, FS::PathString{baseUri + ".rar"}.data());
+		gz)
+	{
+		return gz;
+	}
+	return nullptr;
+}
+
+gzFile gzopenHelper(void *contextPtr, const char *filename, const char *mode)
+{
+	auto &ctx = *((IG::ApplicationContext*)contextPtr);
+	auto openFlags = std::string_view{mode}.contains('w') ? OpenFlags::newFile() : OpenFlags{};
+	return gzdopen(ctx.openFileUriFd(filename, openFlags | OpenFlags{.test = true}).release(), mode);
 }

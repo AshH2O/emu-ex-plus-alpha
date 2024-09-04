@@ -17,25 +17,38 @@
 #include <imagine/base/GLContext.hh>
 #include <imagine/base/Application.hh>
 #include <imagine/time/Time.hh>
+#include <imagine/fs/FS.hh>
+#include <imagine/util/egl.hh>
+#include <imagine/util/ScopeGuard.hh>
+#include <imagine/util/ranges.hh>
 #include <imagine/logger/logger.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
-#include <X11/Xutil.h>
+#include "xlibutils.h"
 
-#ifndef EGL_PLATFORM_X11_EXT
-#define EGL_PLATFORM_X11_EXT 0x31D5
-#endif
-
-namespace Base
+namespace IG
 {
 
-static constexpr bool HAS_EGL_PLATFORM = Config::envIsLinux && !Config::MACHINE_IS_PANDORA;
+constexpr SystemLogger log{"X11GL"};
 
 GLDisplay GLManager::getDefaultDisplay(NativeDisplayConnection nativeDpy) const
 {
-	if constexpr(HAS_EGL_PLATFORM)
+	if constexpr(useEGLPlatformAPI)
 	{
-		return {eglGetPlatformDisplay(EGL_PLATFORM_X11_EXT, nativeDpy, nullptr)};
+		auto dpy = [&]()
+		{
+			if(FS::exists("/usr/share/glvnd/egl_vendor.d/10_nvidia.json")) // Nvidia EGL library doesn't recognize EGL_PLATFORM_XCB_EXT
+			{
+				return eglGetPlatformDisplay(EGL_PLATFORM_X11_EXT, EGL_DEFAULT_DISPLAY, nullptr);
+			}
+			else
+			{
+				return eglGetPlatformDisplay(EGL_PLATFORM_XCB_EXT, nativeDpy.conn, nullptr);
+			}
+		}();
+		if(Config::DEBUG_BUILD && dpy == EGL_NO_DISPLAY)
+			log.error("error:{} getting platform display", GLManager::errorString(eglGetError()));
+		return dpy;
 	}
 	else
 	{
@@ -45,42 +58,70 @@ GLDisplay GLManager::getDefaultDisplay(NativeDisplayConnection nativeDpy) const
 
 bool GLManager::bindAPI(GL::API api)
 {
-	if(api == GL::API::OPENGL_ES)
+	if(api == GL::API::OpenGLES)
 		return eglBindAPI(EGL_OPENGL_ES_API);
 	else
 		return eglBindAPI(EGL_OPENGL_API);
 }
 
-std::optional<GLBufferConfig> GLManager::makeBufferConfig(Base::ApplicationContext, GLBufferConfigAttributes attr, GL::API api, unsigned majorVersion) const
+std::optional<GLBufferConfig> GLManager::tryBufferConfig(ApplicationContext ctx, const GLBufferRenderConfigAttributes& attrs) const
 {
-	auto renderableType = makeRenderableType(api, majorVersion);
-	return chooseConfig(display(), renderableType, attr);
+	auto renderableType = makeRenderableType(attrs.api, attrs.version);
+	if(attrs.bufferAttrs.translucentWindow)
+	{
+		std::array<EGLConfig, 4> configs;
+		auto configCount = chooseConfigs(display(), renderableType, attrs, configs);
+		if(!configCount)
+		{
+			log.error("no usable EGL configs found with renderable type:{}", eglRenderableTypeToStr(renderableType));
+			return {};
+		}
+		// find the config with a visual bits/channel == 8
+		for(auto conf : configs | std::views::take(configCount))
+		{
+			[[maybe_unused]] auto visualId = eglConfigAttrib(display(), conf, EGL_NATIVE_VISUAL_ID);
+			auto found = findVisualType(ctx.application().xScreen(), 32, [&](const xcb_visualtype_t& v)
+			{
+				return v.bits_per_rgb_value == 8;
+			});
+			if(found)
+			{
+				if(Config::DEBUG_BUILD)
+					printEGLConf(display(), conf);
+				return conf;
+			}
+		}
+		log.error("no EGL configs with matching visual bits/channel found");
+		return {};
+	}
+	else
+	{
+		return chooseConfig(display(), renderableType, attrs);
+	}
 }
 
-Base::NativeWindowFormat GLManager::nativeWindowFormat(Base::ApplicationContext ctx, GLBufferConfig glConfig) const
+NativeWindowFormat GLManager::nativeWindowFormat(ApplicationContext ctx, GLBufferConfig glConfig) const
 {
 	if(Config::MACHINE_IS_PANDORA)
-		return nullptr;
+		return {};
 	// get matching x visual
-	EGLint nativeID;
-	eglGetConfigAttrib(display(), glConfig, EGL_NATIVE_VISUAL_ID, &nativeID);
-	XVisualInfo viTemplate{};
-	viTemplate.visualid = nativeID;
-	int visuals;
-	auto viPtr = XGetVisualInfo(ctx.application().xDisplay(), VisualIDMask, &viTemplate, &visuals);
+	EGLint nativeId;
+	eglGetConfigAttrib(display(), glConfig, EGL_NATIVE_VISUAL_ID, &nativeId);
+	auto viPtr = findVisualType(ctx.application().xScreen(), 0, [&](const xcb_visualtype_t& v)
+	{
+		return v.visual_id == (uint32_t)nativeId;
+	});
 	if(!viPtr)
 	{
-		logErr("unable to find matching X Visual");
-		return nullptr;
+		log.error("unable to find matching X Visual");
+		return {};
 	}
-	auto visual = viPtr->visual;
-	XFree(viPtr);
-	return visual;
+	return viPtr->visual_id;
 }
 
 bool GLManager::hasBufferConfig(GLBufferConfigAttributes attrs) const
 {
-	if(attrs.pixelFormat.id() == PIXEL_NONE)
+	if(attrs.pixelFormat == PixelFmtUnset)
 		return true;
 	auto dpy = display();
 	auto configOpt = chooseConfig(dpy, 0, attrs, false);
@@ -94,17 +135,15 @@ bool GLManager::hasBufferConfig(GLBufferConfigAttributes attrs) const
 			eglGetConfigAttrib(dpy, config, attr, &val);
 			return val;
 		};
-	switch(attrs.pixelFormat.id())
+	switch(attrs.pixelFormat.id)
 	{
-		default:
-			bug_unreachable("format id == %d", attrs.pixelFormat.id());
-			return false;
-		case PIXEL_RGB565: return
+		case PixelFmtRGB565: return
 			eglConfigInt(dpy, *configOpt, EGL_BUFFER_SIZE) == 16 &&
 			eglConfigInt(dpy, *configOpt, EGL_RED_SIZE) == 5;
-		case PIXEL_RGBA8888: return
+		case PixelFmtRGBA8888: return
 			eglConfigInt(dpy, *configOpt, EGL_BUFFER_SIZE) >= 24 &&
 			eglConfigInt(dpy, *configOpt, EGL_RED_SIZE) == 8;
+		default: std::unreachable();
 	}
 }
 

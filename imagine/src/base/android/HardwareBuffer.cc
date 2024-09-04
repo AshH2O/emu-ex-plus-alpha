@@ -14,15 +14,16 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #define LOGTAG "HardwareBuff"
-#include "HardwareBuffer.hh"
+#include <imagine/base/android/HardwareBuffer.hh>
 #include <imagine/base/sharedLibrary.hh>
+#include <imagine/pixmap/PixmapDesc.hh>
 #include "android.hh"
 #include <imagine/logger/logger.h>
 #include <android/hardware_buffer.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 
-namespace Base
+namespace IG
 {
 
 static int (*AHardwareBuffer_allocate)(const AHardwareBuffer_Desc* desc, AHardwareBuffer** outBuffer){};
@@ -37,12 +38,12 @@ static void loadAHardwareBufferSymbols()
 	if(!AHardwareBuffer_allocate) [[unlikely]]
 	{
 		logMsg("loading AHardwareBuffer functions");
-		Base::loadSymbol(AHardwareBuffer_allocate, {}, "AHardwareBuffer_allocate");
-		Base::loadSymbol(AHardwareBuffer_release, {}, "AHardwareBuffer_release");
-		Base::loadSymbol(AHardwareBuffer_describe, {}, "AHardwareBuffer_describe");
-		Base::loadSymbol(AHardwareBuffer_lock, {}, "AHardwareBuffer_lock");
-		Base::loadSymbol(AHardwareBuffer_unlock, {}, "AHardwareBuffer_unlock");
-		Base::loadSymbol(eglGetNativeClientBufferANDROID, {}, "eglGetNativeClientBufferANDROID");
+		loadSymbol(AHardwareBuffer_allocate, {}, "AHardwareBuffer_allocate");
+		loadSymbol(AHardwareBuffer_release, {}, "AHardwareBuffer_release");
+		loadSymbol(AHardwareBuffer_describe, {}, "AHardwareBuffer_describe");
+		loadSymbol(AHardwareBuffer_lock, {}, "AHardwareBuffer_lock");
+		loadSymbol(AHardwareBuffer_unlock, {}, "AHardwareBuffer_unlock");
+		loadSymbol(eglGetNativeClientBufferANDROID, {}, "eglGetNativeClientBufferANDROID");
 	}
 }
 
@@ -51,15 +52,16 @@ HardwareBuffer::HardwareBuffer()
 	loadAHardwareBufferSymbols();
 }
 
-HardwareBuffer::HardwareBuffer(IG::PixmapDesc desc, uint32_t usage):
-	HardwareBuffer(desc.w(), desc.h(), Base::toAHardwareBufferFormat(desc.format()), usage)
+HardwareBuffer::HardwareBuffer(PixmapDesc desc, uint32_t usage):
+	HardwareBuffer(desc.w(), desc.h(), toAHardwareBufferFormat(desc.format), usage)
 {}
 
 HardwareBuffer::HardwareBuffer(uint32_t w, uint32_t h, uint32_t format, uint32_t usage):
 	HardwareBuffer()
 {
 	assumeExpr(AHardwareBuffer_allocate);
-	AHardwareBuffer_Desc hardwareDesc{.width = w, .height = h, .layers = 1, .format = format, .usage = usage};
+	AHardwareBuffer_Desc hardwareDesc{.width = w, .height = h, .layers = 1, .format = format, .usage = usage,
+		.stride{}, .rfu0{}, .rfu1{}};
 	AHardwareBuffer *newBuff;
 	if(AHardwareBuffer_allocate(&hardwareDesc, &newBuff) != 0) [[unlikely]]
 	{

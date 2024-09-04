@@ -16,17 +16,17 @@
 #ifdef __ANDROID__
 #include <android/log.h>
 #endif
-#include <imagine/util/builtins.h>
 #include <assert.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <stdbool.h>
+#include <sys/time.h>
 #include "machine.h"
 #include "maincpu.h"
 #include "drive.h"
 #include "lib.h"
 #include "util.h"
-#include "ioutil.h"
 #include "uiapi.h"
 #include "console.h"
 #include "monitor.h"
@@ -42,6 +42,7 @@
 #include "palette.h"
 #include "c64model.h"
 #include "keyboard.h"
+#include "keymap.h"
 #include "autostart.h"
 #include "kbdbuf.h"
 #include "attach.h"
@@ -53,14 +54,20 @@
 #include "vsync.h"
 #include "zfile.h"
 #include "mousedrv.h"
+#include "rs232.h"
+#include "coproc.h"
 
 VICE_API int vice_init();
 
-int console_mode = 0;
-int video_disabled_mode = 0;
+bool console_mode = false;
+bool video_disabled_mode = false;
+bool help_requested = false;
+bool default_settings_requested = false;
 extern void (*vsync_hook)(void);
+int rs232_useip232[RS232_NUM_DEVICES];
 
-int vsync_do_vsync2(struct video_canvas_s *c, int been_skipped);
+void vsync_do_vsync2(struct video_canvas_s *c);
+void execute_vsync_callbacks(void);
 
 int c64ui_init_early() { return 0; }
 int c64ui_init() { return 0; }
@@ -127,34 +134,36 @@ char *archdep_tmpnam(void)
 	return NULL;
 }
 
-int archdep_file_is_gzip(const char *name)
-{
-	size_t l = strlen(name);
-
-	if ((l < 4 || strcasecmp(name + l - 3, ".gz")) && (l < 3 || strcasecmp(name + l - 2, ".z")) && (l < 4 || toupper(name[l - 1]) != 'Z' || name[l - 4] != '.')) {
-		return 0;
-	}
-	return 1;
-}
-
 char *archdep_make_backup_filename(const char *fname)
 {
 	return util_concat(fname, "~", NULL);
 }
 
-int archdep_file_set_gzip(const char *name)
-{
-    return 0;
-}
-
-char *archdep_default_save_resource_file_name(void)
-{
-	return NULL;
-}
-
 //FILE *archdep_open_default_log_file(void) { return stderr; }
 
 int archdep_default_logger(const char *level_string, const char *txt) { return 0; }
+
+char *archdep_default_portable_resource_file_name(void) { return NULL; }
+
+int archdep_is_haiku(void) { return -1; }
+
+void archdep_sound_enable_default_device_tracking(void) {}
+
+bool archdep_is_exiting(void) { return false; }
+
+const char *archdep_home_path(void) { return ""; }
+
+int archdep_rtc_get_centisecond(void)
+{
+	struct timeval t;
+	gettimeofday(&t, NULL);
+	return (int)(t.tv_usec / 10000);
+}
+
+int archdep_real_path_equal(const char *path1, const char *path2)
+{
+	return !strcmp(path1, path2);
+}
 
 void ui_update_menus(void) {}
 
@@ -163,9 +172,17 @@ int ui_extend_image_dialog(void)
 	return 0;
 }
 
-void ui_display_drive_led(int drive_number, unsigned int pwm1, unsigned int led_pwm2) {}
-void ui_display_drive_track(unsigned int drive_number, unsigned int drive_base, unsigned int half_track_number) {}
-void ui_display_joyport(uint8_t *joyport) {}
+void ui_display_reset(int device, int mode) {}
+
+void ui_display_drive_led(unsigned int drive_number,
+	unsigned int drive_base,
+	unsigned int led_pwm1,
+	unsigned int led_pwm2) {}
+void ui_display_drive_track(unsigned int drive_number,
+  unsigned int drive_base,
+  unsigned int half_track_number,
+  unsigned int disk_side) {}
+void ui_display_joyport(uint16_t *joyport) {}
 void ui_enable_drive_status(ui_drive_enable_t state, int *drive_led_color) {}
 int uicolor_alloc_color(unsigned int red, unsigned int green,
                                unsigned int blue, unsigned long *color_pixel,
@@ -190,7 +207,7 @@ console_t *uimon_window_resume(void)
 
 void uimon_window_close(void) {}
 
-console_t *uimon_window_open(void)
+console_t *uimon_window_open(bool display_now)
 {
 	return NULL;
 }
@@ -262,23 +279,14 @@ void vsid_ui_setdrv(char* driver_info_text) {}
 
 int archdep_path_is_relative(const char *path)
 {
-	return path && *path != '/';
+	return 0; // avoid all relative path processing
 }
 
 /* return malloc'd version of full pathname of orig_name */
 int archdep_expand_path(char **return_path, const char *orig_name)
 {
-	/* Unix version.  */
-	if(*orig_name == '/')
-	{
-		*return_path = lib_strdup(orig_name);
-	}
-	else
-	{
-		char *cwd = ioutil_current_dir();
-		*return_path = util_concat(cwd, "/", orig_name, NULL);
-		lib_free(cwd);
-	}
+	// all path strings should be treated opaque and never expanded
+	*return_path = lib_strdup(orig_name);
 	return 0;
 }
 
@@ -312,8 +320,15 @@ int archdep_rmdir(const char *pathname)
 	return rmdir(pathname);
 }
 
-int archdep_stat(const char *file_name, unsigned int *len, unsigned int *isdir)
+int archdep_stat(const char *file_name, size_t *len, unsigned int *isdir)
 {
+	if(strstr(file_name, "://"))
+	{
+		*len = 0;
+		*isdir = 0;
+		return 0;
+	}
+
 	struct stat statbuf;
 
 	if (stat(file_name, &statbuf) < 0) {
@@ -343,36 +358,45 @@ void archdep_vice_exit(int excode)
 	assert(!"Should never call archdep_vice_exit()");
 }
 
-char *archdep_extra_title_text() { return NULL; }
+FILE *archdep_fdopen(int fd, const char *mode) { return fdopen(fd, mode); }
+int archdep_close(int fd) { return close(fd); }
+int archdep_fseeko(FILE *stream, off_t offset, int whence) { return fseeko(stream, offset, whence); }
+off_t archdep_ftello(FILE *stream) { return ftello(stream); }
+int archdep_access(const char *pathname, int mode) { return -1; }
+bool archdep_file_exists(const char *path) { return false; }
+
+archdep_dir_t *archdep_opendir(const char *path, int mode) { return NULL; }
+const char *archdep_readdir(archdep_dir_t *dir) { return NULL; }
+void archdep_closedir(archdep_dir_t *dir) {}
+void archdep_rewinddir(archdep_dir_t *dir) {}
+void archdep_seekdir(archdep_dir_t *dir, int pos) {}
+int archdep_telldir(const archdep_dir_t *dir) { return -1; }
+int archdep_chdir(const char *path) { return -1; }
+char *archdep_current_dir(void) { return calloc(1, 1); }
+char *archdep_getcwd(char *buf, size_t size) { return NULL; }
+int archdep_remove(const char *path) { return -1; }
+
+const char *archdep_extra_title_text() { return NULL; }
 void archdep_shutdown(void) {}
 void uimon_set_interface(monitor_interface_t **monitor_interface_init, int count) {}
 void uimon_window_suspend(void) {}
 void fullscreen_resume(void) {}
 void fullscreen_capability(cap_fullscreen_t *cap_fullscreen) {}
-void ui_display_tape_current_image(const char *image) {}
-void ui_display_drive_current_image(unsigned int drive_number, const char *image) {}
-void ui_display_tape_control_status(int control) {}
-void ui_display_tape_motor_status(int motor) {}
+void ui_display_tape_current_image(int port, const char *image) {}
+void ui_display_drive_current_image(unsigned int unit_number, unsigned int drive_number, const char *image) {}
+void ui_display_tape_control_status(int port, int control) {}
+void ui_display_tape_motor_status(int port, int motor) {}
 void ui_display_recording(int recording_status) {}
 void ui_display_playback(int playback_status, char *version) {}
 void ui_display_event_time(unsigned int current, unsigned int total) {}
 void ui_display_volume(int vol) {}
 void ui_cmdline_show_help(unsigned int num_options, cmdline_option_ram_t *options, void *userparam) {}
-void ui_set_tape_status(int tape_status) {}
+void ui_set_tape_status(int port, int tape_status) {}
 char* ui_get_file(const char *format,...) { return NULL; }
 void ui_shutdown(void) {}
 void ui_resources_shutdown(void) {}
-int ui_pause_active() { return 0; }
-void ui_pause_enable() {}
-void ui_pause_disable() {}
 ui_jam_action_t ui_jam_dialog(const char *format, ...) { return UI_JAM_NONE; }
-int c64_kbd_init(void) { return 0; }
-void kbd_arch_init(void) {}
-void kbd_initialize_numpad_joykeys(int* joykeys) {}
-int joystick_arch_init_resources(void) { return 0; }
-void joy_arch_init_default_mapping(int joynum) {}
-int joystick_init_resources(void) { return 0; }
-void joystick_close() {}
+void ui_message(const char *format, ...) {}
 int console_close_all(void) { return 0; }
 void video_shutdown(void) {}
 gfxoutputdrv_t *gfxoutput_get_driver(const char *drvname) { return NULL; }
@@ -401,10 +425,16 @@ int sysfile_cmdline_options_init() { return 0; }
 int cmdline_register_options(const cmdline_option_t *c) { return 0; }
 int cmdline_init() { return 0; }
 int initcmdline_init() { return 0; }
+void initcmdline_shutdown() {}
+void initcmdline_check_attach(void) {}
 void cmdline_shutdown() {}
+int video_arch_get_active_chip() { return VIDEO_CHIP_VICII; }
 void video_render_1x2_init() {}
 void video_render_2x2_init() {}
 int cmdline_get_autostart_mode(void) { return AUTOSTART_MODE_NONE; }
+void ui_actions_shutdown() {}
+int ui_action_get_id(const char *name) { return 0; }
+char *archdep_default_joymap_file_name(void) { return ""; }
 
 #define DUMMY_VIDEO_RENDER(func) void func(const video_render_color_tables_t *color_tab, \
 const uint8_t *src, uint8_t *trg, \
@@ -430,8 +460,10 @@ unsigned int width, const unsigned int height, \
 const unsigned int xs, const unsigned int ys, \
 const unsigned int xt, const unsigned int yt, \
 const unsigned int pitchs, const unsigned int pitcht, \
-viewport_t *viewport, video_render_config_t *config) {}
+unsigned int viewport_first_line, unsigned int viewport_last_line, \
+video_render_config_t *config) {}
 
+DUMMY_VIDEO_RENDER(render_32_2x2)
 DUMMY_VIDEO_RENDER(render_08_2x2_04)
 DUMMY_VIDEO_RENDER(render_16_2x2_04)
 DUMMY_VIDEO_RENDER(render_24_2x2_04)
@@ -440,6 +472,7 @@ DUMMY_VIDEO_RENDER(render_08_2x4_04)
 DUMMY_VIDEO_RENDER(render_16_2x4_04)
 DUMMY_VIDEO_RENDER(render_24_2x4_04)
 DUMMY_VIDEO_RENDER(render_32_2x4_04)
+DUMMY_VIDEO_RENDER(render_32_2x4)
 DUMMY_VIDEO_RENDER_SCALE2X(render_08_scale2x)
 DUMMY_VIDEO_RENDER_SCALE2X(render_16_scale2x)
 DUMMY_VIDEO_RENDER_SCALE2X(render_24_scale2x)
@@ -456,10 +489,9 @@ DUMMY_VIDEO_RENDER_CRT(render_24_2x2_ntsc)
 DUMMY_VIDEO_RENDER_CRT(render_24_2x2_pal)
 DUMMY_VIDEO_RENDER_CRT(render_32_2x2_ntsc)
 DUMMY_VIDEO_RENDER_CRT(render_32_2x2_pal)
-
-int mousedrv_resources_init(mouse_func_t *funcs) { return 0; }
-int mousedrv_cmdline_options_init(void) { return 0; }
-void mousedrv_init(void) {}
+DUMMY_VIDEO_RENDER_CRT(render_32_2x2_rgbi)
+DUMMY_VIDEO_RENDER_CRT(render_32_2x4_rgbi)
+DUMMY_VIDEO_RENDER_CRT(render_32_2x2_pal_u)
 
 void mousedrv_mouse_changed(void) {}
 
@@ -468,8 +500,8 @@ int mousedrv_get_y(void) { return 0; }
 unsigned long mousedrv_get_timestamp(void) { return 0; }
 
 void mouse_button(int bnumber, int state) {}
-void mouse_move(int x, int y) {}
 
+//void joystick() {}
 int joy_arch_init(void) { return 0; }
 int joy_arch_set_device(int port_idx, int new_dev) { return 0; }
 int joy_arch_resources_init(void) { return 0; }
@@ -496,12 +528,22 @@ void vsyncarch_presync(void) {}
 
 void vsyncarch_postsync(void) {}
 
-int vsync_do_vsync(struct video_canvas_s *c, int been_skipped)
+void vsync_do_end_of_line(void)
 {
 	sound_flush();
-	kbdbuf_flush();
+}
+
+void vsync_do_vsync(struct video_canvas_s *c)
+{
+	vsync_do_vsync2(c);
 	vsync_hook();
-	return vsync_do_vsync2(c, been_skipped);
+	execute_vsync_callbacks();
+	kbdbuf_flush();
+}
+
+bool vsync_should_skip_frame(struct video_canvas_s *c)
+{
+	return c->skipFrame;
 }
 
 int zfile_fclose(FILE *stream)
@@ -517,8 +559,33 @@ int zfile_close_action(const char *filename, zfile_action_t action,
 	return 0;
 }
 
+int memmap_screenshot_save(const char *drvname, const char *filename, int x_size, int y_size, uint8_t *gfx, uint8_t *palette)
+{
+	return 0;
+}
+
+tick_t tick_per_second(void) { return TICK_PER_SECOND; }
+tick_t tick_now_delta(tick_t previous_tick) { return 1; }
+void tick_sleep(tick_t ticks) { assert(!"emulation thread should not explicitly call sleep for timing"); }
+
+int fork_coproc(int *fd_wr, int *fd_rd, char *cmd, vice_pid_t *childpid) { return -1; }
+void kill_coproc(vice_pid_t pid) {}
+
+#ifdef NDEBUG
+int log_message(log_t log, const char *format, ...) { return 0; }
+int log_warning(log_t log, const char *format, ...) { return 0; }
+int log_error(log_t log, const char *format, ...) { return 0; }
+int log_debug(const char *format, ...) { return 0; }
+int log_verbose(const char *format, ...) { return 0; }
+void archdep_startup_log_error(const char *format, ...) {}
+void ui_error(const char *format,...) {}
+int uimon_out(const char *buffer) { return 0; }
+#endif
+
 int vice_init()
 {
+	lib_init();
+
 	maincpu_early_init();
 	machine_setup_context();
 	drive_setup_context();

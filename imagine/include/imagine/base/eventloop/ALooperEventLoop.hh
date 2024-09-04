@@ -15,39 +15,37 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/base/eventLoopDefs.hh>
-#include <imagine/util/typeTraits.hh>
+#include <imagine/base/baseDefs.hh>
+#include <imagine/util/used.hh>
+#include <imagine/util/memory/UniqueFileDescriptor.hh>
 #include <android/looper.h>
 #include <memory>
+#include <utility>
 
-namespace Base
+namespace IG
 {
 
-static const int POLLEV_IN = ALOOPER_EVENT_INPUT, POLLEV_OUT = ALOOPER_EVENT_OUTPUT,
-	POLLEV_ERR = ALOOPER_EVENT_ERROR, POLLEV_HUP = ALOOPER_EVENT_HANGUP;
+constexpr int pollEventInput = ALOOPER_EVENT_INPUT, pollEventOutput = ALOOPER_EVENT_OUTPUT,
+	pollEventError = ALOOPER_EVENT_ERROR, pollEventHangUp = ALOOPER_EVENT_HANGUP;
 
 struct ALooperFDEventSourceInfo
 {
 	PollEventDelegate callback{};
-	ALooper *looper{};
+	ALooper* looper{};
 };
 
 class ALooperFDEventSource
 {
 public:
-	constexpr ALooperFDEventSource() {}
-	ALooperFDEventSource(int fd) : ALooperFDEventSource{nullptr, fd} {}
-	ALooperFDEventSource(const char *debugLabel, int fd);
-	ALooperFDEventSource(ALooperFDEventSource &&o);
-	ALooperFDEventSource &operator=(ALooperFDEventSource &&o);
+	ALooperFDEventSource(MaybeUniqueFileDescriptor, FDEventSourceDesc, PollEventDelegate);
+	ALooperFDEventSource(ALooperFDEventSource&&) noexcept;
+	ALooperFDEventSource &operator=(ALooperFDEventSource&&) noexcept;
 	~ALooperFDEventSource();
 
 protected:
-	IG_enableMemberIf(Config::DEBUG_BUILD, const char *, debugLabel){};
-	std::unique_ptr<ALooperFDEventSourceInfo> info{};
-	int fd_ = -1;
+	std::unique_ptr<ALooperFDEventSourceInfo> info;
+	MaybeUniqueFileDescriptor fd_;
 
-	const char *label() const;
 	void deinit();
 };
 
@@ -56,12 +54,12 @@ using FDEventSourceImpl = ALooperFDEventSource;
 class ALooperEventLoop
 {
 public:
-	constexpr ALooperEventLoop() {}
-	constexpr ALooperEventLoop(ALooper *looper): looper{looper} {}
-	ALooper *nativeObject() const { return looper; }
+	constexpr ALooperEventLoop() = default;
+	constexpr ALooperEventLoop(ALooper* looper): looper{looper} {}
+	ALooper* nativeObject() const { return looper; }
 
 protected:
-	ALooper *looper{};
+	ALooper* looper{};
 };
 
 using EventLoopImpl = ALooperEventLoop;

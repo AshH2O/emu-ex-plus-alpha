@@ -552,8 +552,6 @@ std::string const Cartridge::saveBasePath() const {
 
 void Cartridge::setSaveDir(std::string const &dir) {
 	saveDir_ = dir;
-	if (!saveDir_.empty() && saveDir_[saveDir_.length() - 1] != '/')
-		saveDir_ += '/';
 }
 
 LoadRes Cartridge::loadROM(const void *romdata, std::size_t size,
@@ -670,6 +668,7 @@ LoadRes Cartridge::loadROM(const void *romdata, std::size_t size,
 	return LOADRES_OK;
 }
 
+#if 0
 void Cartridge::loadSavedata() {
 	std::string const &sbp = saveBasePath();
 
@@ -712,6 +711,23 @@ void Cartridge::saveSavedata() {
 		file.put(basetime >>  8 & 0xFF);
 		file.put(basetime       & 0xFF);
 	}
+}
+#endif
+
+std::span<unsigned char> Cartridge::srambank()
+{
+	if(hasBattery(memptrs_.romdata()[0x147]))
+		return {memptrs_.rambankdata(), size_t(memptrs_.rambankdataend() - memptrs_.rambankdata())};
+	else
+		return {};
+}
+
+std::optional<std::time_t> Cartridge::rtcTime() const
+{
+	if(hasRtc(memptrs_.romdata()[0x147]))
+		return rtc_.baseTime();
+	else
+		return {};
 }
 
 void Cartridge::applyGameGenie(std::string const &code) {

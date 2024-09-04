@@ -13,16 +13,18 @@
 	You should have received a copy of the GNU General Public License
 	along with NEO.emu.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <emuframework/EmuApp.hh>
-#include <emuframework/EmuAppHelper.hh>
-#include <emuframework/OptionView.hh>
-#include <emuframework/EmuMainMenuView.hh>
-#include <emuframework/EmuSystemActionsView.hh>
+#include <emuframework/SystemOptionView.hh>
+#include <emuframework/GUIOptionView.hh>
+#include <emuframework/MainMenuView.hh>
+#include <emuframework/SystemActionsView.hh>
 #include <imagine/gui/AlertView.hh>
-#include <imagine/util/bitset.hh>
+#include <imagine/util/bit.hh>
 #include <imagine/util/ScopeGuard.hh>
-#include "internal.hh"
+#include "MainApp.hh"
 #include <imagine/fs/FS.hh>
+#include <imagine/io/IO.hh>
+#include <imagine/util/string.h>
+#include <format>
 
 extern "C"
 {
@@ -34,37 +36,47 @@ extern "C"
 	#include <gngeo/memory.h>
 }
 
-class ConsoleOptionView : public TableView
+namespace EmuEx
+{
+
+using MainAppHelper = EmuAppHelperBase<MainApp>;
+
+class ConsoleOptionView : public TableView, public MainAppHelper
 {
 	TextMenuItem timerItem[3]
 	{
-		{"Off", &defaultFace(), [](){ setTimerInt(0); }},
-		{"On", &defaultFace(), [](){ setTimerInt(1); }},
-		{"Auto", &defaultFace(), [](){ setTimerInt(2); }},
+		{"Off",  attachParams(), setTimerIntDel(), {.id = 0}},
+		{"On",   attachParams(), setTimerIntDel(), {.id = 1}},
+		{"Auto", attachParams(), setTimerIntDel(), {.id = 2}},
 	};
 
-	static void setTimerInt(int val)
+	TextMenuItem::SelectDelegate setTimerIntDel()
 	{
-		EmuSystem::sessionOptionSet();
-		optionTimerInt = val;
-		setTimerIntOption();
+		return [this](TextMenuItem &item)
+		{
+			system().sessionOptionSet();
+			system().optionTimerInt = item.id;
+			system().setTimerIntOption();
+		};
 	}
 
 	MultiChoiceMenuItem timer
 	{
-		"Emulate Timer", &defaultFace(),
-		[this](int idx, Gfx::Text &t)
+		"Emulate Timer", attachParams(),
+		std::min((int)system().optionTimerInt, 2),
+		timerItem,
 		{
-			if(idx == 2)
+			.onSetDisplayString = [](auto idx, Gfx::Text& t)
 			{
-				t.setString(conf.raster ? "On" : "Off");
-				return true;
+				if(idx == 2)
+				{
+					t.resetString(conf.raster ? "On" : "Off");
+					return true;
+				}
+				else
+					return false;
 			}
-			else
-				return false;
 		},
-		std::min((int)optionTimerInt, 2),
-		timerItem
 	};
 
 	std::array<MenuItem*, 1> menuItem
@@ -83,71 +95,78 @@ public:
 	{}
 };
 
-class CustomSystemOptionView : public SystemOptionView
+class CustomSystemOptionView : public SystemOptionView, public MainAppHelper
 {
-private:
+	using MainAppHelper::system;
+
+	TextMenuItem::SelectDelegate setRegionDel()
+	{
+		return [this](TextMenuItem &item)
+		{
+			conf.country = (COUNTRY)item.id.val;
+			system().optionMVSCountry = conf.country;
+		};
+	}
+
 	TextMenuItem regionItem[4]
 	{
-		{"Japan", &defaultFace(), [](){ conf.country = CTY_JAPAN; optionMVSCountry = conf.country; }},
-		{"Europe", &defaultFace(), [](){ conf.country = CTY_EUROPE; optionMVSCountry = conf.country; }},
-		{"USA", &defaultFace(), [](){ conf.country = CTY_USA; optionMVSCountry = conf.country; }},
-		{"Asia", &defaultFace(), [](){ conf.country = CTY_ASIA; optionMVSCountry = conf.country; }},
+		{"Japan",  attachParams(), setRegionDel(), {.id = CTY_JAPAN}},
+		{"Europe", attachParams(), setRegionDel(), {.id = CTY_EUROPE}},
+		{"USA",    attachParams(), setRegionDel(), {.id = CTY_USA}},
+		{"Asia",   attachParams(), setRegionDel(), {.id = CTY_ASIA}},
 	};
 
 	MultiChoiceMenuItem region
 	{
-		"MVS Region", &defaultFace(),
+		"MVS Region", attachParams(),
 		std::min((int)conf.country, 3),
 		regionItem
 	};
 
+	TextMenuItem::SelectDelegate setBiosDel()
+	{
+		return [this](TextMenuItem &item)
+		{
+			conf.system = (SYSTEM)item.id.val;
+			system().optionBIOSType = conf.system;
+		};
+	}
+
 	TextMenuItem biosItem[7]
 	{
-		{"Unibios 2.3", &defaultFace(), [](){ conf.system = SYS_UNIBIOS; optionBIOSType = conf.system; }},
-		{"Unibios 3.0", &defaultFace(), [](){ conf.system = SYS_UNIBIOS_3_0; optionBIOSType = conf.system; }},
-		{"Unibios 3.1", &defaultFace(), [](){ conf.system = SYS_UNIBIOS_3_1; optionBIOSType = conf.system; }},
-		{"Unibios 3.2", &defaultFace(), [](){ conf.system = SYS_UNIBIOS_3_2; optionBIOSType = conf.system; }},
-		{"Unibios 3.3", &defaultFace(), [](){ conf.system = SYS_UNIBIOS_3_3; optionBIOSType = conf.system; }},
-		{"Unibios 4.0", &defaultFace(), [](){ conf.system = SYS_UNIBIOS_4_0; optionBIOSType = conf.system; }},
-		{"MVS", &defaultFace(), [](){ conf.system = SYS_ARCADE; optionBIOSType = conf.system; }},
+		{"Unibios 2.3", attachParams(), setBiosDel(), {.id = SYS_UNIBIOS}},
+		{"Unibios 3.0", attachParams(), setBiosDel(), {.id = SYS_UNIBIOS_3_0}},
+		{"Unibios 3.1", attachParams(), setBiosDel(), {.id = SYS_UNIBIOS_3_1}},
+		{"Unibios 3.2", attachParams(), setBiosDel(), {.id = SYS_UNIBIOS_3_2}},
+		{"Unibios 3.3", attachParams(), setBiosDel(), {.id = SYS_UNIBIOS_3_3}},
+		{"Unibios 4.0", attachParams(), setBiosDel(), {.id = SYS_UNIBIOS_4_0}},
+		{"MVS",         attachParams(), setBiosDel(), {.id = SYS_ARCADE}},
 	};
 
 	MultiChoiceMenuItem bios
 	{
-		"BIOS Type", &defaultFace(),
-		[]()
-		{
-			switch(conf.system)
-			{
-				default: return 0;
-				case SYS_UNIBIOS_3_0: return 1;
-				case SYS_UNIBIOS_3_1: return 2;
-				case SYS_UNIBIOS_3_2: return 3;
-				case SYS_UNIBIOS_3_3: return 4;
-				case SYS_UNIBIOS_4_0: return 5;
-				case SYS_ARCADE: return 6;
-			}
-		}(),
+		"BIOS Type", attachParams(),
+		MenuId{conf.system},
 		biosItem
 	};
 
 	BoolMenuItem createAndUseCache
 	{
-		"Make/Use Cache Files", &defaultFace(),
-		(bool)optionCreateAndUseCache,
+		"Make/Use Cache Files", attachParams(),
+		(bool)system().optionCreateAndUseCache,
 		[this](BoolMenuItem &item, View &, Input::Event e)
 		{
-			optionCreateAndUseCache = item.flipBoolValue(*this);
+			system().optionCreateAndUseCache = item.flipBoolValue(*this);
 		}
 	};
 
 	BoolMenuItem strictROMChecking
 	{
-		"Strict ROM Checking", &defaultFace(),
-		(bool)optionStrictROMChecking,
+		"Strict ROM Checking", attachParams(),
+		(bool)system().optionStrictROMChecking,
 		[this](BoolMenuItem &item, View &, Input::Event e)
 		{
-			optionStrictROMChecking = item.flipBoolValue(*this);
+			system().optionStrictROMChecking = item.flipBoolValue(*this);
 		}
 	};
 
@@ -162,15 +181,17 @@ public:
 	}
 };
 
-class EmuGUIOptionView : public GUIOptionView
+class EmuGUIOptionView : public GUIOptionView, public MainAppHelper
 {
+	using MainAppHelper::system;
+
 	BoolMenuItem listAll
 	{
-		"List All Games", &defaultFace(),
-		(bool)optionListAllGames,
+		"List All Games", attachParams(),
+		(bool)system().optionListAllGames,
 		[this](BoolMenuItem &item, View &, Input::Event e)
 		{
-			optionListAllGames = item.flipBoolValue(*this);
+			system().optionListAllGames = item.flipBoolValue(*this);
 		}
 	};
 
@@ -188,7 +209,7 @@ struct RomListEntry
 	unsigned bugs;
 };
 
-static const RomListEntry romlist[]
+constexpr RomListEntry romlist[]
 {
 	{ "2020bb", 0 },
 	{ "2020bba", 0 },
@@ -265,14 +286,14 @@ static const RomListEntry romlist[]
 	{ "kf2k5uni", 1 },
 	{ "kizuna", 0 },
 	{ "kof10th", 1 },
-	{ "kof2000", 1 },
-	{ "kof2000n", 1 },
-	{ "kof2001", 1 },
-	{ "kof2001h", 1 },
-	{ "kof2002", 1 },
+	{ "kof2000", 0 },
+	{ "kof2000n", 0 },
+	{ "kof2001", 0 },
+	{ "kof2001h", 0 },
+	{ "kof2002", 0 },
 	{ "kof2002b", 1 },
-	{ "kof2003", 1 },
-	{ "kof2003h", 1 },
+	{ "kof2003", 0 },
+	{ "kof2003h", 0 },
 	{ "kof2k4se", 1 },
 	{ "kof94", 0 },
 	{ "kof95", 0 },
@@ -313,7 +334,7 @@ static const RomListEntry romlist[]
 	{ "miexchng", 0 },
 	{ "minasan", 0 },
 	{ "mosyougi", 0 },
-	{ "ms4plus", 1 },
+	{ "ms4plus", 0 },
 	{ "ms5pcb", 1 },
 	{ "ms5plus", 1 },
 	{ "mslug", 0 },
@@ -321,10 +342,9 @@ static const RomListEntry romlist[]
 	{ "mslug3", 0 },
 	{ "mslug3b6", 0 },
 	{ "mslug3h", 0 },
-	{ "mslug3n", 0 },
 	{ "mslug4", 0 },
-	{ "mslug5", 1 },
-	{ "mslug5h", 1 },
+	{ "mslug5", 0 },
+	{ "mslug5h", 0 },
 	{ "mslugx", 0 },
 	{ "mutnat", 0 },
 	{ "nam1975", 0 },
@@ -344,9 +364,9 @@ static const RomListEntry romlist[]
 	{ "pbobblen", 0 },
 	{ "pbobblena", 0 },
 	{ "pgoal", 0 },
-	{ "pnyaa", 1 },
+	{ "pnyaa", 0 },
 	{ "popbounc", 0 },
-	{ "preisle2", 1 },
+	{ "preisle2", 0 },
 	{ "pspikes2", 0 },
 	{ "pulstar", 0 },
 	{ "puzzldpr", 0 },
@@ -365,7 +385,7 @@ static const RomListEntry romlist[]
 	{ "ridheroh", 1 },
 	{ "roboarmy", 0 },
 	{ "rotd", 1 },
-	{ "s1945p", 1 },
+	{ "s1945p", 0 },
 	{ "samsh5sp", 0 },
 	{ "samsh5sph", 0 },
 	{ "samsh5spn", 0 },
@@ -374,16 +394,16 @@ static const RomListEntry romlist[]
 	{ "samsho3", 0 },
 	{ "samsho3h", 0 },
 	{ "samsho4", 0 },
-	{ "samsho5", 1 },
+	{ "samsho5", 0 },
 	{ "samsho5b", 1 },
-	{ "samsho5h", 1 },
+	{ "samsho5h", 0 },
 	{ "samshoh", 0 },
 	{ "savagere", 0 },
 	{ "sdodgeb", 0 },
 	{ "sengokh", 0 },
 	{ "sengoku", 0 },
 	{ "sengoku2", 0 },
-	{ "sengoku3", 1 },
+	{ "sengoku3", 0 },
 	{ "shocktr2", 0 },
 	{ "shocktra", 0 },
 	{ "shocktro", 0 },
@@ -400,7 +420,7 @@ static const RomListEntry romlist[]
 	{ "stakwin2", 0 },
 	{ "strhoop", 0 },
 	{ "superspy", 0 },
-	{ "svc", 1 },
+	{ "svc", 0 },
 	{ "svcboot", 1 },
 	{ "svcpcb", 1 },
 	{ "svcpcba", 1 },
@@ -432,37 +452,43 @@ static const RomListEntry romlist[]
 	{ "zupapa", 0 },
 };
 
-static FS::PathString gameFilePath(EmuApp &app, const char *name)
+static FS::PathString gameFilePath(EmuApp &app, std::string_view name)
 {
-	auto path = app.mediaSearchPath();
-	auto zipPath = FS::makePathStringPrintf("%s/%s.zip", path.data(), name);
-	if(FS::exists(zipPath))
+	auto basePath = app.inContentSearchPath(name);
+	auto ctx = app.appContext();
+	if(auto zipPath = basePath + ".zip";
+		ctx.fileUriExists(zipPath))
 		return zipPath;
-	auto sZipPath = FS::makePathStringPrintf("%s/%s.7z", path.data(), name);
-	if(FS::exists(sZipPath))
+	if(auto sZipPath = basePath + ".7z";
+		ctx.fileUriExists(sZipPath))
 		return sZipPath;
-	auto rarPath = FS::makePathStringPrintf("%s/%s.rar", path.data(), name);
-	if(FS::exists(rarPath))
+	if(auto rarPath = basePath + ".rar";
+		ctx.fileUriExists(rarPath))
 		return rarPath;
 	return {};
 }
 
-static bool gameFileExists(EmuApp &app, const char *name)
+constexpr static bool gameFileExists(std::string_view name, std::string_view nameList)
 {
-	return strlen(gameFilePath(app, name).data());
+	return IG::containsAny(nameList,
+		FS::FileString{name}.append(".zip"),
+		FS::FileString{name}.append(".7z"),
+		FS::FileString{name}.append(".rar"));
 }
 
-class GameListView : public TableView, public EmuAppHelper<GameListView>
+class GameListView : public TableView, public MainAppHelper
 {
 private:
 	std::vector<TextMenuItem> item{};
 
 	void loadGame(const RomListEntry &entry, Input::Event e)
 	{
-		app().createSystemWithMedia({}, gameFilePath(app(), entry.name).data(), "", e, {}, attachParams(),
+		auto gamePath = gameFilePath(app(), entry.name);
+		app().createSystemWithMedia({}, gamePath, appContext().fileUriDisplayName(gamePath), e, {}, attachParams(),
 			[this](Input::Event e)
 			{
-				app().launchSystemWithResumePrompt(e, true);
+				app().recentContent.add(system());
+				app().launchSystem(e);
 			});
 	}
 
@@ -475,33 +501,47 @@ public:
 			item
 		}
 	{
+		auto ctx = appContext();
+		std::string fileList{}; // hold concatenated list of relevant filenames for fast checking
+		fileList.reserve(4095); // avoid initial small re-allocations
+		try
+		{
+			ctx.forEachInDirectoryUri(app().contentSearchPath,
+				[&](auto &entry)
+				{
+					if(entry.type() == FS::file_type::directory)
+						return true;
+					if(entry.name().size() > 13) // MAME filenames follow 8.3 convention but names may have 9 characters
+						return true;
+					fileList += entry.name();
+					return true;
+				});
+		}
+		catch(...)
+		{
+			return;
+		}
 		for(const auto &entry : romlist)
 		{
-			auto ctx = appContext();
 			ROM_DEF *drv = res_load_drv(&ctx, entry.name);
 			if(!drv)
 				continue;
 			auto freeDrv = IG::scopeGuard([&](){ free(drv); });
-			bool fileExists = gameFileExists(app(), drv->name);
-			if(!optionListAllGames && !fileExists)
+			bool fileExists = gameFileExists(drv->name, fileList);
+			if(!system().optionListAllGames && !fileExists)
 			{
 				continue;
 			}
-			item.emplace_back(drv->longname, &defaultFace(),
+			item.emplace_back(drv->longname, attachParams(),
 				[this, &entry](TextMenuItem &item, View &, Input::Event e)
 				{
 					if(item.active())
 					{
 						if(entry.bugs)
 						{
-							auto ynAlertView = makeView<YesNoAlertView>(
-								"This game doesn't yet work properly, load anyway?");
-							ynAlertView->setOnYes(
-								[this, &entry](Input::Event e)
-								{
-									loadGame(entry, e);
-								});
-							app().pushAndShowModalView(std::move(ynAlertView), e);
+							app().pushAndShowModalView(makeView<YesNoAlertView>(
+								"This game doesn't yet work properly, load anyway?",
+								YesNoAlertView::Delegates{.onYes = [this, &entry](Input::Event e){ loadGame(entry, e); }}), e);
 						}
 						else
 						{
@@ -510,7 +550,7 @@ public:
 					}
 					else
 					{
-						app().printfMessage(3, 1, "%s not present", entry.name);
+						app().postMessage(3, 1, std::format("{} not present", entry.name));
 					}
 					return true;
 				});
@@ -518,7 +558,7 @@ public:
 		}
 	}
 
-	int games()
+	int games() const
 	{
 		return item.size();
 	}
@@ -528,21 +568,21 @@ class UnibiosSwitchesView : public TableView
 {
 	TextMenuItem regionItem[3]
 	{
-		{"Japan", &defaultFace(), [](){ setRegion(0); }},
-		{"USA", &defaultFace(), [](){ setRegion(1); }},
-		{"Europe", &defaultFace(), [](){ setRegion(2); }},
+		{"Japan", attachParams(), [](){ setRegion(0); }},
+		{"USA", attachParams(), [](){ setRegion(1); }},
+		{"Europe", attachParams(), [](){ setRegion(2); }},
 	};
 
 	MultiChoiceMenuItem region
 	{
-		"Region", &defaultFace(),
+		"Region", attachParams(),
 		(int)memory.memcard[3] & 0x3,
 		regionItem
 	};
 
 	BoolMenuItem system
 	{
-		"Mode", &defaultFace(),
+		"Mode", attachParams(),
 		bool(memory.memcard[2] & 0x80),
 		"Console (AES)", "Arcade (MVS)",
 		[this](BoolMenuItem &item, View &, Input::Event e)
@@ -557,24 +597,15 @@ class UnibiosSwitchesView : public TableView
 		memory.memcard[3] = val;
 	}
 
+	std::array<MenuItem*, 2> items{&region, &system};
+
 public:
 	UnibiosSwitchesView(ViewAttachParams attach):
 		TableView
 		{
 			"Unibios Switches",
 			attach,
-			[this](const TableView &)
-			{
-				return 2;
-			},
-			[this](const TableView &, unsigned idx) -> MenuItem&
-			{
-				switch(idx)
-				{
-					case 0: return region;
-					default: return system;
-				}
-			}
+			items
 		}
 	{}
 
@@ -586,15 +617,15 @@ public:
 	}*/
 };
 
-class CustomSystemActionsView : public EmuSystemActionsView
+class CustomSystemActionsView : public SystemActionsView
 {
 private:
 	TextMenuItem unibiosSwitches
 	{
-		"Unibios Switches", &defaultFace(),
+		"Unibios Switches", attachParams(),
 		[this](TextMenuItem &item, View &, Input::Event e)
 		{
-			if(EmuSystem::gameIsRunning())
+			if(system().hasContent())
 			{
 				if(item.active())
 				{
@@ -610,10 +641,10 @@ private:
 
 	TextMenuItem options
 	{
-		"Console Options", &defaultFace(),
+		"Console Options", attachParams(),
 		[this](TextMenuItem &, View &, Input::Event e)
 		{
-			if(EmuSystem::gameIsRunning())
+			if(system().hasContent())
 			{
 				pushAndShow(makeView<ConsoleOptionView>(), e);
 			}
@@ -621,7 +652,7 @@ private:
 	};
 
 public:
-	CustomSystemActionsView(ViewAttachParams attach): EmuSystemActionsView{attach, true}
+	CustomSystemActionsView(ViewAttachParams attach): SystemActionsView{attach, true}
 	{
 		item.emplace_back(&unibiosSwitches);
 		item.emplace_back(&options);
@@ -630,31 +661,31 @@ public:
 
 	void onShow()
 	{
-		EmuSystemActionsView::onShow();
+		SystemActionsView::onShow();
 		bool isUnibios = conf.system >= SYS_UNIBIOS && conf.system <= SYS_UNIBIOS_LAST;
-		unibiosSwitches.setActive(EmuSystem::gameIsRunning() && isUnibios);
+		unibiosSwitches.setActive(system().hasContent() && isUnibios);
 	}
 };
 
-class CustomMainMenuView : public EmuMainMenuView
+class CustomMainMenuView : public MainMenuView
 {
 private:
 	TextMenuItem gameList
 	{
-		"Load Game From List", &defaultFace(),
+		"Open Content From List", attachParams(),
 		[this](TextMenuItem &, View &, Input::Event e)
 		{
 			auto gameListMenu = makeView<GameListView>();
 			if(!gameListMenu->games())
 			{
-				app().postMessage(6, true, "No games found, use \"Load Game\" command to browse to a directory with valid games.");
+				app().postMessage(6, true, "No content found, use \"Open Content\" command to browse to a folder with ROM archives.");
 				return;
 			}
 			pushAndShow(std::move(gameListMenu), e);
 		}
 	};
 
-	void reloadItems()
+	void reloadItems() final
 	{
 		item.clear();
 		loadFileBrowserItems();
@@ -663,10 +694,9 @@ private:
 	}
 
 public:
-	CustomMainMenuView(ViewAttachParams attach): EmuMainMenuView{attach, true}
+	CustomMainMenuView(ViewAttachParams attach): MainMenuView{attach, true}
 	{
 		reloadItems();
-		app().setOnMainMenuItemOptionChanged([this](){ reloadItems(); });
 	}
 };
 
@@ -679,4 +709,6 @@ std::unique_ptr<View> EmuApp::makeCustomView(ViewAttachParams attach, ViewID id)
 		case ViewID::SYSTEM_OPTIONS: return std::make_unique<CustomSystemOptionView>(attach);
 		default: return nullptr;
 	}
+}
+
 }

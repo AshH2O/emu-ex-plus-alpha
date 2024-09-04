@@ -13,11 +13,13 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/base/EventLoop.hh>
 #include <imagine/base/Window.hh>
 #include <imagine/base/GLContext.hh>
 #include <imagine/base/sharedLibrary.hh>
 #include <imagine/time/Time.hh>
+#include <imagine/thread/Thread.hh>
+#include <imagine/util/math/Point2D.hh>
+#include <imagine/util/ranges.hh>
 #include <imagine/logger/logger.h>
 #include <cstdlib>
 #include <cstring>
@@ -25,53 +27,38 @@
 #if defined __unix__ || defined __APPLE__
 #include <unistd.h>
 #endif
-#ifdef __linux__
-#include <sys/resource.h>
-#endif
 #ifdef __ANDROID__
 #include <android/log.h>
 #else
 #include <execinfo.h>
 #endif
+#if defined __APPLE__
+#include <pthread.h>
+#endif
 
-namespace Base
+namespace IG
 {
 
-const char *orientationToStr(Orientation o)
+std::string_view asString(Orientations o)
 {
 	switch(o)
 	{
-		case VIEW_ROTATE_AUTO: return "Auto";
-		case VIEW_ROTATE_0: return "0";
-		case VIEW_ROTATE_90: return "90";
-		case VIEW_ROTATE_180: return "180";
-		case VIEW_ROTATE_270: return "270";
-		case VIEW_ROTATE_0 | VIEW_ROTATE_90 | VIEW_ROTATE_270: return "0/90/270";
-		case VIEW_ROTATE_0 | VIEW_ROTATE_90 | VIEW_ROTATE_180 | VIEW_ROTATE_270: return "0/90/180/270";
-		case VIEW_ROTATE_90 | VIEW_ROTATE_270: return "90/270";
-		default: bug_unreachable("o == %d", o); return "";
+		case Orientations{}: return "Unset";
+		case Orientations{.portrait = 1}: return "Portrait";
+		case Orientations{.landscapeRight = 1}: return "Landscape Right";
+		case Orientations{.portraitUpsideDown = 1}: return "Portrait Upside-Down";
+		case Orientations{.landscapeLeft = 1}: return "Landscape Left";
+		case Orientations::allLandscape(): return "Either Landscape";
+		case Orientations::allPortrait(): return "Either Portrait";
+		case Orientations::allButUpsideDown(): return "All But Upside-Down";
+		case Orientations::all(): return "All";
 	}
+	return "Unknown";
 }
 
-bool orientationIsSideways(Orientation o)
+SharedLibraryRef openSharedLibrary(const char *name, OpenSharedLibraryFlags flags)
 {
-	return o == VIEW_ROTATE_90 || o == VIEW_ROTATE_270;
-}
-
-FDEventSource::FDEventSource(const char *debugLabel, int fd, EventLoop loop, PollEventDelegate callback, uint32_t events):
-	FDEventSource{debugLabel, fd}
-{
-	attach(loop, callback, events);
-}
-
-bool FDEventSource::attach(PollEventDelegate callback, uint32_t events)
-{
-	return attach({}, callback, events);
-}
-
-SharedLibraryRef openSharedLibrary(const char *name, unsigned flags)
-{
-	int mode = flags & RESOLVE_ALL_SYMBOLS_FLAG ? RTLD_NOW : RTLD_LAZY;
+	int mode = flags.resolveAllSymbols ? RTLD_NOW : RTLD_LAZY;
 	auto lib = dlopen(name, mode);
 	if(Config::DEBUG_BUILD && !lib)
 	{
@@ -92,9 +79,14 @@ void *loadSymbol(SharedLibraryRef lib, const char *name)
 	return dlsym(lib, name);
 }
 
-GLContext GLManager::makeContext(GLContextAttributes attr, GLBufferConfig config, IG::ErrorCode &ec)
+const char *lastOpenSharedLibraryError()
 {
-	return makeContext(attr, config, {}, ec);
+	return dlerror();
+}
+
+GLContext GLManager::makeContext(GLContextAttributes attr, GLBufferConfig config)
+{
+	return makeContext(attr, config, {});
 }
 
 void GLManager::resetCurrentContext() const
@@ -102,108 +94,70 @@ void GLManager::resetCurrentContext() const
 	display().resetCurrentContext();
 }
 
+GLBufferConfig GLManager::makeBufferConfig(ApplicationContext ctx, const GLBufferRenderConfigAttributes& attrs) const
+{
+	return makeBufferConfig(ctx, std::span{&attrs, 1});
 }
 
-namespace IG
+GLBufferConfig GLManager::makeBufferConfig(ApplicationContext ctx, std::span<const GLBufferRenderConfigAttributes> attrsSpan) const
 {
-
-FrameTime FrameParams::presentTime() const
-{
-	return timestamp_ + std::chrono::duration_cast<FrameTime>(frameTime_);
+	for(const auto &attrs : attrsSpan)
+	{
+		auto config = tryBufferConfig(ctx, attrs);
+		if(config)
+			return *config;
+	}
+	throw std::runtime_error("Error finding a GL configuration");
 }
 
-uint32_t FrameParams::elapsedFrames(FrameTime lastTimestamp) const
+SteadyClockTimePoint FrameParams::presentTime(int frames) const
 {
-	return elapsedFrames(timestamp_, lastTimestamp, frameTime_);
+	if(frames <= 0)
+		return {};
+	return frameTime * frames + timestamp;
 }
 
-uint32_t FrameParams::elapsedFrames(FrameTime timestamp, FrameTime lastTimestamp, FloatSeconds frameTime)
+int FrameParams::elapsedFrames(SteadyClockTimePoint lastTimestamp) const
 {
-	if(!lastTimestamp.count())
+	return elapsedFrames(timestamp, lastTimestamp, frameTime);
+}
+
+int FrameParams::elapsedFrames(SteadyClockTimePoint timestamp, SteadyClockTimePoint lastTimestamp, SteadyClockTime frameTime)
+{
+	if(!hasTime(lastTimestamp))
 		return 1;
 	assumeExpr(timestamp >= lastTimestamp);
 	assumeExpr(frameTime.count() > 0);
-	FrameTime diff = timestamp - lastTimestamp;
-	uint32_t elapsed = std::round(FloatSeconds(diff) / frameTime);
-	return std::max(elapsed, 1u);
+	auto diff = timestamp - lastTimestamp;
+	auto elapsed = divRoundClosestPositive(diff.count(), frameTime.count());
+	return std::max(elapsed, decltype(elapsed){1});
 }
 
-void setThisThreadPriority(int nice)
+WRect Viewport::relRect(WPt pos, WSize size, _2DOrigin posOrigin, _2DOrigin screenOrigin) const
 {
-	#ifdef __linux__
-	assert(nice > -20);
-	auto tid = gettid();
-	if(setpriority(PRIO_PROCESS, tid, nice) == -1)
-	{
-		if(Config::DEBUG_BUILD)
-		{
-			logErr("error:%s setting thread:0x%X nice level:%d", strerror(errno), (unsigned)tid, nice);
-		}
-	}
-	else
-	{
-		//logDMsg("set thread:0x%X nice level:%d", (unsigned)tid, nice);
-	}
-	#endif
+	// adjust to the requested origin on the screen
+	auto newX = LT2DO.adjustX(pos.x, width(), screenOrigin.invertYIfCartesian());
+	auto newY = LT2DO.adjustY(pos.y, height(), screenOrigin.invertYIfCartesian());
+	WRect rect;
+	rect.setPosRel({newX, newY}, size, posOrigin);
+	return rect;
 }
 
-int thisThreadPriority()
+WRect Viewport::relRectBestFit(WPt pos, float aspectRatio, _2DOrigin posOrigin, _2DOrigin screenOrigin) const
 {
-	#ifdef __linux__
-	return getpriority(PRIO_PROCESS, gettid());
-	#else
-	return 0;
-	#endif
+	auto size = sizesWithRatioBestFit(aspectRatio, width(), height());
+	return relRect(pos, size, posOrigin, screenOrigin);
 }
 
 }
-
-#if defined(__has_feature)
-	#if __has_feature(address_sanitizer) && defined CONFIG_BASE_CUSTOM_NEW_DELETE
-	#undef CONFIG_BASE_NO_CUSTOM_NEW_DELETE
-	#warning "cannot use custom new/delete with address sanitizer"
-	#endif
-#endif
-
-#ifdef CONFIG_BASE_CUSTOM_NEW_DELETE
-
-void* operator new (std::size_t size)
-#ifdef __EXCEPTIONS
-	throw (std::bad_alloc)
-#endif
-{ return std::malloc(size); }
-
-void* operator new[] (std::size_t size)
-#ifdef __EXCEPTIONS
-	throw (std::bad_alloc)
-#endif
-{ return std::malloc(size); }
-
-void operator delete (void *o) noexcept { std::free(o); }
-void operator delete[] (void *o) noexcept { std::free(o); }
-
-#endif
-
-#ifdef __EXCEPTIONS
-namespace __gnu_cxx
-{
-
-void __verbose_terminate_handler()
-{
-	logErr("terminated by uncaught exception");
-  abort();
-}
-
-}
-#endif
 
 #ifndef __ANDROID__
-static void logBacktrace()
+inline void logBacktrace()
 {
 	void *arr[10];
 	auto size = backtrace(arr, 10);
 	char **backtraceStrings = backtrace_symbols(arr, size);
-	iterateTimes(size, i)
+	for(auto i : IG::iotaCount(size))
 		logger_printf(LOG_E, "%s\n", backtraceStrings[i]);
 }
 #endif

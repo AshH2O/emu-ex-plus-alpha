@@ -1,45 +1,32 @@
+#include <emuframework/EmuApp.hh>
+#include <emuframework/Option.hh>
+#include "MainSystem.hh"
 #ifndef SNES9X_VERSION_1_4
 #include <apu/apu.h>
 #include <apu/bapu/snes/snes.hpp>
 #include <ppu.h>
 #include <fxemu.h>
 #endif
-#include <emuframework/EmuApp.hh>
-#include "internal.hh"
-#include <snes9x.h>
 
-enum
+namespace EmuEx
 {
-	CFGKEY_MULTITAP = 276, CFGKEY_BLOCK_INVALID_VRAM_ACCESS = 277,
-	CFGKEY_VIDEO_SYSTEM = 278, CFGKEY_INPUT_PORT = 279,
-	CFGKEY_AUDIO_DSP_INTERPOLATON = 280, CFGKEY_SEPARATE_ECHO_BUFFER = 281,
-	CFGKEY_SUPERFX_CLOCK_MULTIPLIER = 282
-};
 
 #ifdef SNES9X_VERSION_1_4
 const char *EmuSystem::configFilename = "Snes9x.config";
-static constexpr int inputPortMinVal = 0;
 #else
 bool EmuSystem::hasBundledGames = true;
 const char *EmuSystem::configFilename = "Snes9xP.config";
-static constexpr int inputPortMinVal = -1;
 #endif
-Byte1Option optionMultitap{CFGKEY_MULTITAP, 0};
-SByte1Option optionInputPort{CFGKEY_INPUT_PORT, inputPortMinVal, false, optionIsValidWithMinMax<inputPortMinVal, 3>};
-Byte1Option optionVideoSystem{CFGKEY_VIDEO_SYSTEM, 0, false, optionIsValidWithMax<3>};
-#ifndef SNES9X_VERSION_1_4
-Byte1Option optionBlockInvalidVRAMAccess{CFGKEY_BLOCK_INVALID_VRAM_ACCESS, 1};
-Byte1Option optionSeparateEchoBuffer{CFGKEY_SEPARATE_ECHO_BUFFER, 0};
-Byte1Option optionSuperFXClockMultiplier{CFGKEY_SUPERFX_CLOCK_MULTIPLIER, 100, false, optionIsValidWithMinMax<5, 250>};
-Byte1Option optionAudioDSPInterpolation{CFGKEY_AUDIO_DSP_INTERPOLATON, DSP_INTERPOLATION_GAUSSIAN, false, optionIsValidWithMax<4>};
-#endif
-const AspectRatioInfo EmuSystem::aspectRatioInfo[] =
+
+std::span<const AspectRatioInfo> Snes9xSystem::aspectRatioInfos()
 {
-		{"4:3 (Original)", 4, 3},
-		{"8:7", 8, 7},
+	static constexpr AspectRatioInfo aspectRatioInfo[]
+	{
+		{"4:3 (Original)", {4, 3}},
 		EMU_SYSTEM_DEFAULT_ASPECT_RATIO_INFO_INIT
-};
-const unsigned EmuSystem::aspectRatioInfos = std::size(EmuSystem::aspectRatioInfo);
+	};
+	return aspectRatioInfo;
+}
 
 #ifndef SNES9X_VERSION_1_4
 void setSuperFXSpeedMultiplier(unsigned val)
@@ -49,49 +36,86 @@ void setSuperFXSpeedMultiplier(unsigned val)
 }
 #endif
 
-static void applyInputPortOption(int portVal, VController &vCtrl)
+void Snes9xSystem::applyInputPortOption(int portVal, VController &vCtrl)
 {
 	snesInputPort = portVal;
-	if(EmuSystem::gameIsRunning())
+	if(hasContent())
 	{
 		setupSNESInput(vCtrl);
 	}
 }
 
-void EmuSystem::initOptions(EmuApp &app)
-{
-	app.setDefaultVControlsButtonSpacing(100);
-	app.setDefaultVControlsButtonStagger(5); // original SNES layout
-}
-
-EmuSystem::Error EmuSystem::onOptionsLoaded(Base::ApplicationContext)
+void Snes9xSystem::onOptionsLoaded()
 {
 	#ifndef SNES9X_VERSION_1_4
 	SNES::dsp.spc_dsp.interpolation = optionAudioDSPInterpolation;
 	#endif
-	return {};
 }
 
-bool EmuSystem::readConfig(IO &io, unsigned key, unsigned readSize)
+bool Snes9xSystem::readConfig(ConfigType type, MapIO &io, unsigned key)
 {
-	switch(key)
+	if(type == ConfigType::MAIN)
 	{
-		default: return false;
+		switch(key)
+		{
+			#ifndef SNES9X_VERSION_1_4
+			case CFGKEY_AUDIO_DSP_INTERPOLATON: return readOptionValue(io, optionAudioDSPInterpolation);
+			#endif
+			case CFGKEY_CHEATS_PATH: return readStringOptionValue(io, cheatsDir);
+			case CFGKEY_PATCHES_PATH: return readStringOptionValue(io, patchesDir);
+			case CFGKEY_SATELLAVIEW_PATH: return readStringOptionValue(io, satDir);
+			case CFGKEY_SUFAMI_BIOS_PATH: return readStringOptionValue(io, sufamiBiosPath);
+			case CFGKEY_BSX_BIOS_PATH: return readStringOptionValue(io, bsxBiosPath);
+		}
+	}
+	else if(type == ConfigType::SESSION)
+	{
+		switch(key)
+		{
+			case CFGKEY_INPUT_PORT: return readOptionValue(io, optionInputPort);
+			case CFGKEY_MULTITAP: return readOptionValue(io, optionMultitap);
+			case CFGKEY_VIDEO_SYSTEM: return readOptionValue(io, optionVideoSystem);
+			case CFGKEY_ALLOW_EXTENDED_VIDEO_LINES: return readOptionValue(io, optionAllowExtendedVideoLines);
+			case CFGKEY_DEINTERLACE_MODE: return readOptionValue(io, deinterlaceMode);
+			#ifndef SNES9X_VERSION_1_4
+			case CFGKEY_BLOCK_INVALID_VRAM_ACCESS: return readOptionValue(io, optionBlockInvalidVRAMAccess);
+			case CFGKEY_SEPARATE_ECHO_BUFFER: return readOptionValue(io, optionSeparateEchoBuffer);
+			case CFGKEY_SUPERFX_CLOCK_MULTIPLIER: return readOptionValue(io, optionSuperFXClockMultiplier);
+			#endif
+		}
+	}
+	return false;
+}
+
+void Snes9xSystem::writeConfig(ConfigType type, FileIO &io)
+{
+	if(type == ConfigType::MAIN)
+	{
 		#ifndef SNES9X_VERSION_1_4
-		bcase CFGKEY_AUDIO_DSP_INTERPOLATON: optionAudioDSPInterpolation.readFromIO(io, readSize);
+		writeOptionValueIfNotDefault(io, optionAudioDSPInterpolation);
+		#endif
+		writeStringOptionValue(io, CFGKEY_CHEATS_PATH, cheatsDir);
+		writeStringOptionValue(io, CFGKEY_PATCHES_PATH, patchesDir);
+		writeStringOptionValueIfNotDefault(io, CFGKEY_SATELLAVIEW_PATH, satDir, optionUserPathContentToken);
+		writeStringOptionValue(io, CFGKEY_SUFAMI_BIOS_PATH, sufamiBiosPath);
+		writeStringOptionValue(io, CFGKEY_BSX_BIOS_PATH, bsxBiosPath);
+	}
+	else if(type == ConfigType::SESSION)
+	{
+		writeOptionValueIfNotDefault(io, optionInputPort);
+		writeOptionValueIfNotDefault(io, optionMultitap);
+		writeOptionValueIfNotDefault(io, optionVideoSystem);
+		writeOptionValueIfNotDefault(io, optionAllowExtendedVideoLines);
+		writeOptionValueIfNotDefault(io, CFGKEY_DEINTERLACE_MODE, deinterlaceMode, DeinterlaceMode::Bob);
+		#ifndef SNES9X_VERSION_1_4
+		writeOptionValueIfNotDefault(io, optionBlockInvalidVRAMAccess);
+		writeOptionValueIfNotDefault(io, optionSeparateEchoBuffer);
+		writeOptionValueIfNotDefault(io, optionSuperFXClockMultiplier);
 		#endif
 	}
-	return true;
 }
 
-void EmuSystem::writeConfig(IO &io)
-{
-	#ifndef SNES9X_VERSION_1_4
-	optionAudioDSPInterpolation.writeWithKeyIfNotDefault(io);
-	#endif
-}
-
-void EmuSystem::onSessionOptionsLoaded(EmuApp &app)
+void Snes9xSystem::onSessionOptionsLoaded(EmuApp &app)
 {
 	applyInputPortOption(optionInputPort, app.defaultVController());
 	#ifndef SNES9X_VERSION_1_4
@@ -101,11 +125,13 @@ void EmuSystem::onSessionOptionsLoaded(EmuApp &app)
 	#endif
 }
 
-bool EmuSystem::resetSessionOptions(EmuApp &app)
+bool Snes9xSystem::resetSessionOptions(EmuApp &app)
 {
 	applyInputPortOption(optionInputPort.reset(), app.defaultVController());
 	optionMultitap.reset();
 	optionVideoSystem.reset();
+	optionAllowExtendedVideoLines.reset();
+	deinterlaceMode = DeinterlaceMode::Bob;
 	#ifndef SNES9X_VERSION_1_4
 	// reset emulations hacks
 	PPU.BlockInvalidVRAMAccess = optionBlockInvalidVRAMAccess.reset();
@@ -115,31 +141,4 @@ bool EmuSystem::resetSessionOptions(EmuApp &app)
 	return true;
 }
 
-bool EmuSystem::readSessionConfig(IO &io, unsigned key, unsigned readSize)
-{
-	switch(key)
-	{
-		default: return 0;
-		bcase CFGKEY_INPUT_PORT: optionInputPort.readFromIO(io, readSize);
-		bcase CFGKEY_MULTITAP: optionMultitap.readFromIO(io, readSize);
-		bcase CFGKEY_VIDEO_SYSTEM: optionVideoSystem.readFromIO(io, readSize);
-		#ifndef SNES9X_VERSION_1_4
-		bcase CFGKEY_BLOCK_INVALID_VRAM_ACCESS: optionBlockInvalidVRAMAccess.readFromIO(io, readSize);
-		bcase CFGKEY_SEPARATE_ECHO_BUFFER: optionSeparateEchoBuffer.readFromIO(io, readSize);
-		bcase CFGKEY_SUPERFX_CLOCK_MULTIPLIER: optionSuperFXClockMultiplier.readFromIO(io, readSize);
-		#endif
-	}
-	return 1;
-}
-
-void EmuSystem::writeSessionConfig(IO &io)
-{
-	optionInputPort.writeWithKeyIfNotDefault(io);
-	optionMultitap.writeWithKeyIfNotDefault(io);
-	optionVideoSystem.writeWithKeyIfNotDefault(io);
-	#ifndef SNES9X_VERSION_1_4
-	optionBlockInvalidVRAMAccess.writeWithKeyIfNotDefault(io);
-	optionSeparateEchoBuffer.writeWithKeyIfNotDefault(io);
-	optionSuperFXClockMultiplier.writeWithKeyIfNotDefault(io);
-	#endif
 }

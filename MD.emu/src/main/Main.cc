@@ -13,12 +13,8 @@
 	You should have received a copy of the GNU General Public License
 	along with MD.emu.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "main"
-#include <emuframework/EmuApp.hh>
-#include <emuframework/EmuInput.hh>
-#include <emuframework/EmuAudio.hh>
 #include <emuframework/EmuAppInlines.hh>
-#include "internal.hh"
+#include <emuframework/EmuSystemInlines.hh>
 #include "system.h"
 #include "loadrom.h"
 #include "md_cart.h"
@@ -33,31 +29,55 @@
 #include "genplus-config.h"
 #ifndef NO_SCD
 #include <scd/scd.h>
+#include <mednafen/mednafen.h>
+#include <mednafen/cdrom/CDAccess.h>
+#include <mednafen-emuex/ArchiveVFS.hh>
 #endif
-#include <fileio/fileio.h>
 #include "Cheats.hh"
 #include <imagine/fs/FS.hh>
+#include <imagine/fs/ArchiveFS.hh>
+#include <imagine/io/FileIO.hh>
+#include <imagine/util/format.hh>
+#include <imagine/util/ScopeGuard.hh>
 
-const char *EmuSystem::creditsViewStr = CREDITS_INFO_STRING "(c) 2011-2021\nRobert Broglia\nwww.explusalpha.com\n\nPortions (c) the\nGenesis Plus Team\ncgfm2.emuviews.com";
+t_config config{};
+t_bitmap bitmap{};
+bool config_ym2413_enabled = true;
+
+namespace EmuEx
+{
+
+constexpr SystemLogger log{"MD.emu"};
+const char *EmuSystem::creditsViewStr = CREDITS_INFO_STRING "(c) 2011-2024\nRobert Broglia\nwww.explusalpha.com\n\nPortions (c) the\nGenesis Plus Team\nsegaretro.org/Genesis_Plus";
 bool EmuSystem::hasCheats = true;
 bool EmuSystem::hasPALVideoSystem = true;
-t_config config{};
-bool config_ym2413_enabled = true;
-int8 mdInputPortDev[2]{-1, -1};
-t_bitmap bitmap{};
-static unsigned autoDetectedVidSysPAL = 0;
+bool EmuSystem::canRenderRGBA8888 = RENDER_BPP == 32;
+bool EmuSystem::hasRectangularPixels = true;
+bool EmuApp::needsGlobalInstance = true;
 
-bool hasMDExtension(const char *name)
+MdApp::MdApp(ApplicationInitParams initParams, ApplicationContext &ctx):
+	EmuApp{initParams, ctx}, mdSystem{ctx} {}
+
+static bool hasBinExtension(std::string_view name)
 {
-	return hasROMExtension(name);
+	return IG::endsWithAnyCaseless(name, ".bin");
 }
 
-static bool hasMDCDExtension(const char *name)
+bool hasMDExtension(std::string_view name)
 {
-	return string_hasDotExtension(name, "cue") || string_hasDotExtension(name, "iso");
+	return hasBinExtension(name) || IG::endsWithAnyCaseless(name, ".smd", ".md", ".gen"
+		#ifndef NO_SYSTEM_PBC
+		, ".sms"
+		#endif
+		);
 }
 
-static bool hasMDWithCDExtension(const char *name)
+static bool hasMDCDExtension(std::string_view name)
+{
+	return IG::endsWithAnyCaseless(name, ".cue", ".iso", ".chd");
+}
+
+static bool hasMDWithCDExtension(std::string_view name)
 {
 	return hasMDExtension(name)
 	#ifndef NO_SCD
@@ -66,45 +86,41 @@ static bool hasMDWithCDExtension(const char *name)
 	;
 }
 
-const char *EmuSystem::shortSystemName()
+const char *EmuSystem::shortSystemName() const
 {
 	return "MD-Genesis";
 }
 
-const char *EmuSystem::systemName()
+const char *EmuSystem::systemName() const
 {
 	return "Mega Drive (Sega Genesis)";
 }
 
 EmuSystem::NameFilterFunc EmuSystem::defaultFsFilter = hasMDWithCDExtension;
-EmuSystem::NameFilterFunc EmuSystem::defaultBenchmarkFsFilter = hasMDExtension;
 
-void EmuSystem::runFrame(EmuSystemTask *task, EmuVideo *video, EmuAudio *audio)
+void MdSystem::runFrame(EmuSystemTaskContext taskCtx, EmuVideo *video, EmuAudio *audio)
 {
-	//logMsg("frame start");
 	RAMCheatUpdate();
-	system_frame(task, video);
+	system_frame(taskCtx, video);
 
 	int16 audioBuff[snd.buffer_size * 2];
 	int frames = audio_update(audioBuff);
 	if(audio)
 	{
-		//logMsg("%d frames", frames);
 		audio->writeFrames(audioBuff, frames);
 	}
-	//logMsg("frame end");
 }
 
-void EmuSystem::renderFramebuffer(EmuVideo &video)
+void MdSystem::renderFramebuffer(EmuVideo &video)
 {
 	video.startFrameWithAltFormat({}, framebufferRenderFormatPixmap());
 }
 
-bool EmuSystem::vidSysIsPAL() { return vdp_pal; }
+VideoSystem MdSystem::videoSystem() const { return vdp_pal ? VideoSystem::PAL : VideoSystem::NATIVE_NTSC; }
 
-void EmuSystem::reset(ResetMode mode)
+void MdSystem::reset(EmuApp &, ResetMode mode)
 {
-	assert(gameIsRunning());
+	assert(hasContent());
 	#ifndef NO_SCD
 	if(sCD.isActive)
 		system_reset();
@@ -113,351 +129,52 @@ void EmuSystem::reset(ResetMode mode)
 		gen_reset(0);
 }
 
-FS::PathString EmuSystem::sprintStateFilename(int slot, const char *statePath, const char *gameName)
+FS::FileString MdSystem::stateFilename(int slot, std::string_view name) const
 {
-	return FS::makePathStringPrintf("%s/%s.0%c.gp", statePath, gameName, saveSlotChar(slot));
+	return IG::format<FS::FileString>("{}.0{}.gp", name, saveSlotChar(slot));
 }
 
-static FS::PathString sprintSaveFilename()
+static FS::PathString saveFilename(EmuApp &app)
 {
-	return FS::makePathStringPrintf("%s/%s.srm", EmuSystem::savePath(), EmuSystem::gameName().data());
+	return app.contentSaveFilePath(".srm");
 }
 
-static FS::PathString sprintBRAMSaveFilename()
+static FS::PathString bramSaveFilename(EmuApp &app)
 {
-	return FS::makePathStringPrintf("%s/%s.brm", EmuSystem::savePath(), EmuSystem::gameName().data());
+	return app.contentSaveFilePath(".brm");
 }
 
-static const unsigned maxSaveStateSize = STATE_SIZE+4;
-
-static EmuSystem::Error saveMDState(const char *path)
+void MdSystem::readState(EmuApp &app, std::span<uint8_t> buff)
 {
-	auto stateData = std::make_unique<uint8_t[]>(maxSaveStateSize);
-	if(!stateData)
-		return EmuSystem::makeError("Out of memory");
-	logMsg("saving state data");
-	int size = state_save(stateData.get());
-	logMsg("writing to file");
-	std::error_code ec;
-	if(FileUtils::writeToPath(path, stateData.get(), size, &ec) == -1)
+	state_load(buff.data());
+}
+
+size_t MdSystem::writeState(std::span<uint8_t> buff, SaveStateFlags flags)
+{
+	assert(buff.size() == maxSaveStateSize);
+	return state_save(buff.data(), flags.uncompressed);
+}
+
+static bool sramHasContent(std::span<uint8> sram)
+{
+	for(auto v : sram)
 	{
-		return EmuSystem::makeError(std::error_code{ec});
+		if(v != 0xFF)
+			return true;
 	}
-	logMsg("wrote %d byte state", size);
-	return {};
+	return false;
 }
 
-static EmuSystem::Error loadMDState(const char *path)
+void MdSystem::loadBackupMemory(EmuApp &app)
 {
-	FileIO f;
-	if(auto ec = f.open(path, IO::AccessHint::ALL);
-		ec)
-	{
-		EmuSystem::makeError(std::error_code{ec});
-	}
-	auto stateData = (const uint8_t *)f.mmapConst();
-	if(!stateData)
-	{
-		return EmuSystem::makeFileReadError();
-	}
-	if(auto err = state_load(stateData);
-		err)
-	{
-		return err;
-	}
-	//sound_restore();
-	return {};
-}
-
-EmuSystem::Error EmuSystem::saveState(const char *path)
-{
-	return saveMDState(path);
-}
-
-EmuSystem::Error EmuSystem::loadState(const char *path)
-{
-	return loadMDState(path);
-}
-
-void EmuSystem::saveBackupMem() // for manually saving when not closing game
-{
-	if(!gameIsRunning())
-		return;
 	#ifndef NO_SCD
 	if(sCD.isActive)
 	{
-		logMsg("saving BRAM");
-		auto saveStr = sprintBRAMSaveFilename();
-		FileIO bramFile;
-		bramFile.create(saveStr.data());
-		if(!bramFile)
-			logMsg("error creating bram file");
-		else
-		{
-			bramFile.write(bram, sizeof(bram));
-			char sramTemp[0x10000];
-			memcpy(sramTemp, sram.sram, 0x10000); // make a temp copy to byte-swap
-			for(unsigned i = 0; i < 0x10000; i += 2)
-			{
-				std::swap(sramTemp[i], sramTemp[i+1]);
-			}
-			bramFile.write(sramTemp, 0x10000);
-		}
-	}
-	else
-	#endif
-	if(sram.on)
-	{
-		auto saveStr = sprintSaveFilename();
-
-		logMsg("saving SRAM%s", optionBigEndianSram ? ", byte-swapped" : "");
-
-		uint8_t sramTemp[0x10000];
-		uint8_t *sramPtr = sram.sram;
-		if(optionBigEndianSram)
-		{
-			memcpy(sramTemp, sram.sram, 0x10000); // make a temp copy to byte-swap
-			for(unsigned i = 0; i < 0x10000; i += 2)
-			{
-				std::swap(sramTemp[i], sramTemp[i+1]);
-			}
-			sramPtr = sramTemp;
-		}
-		if(FileUtils::writeToPath(saveStr.data(), sramPtr, 0x10000, nullptr) == -1)
-			logMsg("error creating sram file");
-	}
-	writeCheatFile();
-}
-
-void EmuSystem::closeSystem()
-{
-	saveBackupMem();
-	#ifndef NO_SCD
-	if(sCD.isActive)
-	{
-		scd_deinit();
-	}
-	#endif
-	old_system[0] = old_system[1] = -1;
-	clearCheatList();
-}
-
-const char *mdInputSystemToStr(uint8 system)
-{
-	switch(system)
-	{
-		case NO_SYSTEM: return "unconnected";
-		case SYSTEM_MD_GAMEPAD: return "gamepad";
-		case SYSTEM_MS_GAMEPAD: return "sms gamepad";
-		case SYSTEM_MOUSE: return "mouse";
-		case SYSTEM_MENACER: return "menacer";
-		case SYSTEM_JUSTIFIER: return "justifier";
-		case SYSTEM_TEAMPLAYER: return "team-player";
-		default : return "unknown";
-	}
-}
-
-static bool inputPortWasAutoSetByGame(unsigned port)
-{
-	return old_system[port] != -1;
-}
-
-static void setupSMSInput()
-{
-	input.system[0] = input.system[1] =  SYSTEM_MS_GAMEPAD;
-}
-
-void setupMDInput(EmuApp &app)
-{
-	static constexpr std::pair<int, bool> enable6Btn[]{{3, true}, {4, true}, {5, true}};
-	static constexpr std::pair<int, bool> disable6Btn[]{{3, false}, {4, false}, {5, false}};
-	if(!EmuSystem::gameIsRunning())
-	{
-		app.applyEnabledFaceButtons(option6BtnPad ? enable6Btn : disable6Btn);
-		return;
-	}
-
-	IG::fill(playerIdxMap);
-	playerIdxMap[0] = 0;
-	playerIdxMap[1] = 4;
-
-	unsigned mdPad = option6BtnPad ? DEVICE_PAD6B : DEVICE_PAD3B;
-	iterateTimes(4, i)
-		config.input[i].padtype = mdPad;
-
-	if(system_hw == SYSTEM_PBC)
-	{
-		setupSMSInput();
-		io_init();
-		app.applyEnabledFaceButtons(disable6Btn);
-		return;
-	}
-
-	if(cart.special & HW_J_CART)
-	{
-		input.system[0] = input.system[1] = SYSTEM_MD_GAMEPAD;
-		playerIdxMap[2] = 5;
-		playerIdxMap[3] = 6;
-	}
-	else if(optionMultiTap)
-	{
-		input.system[0] = SYSTEM_TEAMPLAYER;
-		input.system[1] = 0;
-
-		playerIdxMap[1] = 1;
-		playerIdxMap[2] = 2;
-		playerIdxMap[3] = 3;
-	}
-	else
-	{
-		iterateTimes(2, i)
-		{
-			if(mdInputPortDev[i] == -1) // user didn't specify device, go with auto settings
-			{
-				if(!inputPortWasAutoSetByGame(i))
-					input.system[i] = SYSTEM_MD_GAMEPAD;
-				else
-				{
-					logMsg("input port %d set by game detection", i);
-					input.system[i] = old_system[i];
-				}
-			}
-			else
-				input.system[i] = mdInputPortDev[i];
-			logMsg("attached %s to port %d%s", mdInputSystemToStr(input.system[i]), i, mdInputPortDev[i] == -1 ? " (auto)" : "");
-		}
-	}
-
-	io_init();
-	app.applyEnabledFaceButtons(option6BtnPad ? enable6Btn : disable6Btn);
-}
-
-static unsigned detectISORegion(uint8 bootSector[0x800])
-{
-	auto bootByte = bootSector[0x20b];
-
-	if(bootByte == 0x7a)
-		return REGION_USA;
-	else if(bootByte == 0x64)
-		return REGION_EUROPE;
-	else
-		return REGION_JAPAN_NTSC;
-}
-
-FS::PathString EmuSystem::willLoadGameFromPath(FS::PathString path)
-{
-	#ifndef NO_SCD
-	// check if loading a .bin with matching .cue
-	if(string_hasDotExtension(path.data(), "bin"))
-	{
-		auto len = strlen(path.data());
-		auto possibleCuePath = path;
-		possibleCuePath[len-3] = 0; // delete extension
-		string_cat(possibleCuePath, "cue");
-		if(FS::exists(possibleCuePath))
-		{
-			logMsg("loading %s instead of .bin file", possibleCuePath.data());
-			return possibleCuePath;
-		}
-	}
-	#endif
-	return path;
-}
-
-EmuSystem::Error EmuSystem::loadGame(Base::ApplicationContext ctx, IO &io, EmuSystemCreateParams, OnLoadProgressDelegate)
-{
-	#ifndef NO_SCD
-	using namespace Mednafen;
-	CDAccess *cd{};
-	if(hasMDCDExtension(gameFileName().data()) ||
-		(string_hasDotExtension(gameFileName().data(), "bin") && FS::file_size(fullGamePath()) > 1024*1024*10)) // CD
-	{
-		FS::current_path(gamePath());
-		try
-		{
-			cd = CDAccess_Open(&NVFS, fullGamePath(), false);
-		}
-		catch(std::exception &e)
-		{
-			return makeError("%s", e.what());
-		}
-
-		unsigned region = REGION_USA;
-		if (config.region_detect == 1) region = REGION_USA;
-	  else if (config.region_detect == 2) region = REGION_EUROPE;
-	  else if (config.region_detect == 3) region = REGION_JAPAN_NTSC;
-	  else if (config.region_detect == 4) region = REGION_JAPAN_PAL;
-	  else
-	  {
-	  	uint8 bootSector[2048];
-	  	cd->Read_Sector(bootSector, 0, 2048);
-			region = detectISORegion(bootSector);
-	  }
-
-		const char *biosPath = optionCDBiosJpnPath;
-		const char *biosName = "Japan";
-		switch(region)
-		{
-			bcase REGION_USA: biosPath = optionCDBiosUsaPath; biosName = "USA";
-			bcase REGION_EUROPE: biosPath = optionCDBiosEurPath; biosName = "Europe";
-		}
-		if(!strlen(biosPath))
-		{
-			delete cd;
-			return makeError("Set a %s BIOS in the Options", biosName);
-		}
-		if(FileIO io;
-			!load_rom(io, biosPath, nullptr))
-		{
-			delete cd;
-			return makeError("Error loading BIOS: %s", biosPath);
-		}
-		if(!sCD.isActive)
-		{
-			delete cd;
-			return makeError("Invalid BIOS: %s", biosPath);
-		}
-	}
-	else
-	#endif
-	// ROM
-	{
-		logMsg("loading ROM %s", fullGamePath());
-		if(!load_rom(io, fullGamePath(), originalGameFileName().data()))
-		{
-			return makeFileReadError();
-		}
-	}
-	autoDetectedVidSysPAL = vdp_pal;
-	if((int)optionVideoSystem == 1)
-	{
-		vdp_pal = 0;
-	}
-	else if((int)optionVideoSystem == 2)
-	{
-		vdp_pal = 1;
-	}
-	if(vidSysIsPAL())
-		logMsg("using PAL timing");
-
-	system_init();
-	iterateTimes(2, i)
-	{
-		if(old_system[i] != -1)
-			old_system[i] = input.system[i]; // store input ports set by game
-	}
-	setupMDInput(EmuApp::get(ctx));
-
-	#ifndef NO_SCD
-	if(sCD.isActive)
-	{
-		auto saveStr = sprintBRAMSaveFilename();
-		FileIO bramFile;
-		bramFile.open(saveStr.data(), IO::AccessHint::ALL);
-
+		auto saveStr = bramSaveFilename(app);
+		auto bramFile = appContext().openFileUri(saveStr, {.test = true, .accessHint = IOAccessHint::All});
 		if(!bramFile)
 		{
-			logMsg("no BRAM on disk, formatting");
+			log.info("no BRAM on disk, formatting");
 			IG::fill(bram);
 			memcpy(bram + sizeof(bram) - sizeof(fmtBram), fmtBram, sizeof(fmtBram));
 			auto sramFormatStart = sram.sram + 0x10000 - sizeof(fmt64kSram);
@@ -475,19 +192,19 @@ EmuSystem::Error EmuSystem::loadGame(Base::ApplicationContext ctx, IO &io, EmuSy
 			{
 				std::swap(sram.sram[i], sram.sram[i+1]);
 			}
-			logMsg("loaded BRAM from disk");
+			log.info("loaded BRAM from disk");
 		}
 	}
 	else
 	#endif
 	if(sram.on)
 	{
-		auto saveStr = sprintSaveFilename();
+		auto saveStr = saveFilename(app);
 
-		if(FileUtils::readFromPath(saveStr.data(), sram.sram, 0x10000) <= 0)
-			logMsg("no SRAM on disk");
+		if(FileUtils::readFromUri(appContext(), saveStr, {sram.sram, 0x10000}) <= 0)
+			log.info("no SRAM on disk");
 		else
-			logMsg("loaded SRAM from disk%s", optionBigEndianSram ? ", will byte-swap" : "");
+			log.info("loaded SRAM from disk{}", optionBigEndianSram ? ", will byte-swap" : "");
 
 		if(optionBigEndianSram)
 		{
@@ -497,6 +214,222 @@ EmuSystem::Error EmuSystem::loadGame(Base::ApplicationContext ctx, IO &io, EmuSy
 			}
 		}
 	}
+}
+
+void MdSystem::onFlushBackupMemory(EmuApp &app, BackupMemoryDirtyFlags)
+{
+	if(!hasContent())
+		return;
+	#ifndef NO_SCD
+	if(sCD.isActive)
+	{
+		log.info("saving BRAM");
+		auto saveStr = bramSaveFilename(app);
+		auto bramFile = appContext().openFileUri(saveStr, OpenFlags::testNewFile());
+		if(!bramFile)
+			log.error("error creating bram file");
+		else
+		{
+			bramFile.write(bram, sizeof(bram));
+			char sramTemp[0x10000];
+			memcpy(sramTemp, sram.sram, 0x10000); // make a temp copy to byte-swap
+			for(unsigned i = 0; i < 0x10000; i += 2)
+			{
+				std::swap(sramTemp[i], sramTemp[i+1]);
+			}
+			bramFile.write(sramTemp, 0x10000);
+		}
+	}
+	else
+	#endif
+	if(sram.on)
+	{
+		auto saveStr = saveFilename(app);
+		if(sramHasContent({sram.sram, 0x10000}))
+		{
+			log.info("saving SRAM{}", optionBigEndianSram ? ", byte-swapped" : "");
+			uint8_t sramTemp[0x10000];
+			uint8_t *sramPtr = sram.sram;
+			if(optionBigEndianSram)
+			{
+				memcpy(sramTemp, sram.sram, 0x10000); // make a temp copy to byte-swap
+				for(unsigned i = 0; i < 0x10000; i += 2)
+				{
+					std::swap(sramTemp[i], sramTemp[i+1]);
+				}
+				sramPtr = sramTemp;
+			}
+			try
+			{
+				FileUtils::writeToUri(appContext(), saveStr, {sramPtr, 0x10000});
+			}
+			catch(...)
+			{
+				log.error("error creating sram file");
+			}
+		}
+		else
+		{
+			log.info("SRAM wasn't written to");
+			appContext().removeFileUri(saveStr);
+		}
+	}
+}
+
+WallClockTimePoint MdSystem::backupMemoryLastWriteTime(const EmuApp &app) const
+{
+	return appContext().fileUriLastWriteTime(
+		app.contentSaveFilePath(sCD.isActive ? ".brm" : ".srm").c_str());
+}
+
+void MdSystem::closeSystem()
+{
+	#ifndef NO_SCD
+	if(sCD.isActive)
+	{
+		scd_deinit();
+	}
+	#endif
+	old_system[0] = old_system[1] = -1;
+	input.system[0] = input.system[1] = NO_SYSTEM;
+	clearCheatList();
+}
+
+static unsigned detectISORegion(uint8 bootSector[0x800])
+{
+	auto bootByte = bootSector[0x20b];
+
+	if(bootByte == 0x7a)
+		return REGION_USA;
+	else if(bootByte == 0x64)
+		return REGION_EUROPE;
+	else
+		return REGION_JAPAN_NTSC;
+}
+
+FS::PathString EmuSystem::willLoadContentFromPath(std::string_view path, std::string_view displayName)
+{
+	#ifndef NO_SCD
+	// check if loading a .bin with matching .cue
+	if(hasBinExtension(path))
+	{
+		FS::PathString possibleCuePath{path};
+		possibleCuePath.replace(possibleCuePath.end() - 3, possibleCuePath.end(), "cue");
+		return possibleCuePath;
+	}
+	#endif
+	return {};
+}
+
+void MdSystem::loadContent(IO &io, EmuSystemCreateParams, OnLoadProgressDelegate)
+{
+	#ifndef NO_SCD
+	using namespace Mednafen;
+	CDAccess *cd{};
+	auto deleteCDAccess = IG::scopeGuard([&](){ delete cd; });
+	if(hasMDCDExtension(contentFileName()) ||
+		(hasBinExtension(contentFileName()) && io.size() > 1024*1024*10)) // CD
+	{
+		bool isArchive = std::holds_alternative<ArchiveIO>(io);
+		if(contentDirectory().empty() && !isArchive)
+		{
+			throwMissingContentDirError();
+		}
+		if(isArchive)
+		{
+			if(endsWithAnyCaseless(contentFileName(), ".bin", ".iso"))
+			{
+				log.info("looking for a .cue file in archive");
+				// check the archive for a .cue and load that instead
+				FS::ArchiveIterator archIt{std::move(io)};
+				for(auto &entry : archIt)
+				{
+					if(entry.type() == FS::file_type::directory)
+					{
+						continue;
+					}
+					auto name = entry.name();
+					if(endsWithAnyCaseless(name, ".cue"))
+					{
+						log.info("found:{}", name);
+						contentFileName_ = name;
+						break;
+					}
+				}
+				io = std::move(*archIt);
+			}
+			ArchiveVFS archVFS{ArchiveIO{std::move(io)}};
+			cd = CDAccess_Open(&archVFS, std::string{contentFileName()}, true);
+		}
+		else
+		{
+			cd = CDAccess_Open(&NVFS, std::string{contentLocation()}, false);
+		}
+
+		unsigned region = REGION_USA;
+		if (config.region_detect == 1) region = REGION_USA;
+	  else if (config.region_detect == 2) region = REGION_EUROPE;
+	  else if (config.region_detect == 3) region = REGION_JAPAN_NTSC;
+	  else if (config.region_detect == 4) region = REGION_JAPAN_PAL;
+	  else
+	  {
+	  	uint8 bootSector[2048];
+	  	cd->Read_Sector(bootSector, 0, 2048);
+			region = detectISORegion(bootSector);
+	  }
+
+		struct BiosDesc{std::string_view path, name;};
+		auto [biosPath, biosName] = [&] -> BiosDesc
+		{
+			switch(region)
+			{
+				case REGION_USA: return {cdBiosUSAPath, "USA"};
+				case REGION_EUROPE: return {cdBiosEurPath, "Europe"};
+				default: return {cdBiosJpnPath, "Japan"};
+			}
+		}();
+		if(biosPath.empty())
+		{
+			throw std::runtime_error(std::format("Set a {} BIOS in the Options", biosName));
+		}
+		auto [biosSize, biosFilename] = FileUtils::readFromUriWithArchiveScan(appContext(), biosPath, {cart.rom, MAXROMSIZE}, hasMDExtension);
+		if(biosSize <= 0)
+			throw std::runtime_error(std::format("Error loading BIOS: {}", biosPath));
+		init_rom(biosSize, "");
+		if(!sCD.isActive)
+		{
+			throw std::runtime_error(std::format("Invalid BIOS: {}", biosPath));
+		}
+	}
+	else
+	#endif
+	// ROM
+	{
+		log.info("loading ROM:{}", contentLocation());
+		auto size = io.read(cart.rom, MAXROMSIZE);
+		if(size <= 0)
+			throwFileReadError();
+		init_rom(size, contentFileName());
+	}
+	autoDetectedVidSysPAL = vdp_pal;
+	if((int)optionVideoSystem == 1)
+	{
+		vdp_pal = 0;
+	}
+	else if((int)optionVideoSystem == 2)
+	{
+		vdp_pal = 1;
+	}
+	if(videoSystem() == VideoSystem::PAL)
+		log.info("using PAL timing");
+
+	system_init();
+	for(auto i : iotaCount(2))
+	{
+		if(old_system[i] != -1)
+			old_system[i] = input.system[i]; // store input ports set by game
+	}
+	setupInput(EmuApp::get(appContext()));
 
 	system_reset();
 
@@ -505,40 +438,43 @@ EmuSystem::Error EmuSystem::loadGame(Base::ApplicationContext ctx, IO &io, EmuSy
 	{
 		if(Insert_CD(cd) != 0)
 		{
-			delete cd;
-			return makeError("Error loading CD");
+			throw std::runtime_error("Error loading CD");
 		}
+		deleteCDAccess.cancel();
 	}
 	#endif
 
 	readCheatFile();
 	applyCheats();
-
-	return {};
 }
 
-void EmuSystem::configAudioRate(IG::FloatSeconds frameTime, uint32_t rate)
+void MdSystem::configAudioRate(FrameTime outputFrameTime, int outputRate)
 {
-	audio_init(rate, 1. / frameTime.count());
-	if(gameIsRunning())
-		sound_restore();
-	logMsg("md sound buffer size %d", snd.buffer_size);
+	float outputFrameRate = toHz(outputFrameTime);
+	if(snd.sample_rate == outputRate && snd.frame_rate == outputFrameRate)
+		return;
+	log.info("set sound output rate:{} for fps:{}", outputRate, outputFrameRate);
+	audio_init(outputRate, outputFrameRate);
+	sound_restore();
+	//log.debug("set sound buffer size:{}", snd.buffer_size);
 }
 
-void EmuSystem::onVideoRenderFormatChange(EmuVideo &, IG::PixelFormat fmt)
+bool MdSystem::onVideoRenderFormatChange(EmuVideo &, IG::PixelFormat fmt)
 {
 	setFramebufferRenderFormat(fmt);
+	return false;
 }
 
 void EmuApp::onCustomizeNavView(EmuApp::NavView &view)
 {
 	const Gfx::LGradientStopDesc navViewGrad[] =
 	{
-		{ .0, Gfx::VertexColorPixelFormat.build(.5, .5, .5, 1.) },
-		{ .03, Gfx::VertexColorPixelFormat.build(0., 0., 1. * .4, 1.) },
-		{ .3, Gfx::VertexColorPixelFormat.build(0., 0., 1. * .4, 1.) },
-		{ .97, Gfx::VertexColorPixelFormat.build(0., 0., .6 * .4, 1.) },
-		{ 1., Gfx::VertexColorPixelFormat.build(.5, .5, .5, 1.) },
+		{ .0, Gfx::PackedColor::format.build(0., 0., 1. * .4, 1.) },
+		{ .3, Gfx::PackedColor::format.build(0., 0., 1. * .4, 1.) },
+		{ .97, Gfx::PackedColor::format.build(0., 0., .6 * .4, 1.) },
+		{ 1., view.separatorColor() },
 	};
 	view.setBackgroundGradient(navViewGrad);
+}
+
 }

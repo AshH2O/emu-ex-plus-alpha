@@ -86,7 +86,7 @@ static uint8_t ross_io2_read(uint16_t addr)
 static int ross_dump(void)
 {
     mon_out("Size: %s, bank: %d\n",
-            (ross_is_32k) ? "32Kb" : "16Kb",
+            (ross_is_32k) ? "32KiB" : "16KiB",
             currbank);
     return 0;
 }
@@ -106,7 +106,8 @@ static io_source_t ross_io1_device = {
     ross_dump,             /* device state information dump function */
     CARTRIDGE_ROSS,        /* cartridge ID */
     IO_PRIO_NORMAL,        /* normal priority, device read needs to be checked for collisions */
-    0                      /* insertion order, gets filled in by the registration function */
+    0,                     /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE         /* NO mirroring */
 };
 
 static io_source_t ross_io2_device = {
@@ -122,7 +123,8 @@ static io_source_t ross_io2_device = {
     ross_dump,             /* device state information dump function */
     CARTRIDGE_ROSS,        /* cartridge ID */
     IO_PRIO_NORMAL,        /* normal priority, device read needs to be checked for collisions */
-    0                      /* insertion order, gets filled in by the registration function */
+    0,                     /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE         /* NO mirroring */
 };
 
 static io_source_list_t *ross_io1_list_item = NULL;
@@ -136,7 +138,7 @@ static const export_resource_t export_res = {
 
 void ross_config_init(void)
 {
-    cart_config_changed_slotmain(1, 1, CMODE_READ);
+    cart_config_changed_slotmain(CMODE_16KGAME, CMODE_16KGAME, CMODE_READ);
 }
 
 void ross_config_setup(uint8_t *rawcart)
@@ -145,7 +147,7 @@ void ross_config_setup(uint8_t *rawcart)
     memcpy(&romh_banks[0x0000], &rawcart[0x2000], 0x2000);
     memcpy(&roml_banks[0x2000], &rawcart[0x4000], 0x2000);
     memcpy(&romh_banks[0x2000], &rawcart[0x6000], 0x2000);
-    cart_config_changed_slotmain(0, 0, CMODE_READ);
+    cart_config_changed_slotmain(CMODE_8KGAME, CMODE_8KGAME, CMODE_READ);
     currbank = 0;
 }
 
@@ -224,7 +226,7 @@ void ross_detach(void)
    ARRAY | ROMH  |   0.0+  | 16384 BYTES of ROMH data
  */
 
-static char snap_module_name[] = "CARTROSS";
+static const char snap_module_name[] = "CARTROSS";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   1
 

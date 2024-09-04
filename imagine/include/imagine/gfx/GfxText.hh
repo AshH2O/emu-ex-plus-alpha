@@ -15,75 +15,88 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/config/defs.hh>
 #include <imagine/gfx/defs.hh>
+#include <imagine/gfx/Quads.hh>
 #include <imagine/util/2DOrigin.h>
-#include <vector>
+#include <imagine/util/string/utf16.hh>
 #include <limits>
+#include <concepts>
 
-namespace Gfx
+namespace IG::Gfx
 {
 
-class Renderer;
-class RendererCommands;
 class GlyphTextureSet;
-class TexVertex;
-class ProjectionPlane;
+
+enum class TextAlignment
+{
+	left, center, right
+};
+
+struct TextLayoutConfig
+{
+	static constexpr auto noMaxLines = std::numeric_limits<int>::max();
+	static constexpr auto noMaxLineSize = std::numeric_limits<int>::max();
+
+	int maxLineSize = noMaxLineSize;
+	int maxLines = noMaxLines;
+	TextAlignment alignment{};
+};
 
 class Text
 {
 public:
-	static constexpr uint16_t NO_MAX_LINES = std::numeric_limits<uint16_t>::max();
-	static constexpr GC NO_MAX_LINE_SIZE = std::numeric_limits<GC>::max();
+	Text() = default;
+	Text(RendererTask &task, GlyphTextureSet *face): Text{task, UTF16String{}, face} {}
+	Text(RendererTask &task, UTF16Convertible auto &&str, GlyphTextureSet *face = nullptr):
+		textStr{IG_forward(str)}, face_{face}, quads{task, {.size = 1}} {}
 
-	Text();
-	Text(GlyphTextureSet *face);
-	Text(const char *str, GlyphTextureSet *face = nullptr);
-	Text(TextString str, GlyphTextureSet *face = nullptr);
-	void setString(const char *str);
-	void setString(const Text &o);
-	void setString(TextString v);
-	void setFace(GlyphTextureSet *face);
-	void makeGlyphs(Renderer &r);
-	bool compile(Renderer &r, ProjectionPlane projP);
-	void draw(RendererCommands &cmds, GC xPos, GC yPos, _2DOrigin o, ProjectionPlane projP) const;
-	void draw(RendererCommands &cmds, GP p, _2DOrigin o, ProjectionPlane projP) const;
-	void setMaxLineSize(GC size);
-	void setMaxLines(uint16_t lines);
-	GC width() const;
-	GC height() const;
-	GC fullHeight() const;
-	GC nominalHeight() const;
-	GC spaceWidth() const;
-	GlyphTextureSet *face() const;
+	void resetString(UTF16Convertible auto &&str)
+	{
+		textStr = IG_forward(str);
+		sizeBeforeLineSpans = {};
+	}
+
+	void resetString() { resetString(UTF16String{}); }
+	void setFace(GlyphTextureSet *face) { face_ = face; }
+	GlyphTextureSet *face() const { return face_; }
+	void makeGlyphs();
+	bool compile(TextLayoutConfig conf = {});
+	void draw(RendererCommands &, WPt pos, _2DOrigin, Color) const;
+	void draw(RendererCommands &, WPt pos, _2DOrigin) const;
+	WSize pixelSize() const { return {xSize, ySize}; }
+	int width() const { return xSize; }
+	int height() const { return ySize; }
+	auto nominalHeight() const { return metrics.nominalHeight; }
+	int fullHeight() const { return ySize + (nominalHeight() / 2); }
+	auto spaceWidth() const { return metrics.spaceSize; }
 	uint16_t currentLines() const;
-	unsigned stringSize() const;
+	size_t stringSize() const;
 	bool isVisible() const;
-	TextStringView stringView() const;
+	std::u16string_view stringView() const;
+	std::u16string string() const;
+	Renderer &renderer();
 
 protected:
 	struct LineSpan
 	{
-		constexpr LineSpan(GC size, uint32_t chars):
-			size{size}, chars{chars}
-		{}
-		GC size;
-		uint32_t chars;
+		int xSize;
+		uint16_t chars;
+		static constexpr size_t encodedChar16Size = (sizeof(xSize) / 2) + (sizeof(chars) / 2);
+
+		constexpr LineSpan(int xSize, uint16_t chars):
+			xSize{xSize}, chars{chars} {}
+		void encodeTo(std::u16string &);
+		static LineSpan decode(std::u16string_view);
 	};
 
-	TextString textStr{};
+	UTF16String textStr;
 	GlyphTextureSet *face_{};
-	std::vector<LineSpan> lineInfo{};
-	GC spaceSize = 0;
-	GC nominalHeight_ = 0;
-	GC yLineStart = 0;
-	GC xSize = 0;
-	GC ySize = 0;
-	GC maxLineSize = NO_MAX_LINE_SIZE;
-	uint16_t lines = 0;
-	uint16_t maxLines = NO_MAX_LINES;
+	size_t sizeBeforeLineSpans{}; // encoded LineSpans in textStr start after this offset
+	int xSize{};
+	int ySize{};
+	GlyphSetMetrics metrics;
+	ITexQuads quads;
 
-	void drawSpan(RendererCommands &cmds, GC xPos, GC yPos, ProjectionPlane projP, TextStringView strView, std::array<TexVertex, 4> &vArr) const;
 	bool hasText() const;
 };
 

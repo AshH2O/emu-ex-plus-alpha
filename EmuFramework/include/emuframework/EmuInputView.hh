@@ -18,29 +18,37 @@
 #include <emuframework/EmuAppHelper.hh>
 #include <imagine/gui/View.hh>
 
+namespace EmuEx
+{
+
+using namespace IG;
 class VController;
 class EmuApp;
 class EmuVideoLayer;
 class EmuViewController;
+enum class AltSpeedMode;
 
-class EmuInputView : public View, public EmuAppHelper<EmuInputView>
+class EmuInputView : public View, public EmuAppHelper
 {
 public:
 	EmuInputView();
 	EmuInputView(ViewAttachParams attach, VController &vCtrl, EmuVideoLayer &videoLayer);
 	void place() final;
-	void draw(Gfx::RendererCommands &cmds) final;
-	bool inputEvent(Input::Event e) final;
+	void draw(Gfx::RendererCommands &__restrict__, ViewDrawParams p = {}) const final;
+	bool inputEvent(const Input::Event&, ViewInputEventParams p = {}) final;
 	void resetInput();
-	void setConsumeUnboundGamepadKeys(bool on);
-	bool shouldConsumeUnboundGamepadKeys() const;
+	bool toggleAltSpeedMode(AltSpeedMode);
+	bool setAltSpeedMode(AltSpeedMode, bool on);
 	VController *activeVController() const { return vController; }
+	void setSystemGestureExclusion(bool on);
+	int uiElementHeight() const;
 
 private:
 	VController *vController{};
 	EmuVideoLayer *videoLayer{};
-	bool ffToggleActive{};
-	IG_enableMemberIf(Config::envIsAndroid, bool, consumeUnboundGamepadKeys){};
+	bool speedToggleActive{};
 
-	void updateFastforward();
+	void updateRunSpeed(AltSpeedMode);
 };
+
+}

@@ -17,68 +17,86 @@
 #include <imagine/base/Screen.hh>
 #include <imagine/base/ApplicationContext.hh>
 #include <imagine/base/Application.hh>
-#include <imagine/logger/logger.h>
 #include <imagine/util/algorithm.h>
-#include <imagine/util/string.h>
-#include <X11/extensions/Xrandr.h>
+#include <imagine/logger/logger.h>
+#include "xlibutils.h"
+#include <xcb/randr.h>
 #include <cmath>
+#include <format>
 
-namespace Base
+namespace IG
 {
 
-XScreen::XScreen(ApplicationContext ctx, InitParams params):
-	frameTimer{ctx.application().makeFrameTimer(*static_cast<Screen*>(this))}
+constexpr SystemLogger log{"X11Screen"};
+
+XScreen::XScreen(ApplicationContext ctx, InitParams params)
 {
-	::Screen *xScreen = (::Screen*)params.xScreen;
-	assert(xScreen);
-	this->xScreen = xScreen;
-	xMM = WidthMMOfScreen(xScreen);
-	yMM = HeightMMOfScreen(xScreen);
+	auto &screen = params.screen;
+	xScreen = &screen;
+	auto &conn = params.conn;
+	xMM = screen.width_in_millimeters;
+	yMM = screen.height_in_millimeters;
 	if(Config::MACHINE_IS_PANDORA)
 	{
 		// TODO: read actual frame rate value
-		frameTime_ = IG::FloatSeconds(1. / 60.);
+		frameRate_ = 60;
+		frameTime_ = fromHz<SteadyClockTime>(60.);
 	}
 	else
 	{
-		auto screenRes = XRRGetScreenResourcesCurrent(DisplayOfScreen(xScreen), RootWindowOfScreen(xScreen));
-		auto primaryOutput = XRRGetOutputPrimary(DisplayOfScreen(xScreen), RootWindowOfScreen(xScreen));
-		if(!primaryOutput)
+		frameRate_ = 60;
+		frameTime_ = fromHz<SteadyClockTime>(60.);
+		reliableFrameTime = false;
+		xcb_randr_output_t primaryOutput{};
+		auto resReply = XCB_REPLY(xcb_randr_get_screen_resources, &conn, screen.root);
+		if(resReply)
 		{
-			primaryOutput = screenRes->outputs[0];
-		}
-		auto outputInfo = XRRGetOutputInfo(DisplayOfScreen(xScreen), screenRes, primaryOutput);
-		auto crtcInfo = XRRGetCrtcInfo(DisplayOfScreen(xScreen), screenRes, outputInfo->crtc);
-		iterateTimes(screenRes->nmode, i)
-		{
-			auto &modeInfo = screenRes->modes[i];
-			if(modeInfo.id == crtcInfo->mode)
+			auto outPrimaryReply = XCB_REPLY(xcb_randr_get_output_primary, &conn, screen.root);
+			if(outPrimaryReply)
 			{
-				if(modeInfo.hTotal && modeInfo.vTotal)
+				primaryOutput = outPrimaryReply->output;
+			}
+			else
+			{
+				for(auto output : std::span<xcb_randr_output_t>{xcb_randr_get_screen_resources_outputs(resReply.get()),
+					size_t(xcb_randr_get_screen_resources_outputs_length(resReply.get()))})
 				{
-					frameTime_ = IG::FloatSeconds(((double)modeInfo.hTotal * (double)modeInfo.vTotal) / (double)modeInfo.dotClock);
+					auto outputInfoReply = XCB_REPLY(xcb_randr_get_output_info, &conn, output, resReply->timestamp);
+					if(outputInfoReply && outputInfoReply->connection == XCB_RANDR_CONNECTION_CONNECTED)
+					{
+						primaryOutput = output;
+						break;
+					}
 				}
-				else
+			}
+			auto outputInfoReply = XCB_REPLY(xcb_randr_get_output_info, &conn, primaryOutput, resReply->timestamp);
+			if(outputInfoReply)
+			{
+				auto crtcInfoReply = XCB_REPLY(xcb_randr_get_crtc_info, &conn, outputInfoReply->crtc, outputInfoReply->timestamp);
+				if(crtcInfoReply)
 				{
-					logWarn("unknown display time");
-					frameTime_ = IG::FloatSeconds(1. / 60.);
-					reliableFrameTime = false;
+					for(auto &modeInfo : std::span<xcb_randr_mode_info_t>{xcb_randr_get_screen_resources_modes(resReply.get()),
+						(size_t)xcb_randr_get_screen_resources_modes_length(resReply.get())})
+					{
+						if(modeInfo.id == crtcInfoReply->mode && modeInfo.htotal && modeInfo.vtotal)
+						{
+							frameRate_ = float(modeInfo.dot_clock) / (modeInfo.htotal * modeInfo.vtotal);
+							frameTime_ = fromSeconds<SteadyClockTime>(modeInfo.htotal * modeInfo.vtotal / double(modeInfo.dot_clock));
+							reliableFrameTime = true;
+							break;
+						}
+					}
 				}
-				break;
 			}
 		}
-		XRRFreeCrtcInfo(crtcInfo);
-		XRRFreeOutputInfo(outputInfo);
-		XRRFreeScreenResources(screenRes);
 		assert(frameTime_.count());
 	}
-	frameTimer.setFrameTime(frameTime_);
-	logMsg("screen:%p %dx%d (%dx%dmm) %.2fHz", xScreen,
-		WidthOfScreen(xScreen), HeightOfScreen(xScreen), (int)xMM, (int)yMM,
-		1./ frameTime_.count());
+	log.info("screen:{} {}x{} ({}x{}mm) {}Hz", (void*)&screen,
+		screen.width_in_pixels, screen.height_in_pixels, (int)xMM, (int)yMM, frameRate_);
+	ctx.application().emplaceFrameTimer(frameTimer, *static_cast<Screen*>(this));
 }
 
-void *XScreen::nativeObject() const
+xcb_screen_t* XScreen::nativeObject() const
 {
 	return xScreen;
 }
@@ -100,55 +118,49 @@ XScreen::operator bool() const
 
 int Screen::width() const
 {
-	return WidthOfScreen((::Screen*)xScreen);
+	return xScreen->width_in_pixels;
 }
 
 int Screen::height() const
 {
-	return HeightOfScreen((::Screen*)xScreen);
+	return xScreen->height_in_pixels;
 }
 
-double Screen::frameRate() const
-{
-	return 1. / frameTime_.count();
-}
-
-IG::FloatSeconds Screen::frameTime() const
-{
-	return frameTime_;
-}
+FrameRate Screen::frameRate() const { return frameRate_; }
+SteadyClockTime Screen::frameTime() const { return frameTime_; }
 
 bool Screen::frameRateIsReliable() const
 {
 	return reliableFrameTime;
 }
 
-void Screen::setFrameRate(double rate)
+void Screen::setFrameRate(FrameRate rate)
 {
 	if constexpr(Config::MACHINE_IS_PANDORA)
 	{
-		if(rate == DISPLAY_RATE_DEFAULT)
+		if(!rate)
 			rate = 60;
-		rate = std::round(rate);
+		else
+			rate = std::round(rate);
 		if(rate != 50 && rate != 60)
 		{
-			logWarn("tried to set unsupported frame rate: %f", rate);
+			log.warn("tried to set unsupported frame rate:{}", rate);
 			return;
 		}
-		auto cmd = string_makePrintf<64>("sudo /usr/pandora/scripts/op_lcdrate.sh %u", (unsigned int)rate);
+		auto cmd = std::format("sudo /usr/pandora/scripts/op_lcdrate.sh {}", (unsigned int)rate);
 		int err = system(cmd.data());
 		if(err)
 		{
-			logErr("error setting frame rate, %d", err);
+			log.error("error:{} setting frame rate", err);
 			return;
 		}
-		frameTime_ = IG::FloatSeconds(1. / rate);
-		frameTimer.setFrameTime(frameTime_);
+		frameRate_ = rate;
+		frameTime_ = fromHz<SteadyClockTime>(rate);
+		frameTimer.setFrameRate(rate);
 	}
 	else
 	{
-		auto time = rate ? IG::FloatSeconds(1. / rate) : frameTime();
-		frameTimer.setFrameTime(time);
+		frameTimer.setFrameRate(rate ?: frameRate());
 	}
 }
 
@@ -165,7 +177,7 @@ void Screen::unpostFrameTimer()
 void Screen::setFrameInterval(int interval)
 {
 	// TODO
-	//logMsg("setting frame interval %d", (int)interval);
+	//log.info("setting frame interval:{}", interval);
 	assert(interval >= 1);
 }
 
@@ -176,16 +188,31 @@ bool Screen::supportsFrameInterval()
 
 bool Screen::supportsTimestamps() const
 {
-	return !std::holds_alternative<SimpleFrameTimer>(frameTimer);
+	return application().supportedFrameTimerType() != SupportedFrameTimer::SIMPLE;
 }
 
-std::vector<double> Screen::supportedFrameRates(ApplicationContext) const
+std::span<const FrameRate> Screen::supportedFrameRates() const
 {
 	// TODO
-	std::vector<double> rateVec;
-	rateVec.reserve(1);
-	rateVec.emplace_back(frameRate());
-	return rateVec;
+	return {&frameRate_, 1};
+}
+
+void Screen::setVariableFrameTime(bool useVariableTime)
+{
+	if(!shouldUpdateFrameTimer(frameTimer, useVariableTime))
+		return;
+	application().emplaceFrameTimer(frameTimer, *static_cast<Screen*>(this), useVariableTime);
+}
+
+void Screen::setFrameEventsOnThisThread()
+{
+	unpostFrame();
+	frameTimer.setEventsOnThisThread(appContext());
+}
+
+void Screen::removeFrameEvents()
+{
+	unpostFrame();
 }
 
 }

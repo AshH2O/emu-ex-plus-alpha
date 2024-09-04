@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -177,7 +177,8 @@ class FBSurface
       @param y         The destination y-location to start drawing pixels
       @param numpixels The number of pixels to draw
     */
-    virtual void drawPixels(const uInt32* data, uInt32 x, uInt32 y, uInt32 numpixels);
+    virtual void drawPixels(const uInt32* data, uInt32 x, uInt32 y,
+                            uInt32 numpixels);
 
     /**
       This method should be called to draw a rectangular box with sides
@@ -210,41 +211,83 @@ class FBSurface
     /**
       This method should be called to draw the specified string.
 
-      @param font   The font to draw the string with
-      @param s      The string to draw
-      @param x      The x coordinate
-      @param y      The y coordinate
-      @param w      The width of the string area
-      @param h      The height of the string area (for multi line strings)
-      @param color  The color of the text
-      @param align  The alignment of the text in the string width area
-      @param deltax FIXME
+      @param font         The font to draw the string with
+      @param s            The string to draw
+      @param x            The x coordinate
+      @param y            The y coordinate
+      @param w            The width of the string area
+      @param h            The height of the string area (for multi line strings)
+      @param color        The color of the text
+      @param align        The alignment of the text in the string width area
+      @param deltax       The horizontal scroll offset
       @param useEllipsis  Whether to use '...' when the string is too long
+      @param shadowColor  The shadow color of the text
+      @param linkStart    The start position of a link in drawn string
+      @param linkLen      The length of a link in drawn string
+      @param underline    Whether to underline the link
       @return       Number of lines drawn
     */
 
-    virtual int drawString(
-      const GUI::Font& font, const string& s, int x, int y, int w, int h,
-      ColorId color, TextAlign align = TextAlign::Left,
-      int deltax = 0, bool useEllipsis = true, ColorId shadowColor = kNone);
+    virtual int drawString(const GUI::Font& font, const string& s, int x, int y, int w, int h,
+                           ColorId color, TextAlign align = TextAlign::Left,
+                           int deltax = 0, bool useEllipsis = true, ColorId shadowColor = kNone,
+                           size_t linkStart = string::npos, size_t linkLen = string::npos,
+                           bool underline = false);
 
     /**
       This method should be called to draw the specified string.
 
-      @param font   The font to draw the string with
-      @param s      The string to draw
-      @param x      The x coordinate
-      @param y      The y coordinate
-      @param w      The width of the string area
-      @param color  The color of the text
-      @param align  The alignment of the text in the string width area
-      @param deltax FIXME
+      @param font         The font to draw the string with
+      @param s            The string to draw
+      @param x            The x coordinate
+      @param y            The y coordinate
+      @param w            The width of the string area
+      @param color        The color of the text
+      @param align        The alignment of the text in the string width area
+      @param deltax       The horizontal scroll offset
       @param useEllipsis  Whether to use '...' when the string is too long
+      @param shadowColor  The shadow color of the text
+      @param linkStart    The start position of a link in drawn string
+      @param linkLen      The length of a link in drawn string
+      @param underline    Whether to underline the link
+
     */
-    virtual void drawString(
-        const GUI::Font& font, const string& s, int x, int y, int w,
-        ColorId color, TextAlign align = TextAlign::Left,
-        int deltax = 0, bool useEllipsis = true, ColorId shadowColor = kNone);
+    virtual void drawString(const GUI::Font& font, const string& s, int x, int y, int w,
+                            ColorId color, TextAlign align = TextAlign::Left,
+                            int deltax = 0, bool useEllipsis = true, ColorId shadowColor = kNone,
+                            size_t linkStart = string::npos, size_t linkLen = string::npos,
+                            bool underline = false);
+
+    /**
+      Splits a given string to a given width considering whitespaces.
+
+      @param font   The font to draw the string with
+      @param s      The string to split
+      @param w      The width of the string area
+      @param left   The left part of the split string
+      @param right  The right part of the split string
+    */
+    void splitString(const GUI::Font& font, const string& s, int w,
+                     string& left, string& right) const;
+
+    /**
+      The rendering attributes that can be modified for this texture.
+      These probably can only be implemented in child FBSurfaces where
+      the specific functionality actually exists.
+    */
+    struct Attributes {
+      bool blending{false};    // Blending is enabled
+      uInt32 blendalpha{100};  // Alpha to use in blending mode (0-100%)
+
+      bool operator==(const Attributes& other) const {
+        return blendalpha == other.blendalpha && blending == other.blending;
+      }
+    };
+
+    /**
+      Get the currently applied attributes.
+    */
+    Attributes& attributes() { return myAttributes; }
 
     //////////////////////////////////////////////////////////////////////////
     // Note:  The following methods are FBSurface-specific, and must be
@@ -272,11 +315,14 @@ class FBSurface
       These methods set the origin point and width/height for the
       specified service.  They are defined as separate x/y and w/h
       methods since these items are sometimes set separately.
+      Other times they are set together, so we can use a Rect instead.
     */
     virtual void setSrcPos(uInt32 x, uInt32 y)  = 0;
     virtual void setSrcSize(uInt32 w, uInt32 h) = 0;
+    virtual void setSrcRect(const Common::Rect& r) = 0;
     virtual void setDstPos(uInt32 x, uInt32 y)  = 0;
     virtual void setDstSize(uInt32 w, uInt32 h) = 0;
+    virtual void setDstRect(const Common::Rect& r) = 0;
 
     /**
       This method should be called to enable/disable showing the surface
@@ -303,17 +349,20 @@ class FBSurface
       This method should be called to reset the surface to empty
       pixels / colour black.
     */
-    virtual void invalidate() = 0;
+    virtual void invalidate() {}
 
     /**
-      This method should be called to free any resources being used by
-      the surface.
+      This method should be called to reset a surface area to empty
+
+      @param x      The x coordinate
+      @param y      The y coordinate
+      @param w      The width of the area
+      @param h      The height of the area
     */
-    virtual void free() = 0;
+    virtual void invalidateRect(uInt32 x, uInt32 y, uInt32 w, uInt32 h) = 0;
 
     /**
       This method should be called to reload the surface data/state.
-      It will normally be called after free().
     */
     virtual void reload() = 0;
 
@@ -325,34 +374,16 @@ class FBSurface
     virtual void resize(uInt32 width, uInt32 height) = 0;
 
     /**
-      The rendering attributes that can be modified for this texture.
-      These probably can only be implemented in child FBSurfaces where
-      the specific functionality actually exists.
-    */
-    struct Attributes {
-      bool blending{false};    // Blending is enabled
-      uInt32 blendalpha{100};  // Alpha to use in blending mode (0-100%)
-
-      bool operator==(const Attributes& other) const {
-        return blendalpha == other.blendalpha && blending == other.blending;
-      }
-    };
-
-    /**
-      Get the currently applied attributes.
-    */
-    Attributes& attributes() { return myAttributes; }
-
-    /**
       Configure scaling interpolation.
      */
-    virtual void setScalingInterpolation(FrameBuffer::ScalingInterpolation) = 0;
+    virtual void setScalingInterpolation(ScalingInterpolation) = 0;
 
     /**
       The child class chooses which (if any) of the actual attributes
       can be applied.
     */
     virtual void applyAttributes() = 0;
+    //////////////////////////////////////////////////////////////////////////
 
     static void setPalette(const FullPaletteArray& palette) { myPalette = palette; }
 
@@ -367,14 +398,12 @@ class FBSurface
     */
     bool checkBounds(const uInt32 x, const uInt32 y) const;
 
-    void wrapString(const string& inStr, int pos, string& leftStr, string& rightStr) const;
-
     /**
       Check if the given character is a whitespace.
-      @param s      Character to check
+      @param c      Character to check
       @return       True if whitespace character
     */
-    bool isWhiteSpace(const char s) const;
+    bool isWhiteSpace(const char c) const;
 
   protected:
     uInt32* myPixels{nullptr};  // NOTE: MUST be set in child classes

@@ -33,9 +33,9 @@
 #include "vicii.h"
 #include "viciitypes.h"
 
-CLOCK vicii_clock_add(CLOCK clock, int amount)
+CLOCK vicii_clock_add(CLOCK clock, int64_t amount)
 {
-    CLOCK tmp_clock = clock;
+    int64_t tmp_clock = (int64_t)clock;
 
     if (vicii.fastmode != 0) {
         if (amount > 0) {
@@ -56,7 +56,7 @@ CLOCK vicii_clock_add(CLOCK clock, int amount)
     } else {
         tmp_clock += amount;
     }
-    return tmp_clock;
+    return (CLOCK)tmp_clock;
 }
 
 /* if half cycle is 0, add extra half cycle to stretch */
@@ -139,12 +139,12 @@ int vicii_get_half_cycle(void)
 
 void vicii_memory_refresh_alarm_handler(void)
 {
-    int offset;
-    int amount;
+    int64_t offset;
+    int64_t amount;
     int current_refresh;
     int current_cycle;
 
-    offset = maincpu_clk - c128cpu_memory_refresh_clk;
+    offset = (int64_t)maincpu_clk - (int64_t)c128cpu_memory_refresh_clk;
 
     if (offset >= 0) {
         current_refresh = c128cpu_memory_refresh_clk % vicii.cycles_per_line;

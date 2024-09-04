@@ -13,104 +13,79 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "GLTask"
-#include <assert.h>
 #include <imagine/gfx/Renderer.hh>
 #include <imagine/gfx/opengl/GLRendererTask.hh>
 #include <imagine/thread/Thread.hh>
 #include <imagine/logger/logger.h>
 #include "internalDefs.hh"
+#include <cassert>
 
-namespace Gfx
+namespace IG::Gfx
 {
 
-GLTask::GLTask(Base::ApplicationContext ctx):
-	GLTask{ctx, nullptr}
-{}
+constexpr SystemLogger log{"GLTask"};
 
-GLTask::GLTask(Base::ApplicationContext ctx, const char *debugLabel):
+GLTask::GLTask(ApplicationContext ctx):
+	GLTask{ctx, nullptr} {}
+
+GLTask::GLTask(ApplicationContext ctx, const char *debugLabel):
 	onExit{ctx},
-	commandPort{debugLabel}
-{}
+	commandPort{debugLabel} {}
 
-Error GLTask::makeGLContext(GLTaskConfig config)
+bool GLTask::makeGLContext(GLTaskConfig config)
 {
 	deinit();
-	thread = IG::makeThreadSync(
-		[this, &config](auto &sem)
+	thread = makeThreadSync([this, &config](auto &sem)
+	{
+		threadId_ = thisThreadId();
+		auto &glManager = *config.glManagerPtr;
+		glManager.bindAPI(glAPI);
+		context = makeGLContext(glManager, config.bufferConfig);
+		if(!context) [[unlikely]]
 		{
-			auto &glManager = *config.glManagerPtr;
-			glManager.bindAPI(glAPI);
-			context = makeGLContext(glManager, config.bufferConfig);
-			if(!context) [[unlikely]]
-			{
-				sem.notify();
-				return;
-			}
-			context.setCurrentContext(config.initialDrawable);
-			auto eventLoop = Base::EventLoop::makeForThread();
-			commandPort.attach(eventLoop,
-				[this, glDpy = context.display()](auto msgs)
-				{
-					for(auto msg : msgs)
-					{
-						switch(msg.command)
-						{
-							case Command::RUN_FUNC:
-							{
-								msg.args.run.func(glDpy, msg.semPtr);
-								break;
-							}
-							case Command::EXIT:
-							{
-								glDpy.resetCurrentContext();
-								logMsg("exiting GL context:%p thread", (Base::NativeGLContext)context);
-								context = {};
-								Base::EventLoop::forThread().stop();
-								return false;
-							}
-							default:
-							{
-								logWarn("unknown ThreadCommandMessage value:%d", (int)msg.command);
-							}
-						}
-					}
-					return true;
-				});
-			logMsg("starting GL context:%p thread event loop", (Base::NativeGLContext)context);
-			if(config.threadPriority)
-				Base::setThisThreadPriority(config.threadPriority);
-			sem.notify();
-			eventLoop.run(context);
-			commandPort.detach();
-		});
+			sem.release();
+			return;
+		}
+		context.setCurrentContext(config.initialDrawable);
+		log.info("starting GL context:{} thread message loop", (NativeGLContext)context);
+		sem.release();
+		auto msgs = commandPort.messages();
+		auto glDpy = context.display();
+		for(auto msg : msgs)
+		{
+			if(msg.func) [[likely]]
+				msg.func(glDpy, msg.semPtr, msgs);
+			else
+				break;
+		}
+		glDpy.resetCurrentContext();
+		log.info("exiting GL context:{} thread", (NativeGLContext)context);
+		context = {};
+	});
 	if(!context) [[unlikely]]
 	{
-		return std::runtime_error("error creating GL context");
+		return false;
 	}
 	bufferConfig = config.bufferConfig;
 	onExit =
 		{
-			[this](Base::ApplicationContext, bool backgrounded)
+			[this](ApplicationContext, bool backgrounded)
 			{
 				if(backgrounded)
 				{
-					run(
-						[&glContext = context](TaskContext ctx)
+					runSync(
+						[&glContext = context](TaskContext)
 						{
 							// unset the drawable and finish all commands before entering background
-							if(Base::GLManager::hasCurrentDrawable())
+							if(GLManager::hasCurrentDrawable())
 								glContext.setCurrentDrawable({});
-							#ifdef CONFIG_GFX_OPENGL_SHADER_PIPELINE
-							glReleaseShaderCompiler();
-							#endif
 							glFinish();
-						}, true);
+						});
 				}
 				return true;
-			}, appContext(), Base::RENDERER_TASK_ON_EXIT_PRIORITY
+			}, appContext(), RENDERER_TASK_ON_EXIT_PRIORITY
 		};
-	return {};
+	return true;
 }
 
 GLTask::~GLTask()
@@ -118,23 +93,31 @@ GLTask::~GLTask()
 	deinit();
 }
 
-void GLTask::runFunc(FuncDelegate del, bool awaitReply)
+void GLTask::runFunc(FuncDelegate del, std::span<const uint8_t> extBuff, MessageReplyMode mode)
 {
 	assert(context);
-	commandPort.send({Command::RUN_FUNC, del}, awaitReply);
+	if(extBuff.size())
+	{
+		assert(mode == MessageReplyMode::none);
+		commandPort.sendWithExtraData({.func = del}, extBuff);
+	}
+	else
+	{
+		commandPort.send({.func = del}, mode);
+	}
 }
 
-Base::GLBufferConfig GLTask::glBufferConfig() const
+GLBufferConfig GLTask::glBufferConfig() const
 {
 	return bufferConfig;
 }
 
-const Base::GLContext &GLTask::glContext() const
+const GLContext &GLTask::glContext() const
 {
 	return context;
 }
 
-Base::ApplicationContext GLTask::appContext() const
+ApplicationContext GLTask::appContext() const
 {
 	return onExit.appContext();
 }
@@ -148,16 +131,16 @@ void GLTask::deinit()
 {
 	if(!context)
 		return;
-	commandPort.send({Command::EXIT});
+	commandPort.send({}); // exit
 	onExit.reset();
 	thread.join(); // GL implementation may assign thread destructor so must join() to make sure it completes
 }
 
 void GLTask::TaskContext::notifySemaphore()
 {
-	assumeExpr(semPtr);
+	assumeExpr(semaphorePtr);
 	assumeExpr(semaphoreNeedsNotifyPtr);
-	semPtr->notify();
+	semaphorePtr->release();
 	markSemaphoreNotified();
 }
 
@@ -166,60 +149,50 @@ void GLTask::TaskContext::markSemaphoreNotified()
 	*semaphoreNeedsNotifyPtr = false;
 }
 
-static Base::GLContextAttributes makeGLContextAttributes(unsigned majorVersion, unsigned minorVersion)
+static GLContextAttributes makeGLContextAttributes(GL::Version version)
 {
-	Base::GLContextAttributes glAttr{majorVersion, minorVersion, glAPI};
+	GLContextAttributes glAttr{version, glAPI};
 	if(Config::DEBUG_BUILD)
-		glAttr.setDebug(true);
+		glAttr.debug = true;
 	else
-		glAttr.setNoError(true);
+		glAttr.noError = true;
 	return glAttr;
 }
 
-static Base::GLContext makeVersionedGLContext(Base::GLManager &mgr, Base::GLBufferConfig config,
-	unsigned majorVersion, unsigned minorVersion)
+static GLContext makeVersionedGLContext(GLManager &mgr, GLBufferConfig config, GL::Version version)
 {
-	auto glAttr = makeGLContextAttributes(majorVersion, minorVersion);
-	IG::ErrorCode ec{};
-	return mgr.makeContext(glAttr, config, ec);
+	auto glAttr = makeGLContextAttributes(version);
+	try
+	{
+		return mgr.makeContext(glAttr, config);
+	}
+	catch(...)
+	{
+		return {};
+	}
 }
 
-Base::GLContext GLTask::makeGLContext(Base::GLManager &mgr, Base::GLBufferConfig bufferConf)
+GLContext GLTask::makeGLContext(GLManager &mgr, GLBufferConfig bufferConf)
 {
 	if constexpr((bool)Config::Gfx::OPENGL_ES)
 	{
-		if constexpr(Config::Gfx::OPENGL_ES == 1)
+		if(bufferConf.maySupportGLES(mgr.display(), 3))
 		{
-			return makeVersionedGLContext(mgr, bufferConf, 1, 0);
-		}
-		else
-		{
-			if(bufferConf.maySupportGLES(mgr.display(), 3))
-			{
-				auto ctx = makeVersionedGLContext(mgr, bufferConf, 3, 0);
-				if(ctx)
-				{
-					return ctx;
-				}
-			}
-			// fall back to OpenGL ES 2.0
-			return makeVersionedGLContext(mgr, bufferConf, 2, 0);
-		}
-	}
-	else
-	{
-		if(Config::Gfx::OPENGL_SHADER_PIPELINE)
-		{
-			auto ctx = makeVersionedGLContext(mgr, bufferConf, 3, 3);
+			auto ctx = makeVersionedGLContext(mgr, bufferConf, {3});
 			if(ctx)
 			{
 				return ctx;
 			}
 		}
-		if(Config::Gfx::OPENGL_FIXED_FUNCTION_PIPELINE)
+		// fall back to OpenGL ES 2.0
+		return makeVersionedGLContext(mgr, bufferConf, {2});
+	}
+	else
+	{
+		auto ctx = makeVersionedGLContext(mgr, bufferConf, {3, 3});
+		if(ctx)
 		{
-			// fall back to OpenGL 1.3
-			return makeVersionedGLContext(mgr, bufferConf, 1, 3);
+			return ctx;
 		}
 	}
 	return {};

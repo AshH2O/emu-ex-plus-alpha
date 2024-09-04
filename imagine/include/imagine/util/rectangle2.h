@@ -18,19 +18,26 @@
 #include <imagine/util/2DOrigin.h>
 #include <imagine/util/AssignmentArithmetics.hh>
 #include <imagine/util/Point2D.hh>
-#include <compare>
+#include <imagine/util/concepts.hh>
+#include <imagine/util/math.hh>
+#include <algorithm>
 
 namespace IG
 {
+
+template <class T>
+concept Rectangle = requires()
+{
+	T::x; T::y; T::x2; T::y2;
+};
 
 template<class T>
 class Rect2 : public AssignmentArithmetics< Rect2<T> >
 {
 public:
 	T x{}, y{}, x2{}, y2{};
-	static constexpr _2DOrigin o = LTIC2DO;
 
-	constexpr Rect2() {}
+	constexpr Rect2() = default;
 	constexpr Rect2(Point2D<T> p1, Point2D<T> p2): x(p1.x), y(p1.y), x2(p2.x), y2(p2.y) {}
 
 	static Rect2 makeRel(Point2D<T> pos, Point2D<T> size)
@@ -43,65 +50,69 @@ public:
 
 	constexpr bool operator ==(Rect2 const& rhs) const = default;
 
-	constexpr Rect2 operator +(Rect2 const& rhs) const
+	[[nodiscard]] friend constexpr Rect2 operator+(Rect2 const& lhs, Rect2 const& rhs)
 	{
-		return {{x + rhs.x, y + rhs.y}, {x2 + rhs.x2, y2 + rhs.y2}};
+		return {{lhs.x + rhs.x, lhs.y + rhs.y}, {lhs.x2 + rhs.x2, lhs.y2 + rhs.y2}};
 	}
 
-	constexpr Rect2 operator -(Rect2 const& rhs) const
+	[[nodiscard]] friend constexpr Rect2 operator-(Rect2 const& lhs, Rect2 const& rhs)
 	{
-		return {{x - rhs.x, y - rhs.y}, {x2 - rhs.x2, y2 - rhs.y2}};
+		return {{lhs.x - rhs.x, lhs.y - rhs.y}, {lhs.x2 - rhs.x2, lhs.y2 - rhs.y2}};
 	}
 
-	constexpr Rect2 operator *(Rect2 const& rhs) const
+	[[nodiscard]] friend constexpr Rect2 operator*(Rect2 const& lhs, Rect2 const& rhs)
 	{
-		return {{x * rhs.x, y * rhs.y}, {x2 * rhs.x2, y2 * rhs.y2}};
+		return {{lhs.x * rhs.x, lhs.y * rhs.y}, {lhs.x2 * rhs.x2, lhs.y2 * rhs.y2}};
 	}
 
-	constexpr Rect2 operator /(Rect2 const& rhs) const
+	[[nodiscard]] friend constexpr Rect2 operator/(Rect2 const& lhs, Rect2 const& rhs)
 	{
-		return {{x / rhs.x, y / rhs.y}, {x2 / rhs.x2, y2 / rhs.y2}};
+		return {{lhs.x / rhs.x, lhs.y / rhs.y}, {lhs.x2 / rhs.x2, lhs.y2 / rhs.y2}};
 	}
 
-	constexpr Rect2 operator-() const
+	[[nodiscard]] constexpr Rect2 operator-() const
 	{
 		return {{-x, -y}, {-x2, -y2}};
 	}
 
-	constexpr Rect2 & operator +=(IG::Point2D<T> const& rhs)
+	[[nodiscard]] friend constexpr Rect2 operator+(Rect2 const& lhs, Point2D<T> const& rhs)
 	{
-		x += rhs.x;
-		y += rhs.y;
-		x2 += rhs.x;
-		y2 += rhs.y;
-		return *this;
+		return {{lhs.x + rhs.x, lhs.y + rhs.y}, {lhs.x2 + rhs.x, lhs.y2 + rhs.y}};
 	}
 
-	constexpr Rect2 & operator -=(IG::Point2D<T> const& rhs)
+	[[nodiscard]] friend constexpr Rect2 operator-(Rect2 const& lhs, Point2D<T> const& rhs)
 	{
-		x -= rhs.x;
-		y -= rhs.y;
-		x2 -= rhs.x;
-		y2 -= rhs.y;
-		return *this;
+		return {{lhs.x - rhs.x, lhs.y - rhs.y}, {lhs.x2 - rhs.x, lhs.y2 - rhs.y}};
 	}
 
-	constexpr Rect2 & operator *=(IG::Point2D<T> const& rhs)
+	[[nodiscard]] friend constexpr Rect2 operator*(Rect2 const& lhs, Point2D<T> const& rhs)
 	{
-		x *= rhs.x;
-		y *= rhs.y;
-		x2 *= rhs.x;
-		y2 *= rhs.y;
-		return *this;
+		return {{lhs.x * rhs.x, lhs.y * rhs.y}, {lhs.x2 * rhs.x, lhs.y2 * rhs.y}};
 	}
 
-	constexpr Rect2 & operator /=(IG::Point2D<T> const& rhs)
+	[[nodiscard]] friend constexpr Rect2 operator/(Rect2 const& lhs, Point2D<T> const& rhs)
 	{
-		x /= rhs.x;
-		y /= rhs.y;
-		x2 /= rhs.x;
-		y2 /= rhs.y;
-		return *this;
+		return {{lhs.x / rhs.x, lhs.y / rhs.y}, {lhs.x2 / rhs.x, lhs.y2 / rhs.y}};
+	}
+
+	[[nodiscard]] friend constexpr Rect2 operator+(Rect2 const& lhs, Arithmetic auto rhs)
+	{
+		return {{T(lhs.x + rhs), T(lhs.y + rhs)}, {T(lhs.x2 + rhs), T(lhs.y2 + rhs)}};
+	}
+
+	[[nodiscard]] friend constexpr Rect2 operator-(Rect2 const& lhs, Arithmetic auto rhs)
+	{
+		return {{T(lhs.x - rhs), T(lhs.y - rhs)}, {T(lhs.x2 - rhs), T(lhs.y2 - rhs)}};
+	}
+
+	[[nodiscard]] friend constexpr Rect2 operator*(Rect2 const& lhs, Arithmetic auto rhs)
+	{
+		return {{T(lhs.x * rhs), T(lhs.y * rhs)}, {T(lhs.x2 * rhs), T(lhs.y2 * rhs)}};
+	}
+
+	[[nodiscard]] friend constexpr Rect2 operator/(Rect2 const& lhs, Arithmetic auto rhs)
+	{
+		return {{T(lhs.x / rhs), T(lhs.y / rhs)}, {T(lhs.x2 / rhs), T(lhs.y2 / rhs)}};
 	}
 
 	constexpr Rect2 makeInverted() const
@@ -118,10 +129,10 @@ public:
 				x > other.x2 ? 0 : 1;
 	}
 
-	constexpr bool overlaps(IG::Point2D<T> p) const
+	constexpr bool overlaps(Point2D<T> p) const
 	{
 		//logMsg("testing %d,%d in rect %d,%d %d,%d", p.x, p.y, x, y, x2, y2);
-		return IG::isInRange(p.x, x, x2+1) && IG::isInRange(p.y, y, y2+1);
+		return isInRange(p.x, x, x2+1) && isInRange(p.y, y, y2+1);
 	}
 
 	constexpr bool contains(Rect2 other) const
@@ -131,7 +142,7 @@ public:
 			y <= other.y && y2 >= other.y2;
 	}
 
-	constexpr bool contains(IG::Point2D<T> point) const
+	constexpr bool contains(Point2D<T> point) const
 	{
 		return contains({point, point});
 	}
@@ -146,17 +157,17 @@ public:
 		return Point2D<T>{y, y2}.midpoint();
 	}
 
-	constexpr IG::Point2D<T> center() const
+	constexpr Point2D<T> center() const
 	{
 		return {xCenter(), yCenter()};
 	}
 
-	constexpr IG::Point2D<T> xAxis() const
+	constexpr Point2D<T> xAxis() const
 	{
 		return {x, x2};
 	}
 
-	constexpr IG::Point2D<T> yAxis() const
+	constexpr Point2D<T> yAxis() const
 	{
 		return {y, y2};
 	}
@@ -165,19 +176,17 @@ public:
 
 	constexpr void setRelX(T newX, T xSize)
 	{
-		assert(xSize >= 0);
 		x = newX;
 		x2 = newX + xSize;
 	}
 
 	constexpr void setRelY(T newY, T ySize)
 	{
-		assert(ySize >= 0);
 		y = newY;
 		y2 = newY + ySize;
 	}
 
-	constexpr void setRel(IG::Point2D<T> pos, IG::Point2D<T> size)
+	constexpr void setRel(Point2D<T> pos, Point2D<T> size)
 	{
 		setRelX(pos.x, size.x);
 		setRelY(pos.y, size.y);
@@ -196,7 +205,7 @@ public:
 		setLinked(y, newY, y2);
 	}
 
-	constexpr void setPos(IG::Point2D<T> newPos)
+	constexpr void setPos(Point2D<T> newPos)
 	{
 		setXPos(newPos.x);
 		setYPos(newPos.y);
@@ -206,7 +215,7 @@ public:
 
 	constexpr T ySize() const { return (y2 - y); }
 
-	constexpr IG::Point2D<T> size() const
+	constexpr Point2D<T> size() const
 	{
 		return {xSize(), ySize()};
 	}
@@ -227,7 +236,7 @@ public:
 		setRelY(y + offset, size);
 	}
 
-	constexpr void setSize(IG::Point2D<T> size, IG::Point2D<T> anchor)
+	constexpr void setSize(Point2D<T> size, Point2D<T> anchor)
 	{
 		setXSize(size.x, anchor.x);
 		setYSize(size.y, anchor.y);
@@ -238,8 +247,7 @@ public:
 	{
 		if(xSize() > r.xSize())
 		{
-			setXPos(r.x - xSize()/2);
-			return 1;
+			return 0;
 		}
 		else if(x < r.x)
 		{
@@ -259,8 +267,7 @@ public:
 	{
 		if(ySize() > r.ySize())
 		{
-			setYPos(r.y - ySize()/2);
-			return 1;
+			return 0;
 		}
 		else if(y < r.y)
 		{
@@ -285,7 +292,7 @@ public:
 	}
 
 	[[nodiscard]]
-	constexpr IG::Point2D<T> fitPoint(IG::Point2D<T> p)
+	constexpr Point2D<T> fitPoint(Point2D<T> p)
 	{
 		if(p.x < x)
 			p.x = x;
@@ -303,10 +310,27 @@ public:
 		linkedVar += newVal - var;
 		var = newVal;
 	}
-};
 
-template<class T>
-constexpr _2DOrigin Rect2<T>::o;
+	[[nodiscard]] constexpr Rect2 intersection(Rect2 r) const
+	{
+		return
+		{
+			{std::max(x, r.x), std::max(y, r.y)},
+			{std::min(x2, r.x2), std::min(y2, r.y2)}
+		};
+	}
+
+	[[nodiscard]] constexpr Rect2 xRect() const { return {{x, 0}, {x2, 0}}; }
+	[[nodiscard]] constexpr Rect2 yRect() const { return {{0, y}, {0, y2}}; }
+
+	template<class NewType>
+	constexpr Rect2<NewType> as() const { return {{NewType(x), NewType(y)}, {NewType(x2), NewType(y2)}}; }
+
+	[[nodiscard]] constexpr bool isPortrait() const { return xSize() < ySize(); }
+	[[nodiscard]] constexpr bool isLandscape() const { return !isPortrait(); }
+
+	[[nodiscard]] constexpr Rect2 relToAbs() const { return {{x, y}, {x + x2, y + y2}}; }
+};
 
 template<class T>
 constexpr static Rect2<T> makeRectRel(Point2D<T> pos, Point2D<T> size)
@@ -318,7 +342,7 @@ template<class T, bool xIsCartesian, bool yIsCartesian>
 class CoordinateRect : public Rect2<T>
 {
 public:
-	using Point2DType = IG::Point2D<T>;
+	using Point2DType = Point2D<T>;
 	using Rect2<T>::setXPos;
 	using Rect2<T>::setYPos;
 	using Rect2<T>::setPos;
@@ -327,12 +351,13 @@ public:
 	using Rect2<T>::y;
 	using Rect2<T>::x2;
 	using Rect2<T>::y2;
+	using Rect2<T>::as;
 	static constexpr int xOriginVal = xIsCartesian ? -1 : 1;
 	static constexpr int x2OriginVal = xIsCartesian ? 1 : -1;
 	static constexpr int yOriginVal = yIsCartesian ? -1 : 1;
 	static constexpr int y2OriginVal = yIsCartesian ? 1 : -1;
 
-	constexpr CoordinateRect() {}
+	constexpr CoordinateRect() = default;
 	constexpr CoordinateRect(Rect2<T> rect):Rect2<T>{rect} {}
 	constexpr CoordinateRect(Point2DType p1, Point2DType p2): Rect2<T>{p1, p2} {}
 
@@ -408,10 +433,12 @@ public:
 };
 
 using WindowRect = CoordinateRect<int, true, false>;
+using WRect = WindowRect;
+using IRect = Rect2<int>;
+using SRect = Rect2<int16_t>;
+using FRect = Rect2<float>;
 
-using WP = WindowRect::Point2DType;
-
-constexpr static WindowRect makeWindowRectRel(WP pos, WP size)
+constexpr static WindowRect makeWindowRectRel(WPt pos, WPt size)
 {
 	return WindowRect::makeRel(pos, size);
 }

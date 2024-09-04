@@ -34,6 +34,7 @@
 #include "behrbonz.h"
 #include "cartio.h"
 #include "cartridge.h"
+#include "crt.h"
 #include "export.h"
 #include "lib.h"
 #include "log.h"
@@ -89,7 +90,8 @@ static io_source_t behrbonz_io3_device = {
     behrbonz_mon_dump,             /* device state information dump function */
     CARTRIDGE_VIC20_BEHRBONZ,      /* cartridge ID */
     IO_PRIO_NORMAL,                /* normal priority, device read needs to be checked for collisions */
-    0                              /* insertion order, gets filled in by the registration function */
+    0,                             /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE                 /* NO mirroring */
 };
 
 static io_source_list_t *behrbonz_io3_list_item = NULL;
@@ -125,7 +127,7 @@ static void behrbonz_io3_store(uint16_t addr, uint8_t value)
     if (write_once) {
         bank_reg = value & 0x7f;
         reset_mode = SOFTWARE_RESET;
-        machine_trigger_reset(MACHINE_RESET_MODE_SOFT);
+        machine_trigger_reset(MACHINE_RESET_MODE_RESET_CPU);
     }
     write_once = 0;
 }
@@ -155,12 +157,14 @@ void behrbonz_reset(void)
 static int zfile_load(const char *filename, uint8_t *dest, size_t size)
 {
     FILE *fd;
+    off_t len;
 
     fd = zfile_fopen(filename, MODE_READ);
     if (!fd) {
         return -1;
     }
-    if (util_file_length(fd) != size) {
+    len = archdep_file_size(fd);
+    if (len < 0 || (size_t)len != size) {
         zfile_fclose(fd);
         return -1;
     }
@@ -170,6 +174,45 @@ static int zfile_load(const char *filename, uint8_t *dest, size_t size)
     }
     zfile_fclose(fd);
     return 0;
+}
+
+int behrbonz_crt_attach(FILE *fd, uint8_t *rawcart)
+{
+    crt_chip_header_t chip;
+    int idx = 0;
+
+    if (!cart_rom) {
+        cart_rom = lib_malloc(CART_ROM_SIZE);
+    }
+
+    for (idx = 0; idx < 256; idx++) {
+        if (crt_read_chip_header(&chip, fd)) {
+            goto exiterror;
+        }
+
+        DBG(("chip %d at %02x len %02x\n", idx, chip.start, chip.size));
+        if (chip.size != 0x2000) {
+            goto exiterror;
+        }
+
+        if (crt_read_chip(&cart_rom[0x2000 * idx], 0, &chip, fd)) {
+            goto exiterror;
+        }
+    }
+
+    if (export_add(&export_res) < 0) {
+        goto exiterror;
+    }
+    mem_cart_blocks = VIC_CART_BLK1 | VIC_CART_BLK2 | VIC_CART_BLK3 | VIC_CART_BLK5 | VIC_CART_IO3;
+    mem_initialize_memory();
+
+    behrbonz_io3_list_item = io_source_register(&behrbonz_io3_device);
+
+    return CARTRIDGE_VIC20_BEHRBONZ;
+
+exiterror:
+    behrbonz_detach();
+    return -1;
 }
 
 int behrbonz_bin_attach(const char *filename)

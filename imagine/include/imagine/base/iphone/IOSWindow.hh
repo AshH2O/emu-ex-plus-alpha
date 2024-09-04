@@ -17,42 +17,32 @@
 
 #include <imagine/config/defs.hh>
 #include <imagine/base/BaseWindow.hh>
-#include <imagine/base/iphone/config.h>
 #include <imagine/util/rectangle2.h>
 #import <CoreGraphics/CGBase.h>
-#include <compare>
 
 #ifdef __OBJC__
 #import <UIKit/UIKit.h>
 #endif
 
-namespace Base
+namespace IG
 {
 
 struct NativeWindowFormat {};
 using NativeWindow = void*;
 
-#ifdef CONFIG_BASE_IOS_RETINA_SCALE
 extern uint32_t screenPointScale;
-#else
-static constexpr uint32_t screenPointScale = 1;
-#endif
 
 class IOSWindow : public BaseWindow
 {
 public:
 	void *uiWin_{}; // UIWindow in ObjC
-	IG::WindowRect contentRect{}; // active window content
-	#ifdef CONFIG_BASE_IOS_RETINA_SCALE
+	WRect contentRect{}; // active window content
 	CGFloat pointScale{1.};
-	#else
-	static constexpr CGFloat pointScale{1.};
-	#endif
 
 	using BaseWindow::BaseWindow;
 	~IOSWindow();
 	#ifdef __OBJC__
-	void updateContentRect(int width, int height, uint32_t softOrientation);
+	void updateContentRect(int width, int height, Rotation softOrientation);
 	UIWindow *uiWin() const { return (__bridge UIWindow*)uiWin_; }
 	UIApplication *uiApp() const;
 	#endif

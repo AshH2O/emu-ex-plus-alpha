@@ -30,6 +30,7 @@
 
 #include <string.h>
 #include <inttypes.h>
+#include <errno.h>
 
 #include "archdep.h"
 #include "attach.h"
@@ -40,7 +41,7 @@
 #include "mem.h"
 #include "resources.h"
 #include "util.h"
-
+#include "uiapi.h"
 #include "diskimage.h"
 #include "vdrive.h"
 #include "vdrive-iec.h"
@@ -70,9 +71,6 @@ static autostart_prg_t * load_prg(const char *file_name, fileio_info_t *finfo, l
     autostart_prg_t *prg;
 
     prg = lib_malloc(sizeof(autostart_prg_t));
-    if (prg == NULL) {
-        return NULL;
-    }
 
     /* get data size of file */
     prg->size = fileio_get_bytes_left(finfo);
@@ -81,30 +79,25 @@ static autostart_prg_t * load_prg(const char *file_name, fileio_info_t *finfo, l
     /* read start address */
     if ((fileio_read(finfo, &lo, 1) != 1) || (fileio_read(finfo, &hi, 1) != 1)) {
         log_error(log, "Cannot read start address from '%s'", file_name);
+        lib_free(prg);
         return NULL;
     }
 
     /* get load addr */
-    if (autostart_basic_load) {
-        mem_get_basic_text(&prg->start_addr, NULL);
-    } else {
-        prg->start_addr = (uint16_t)hi << 8 | (uint16_t)lo;
-    }
+    prg->start_addr = (uint16_t)hi << 8 | (uint16_t)lo;
+
     prg->size -= 2; /* skip load addr */
 
     /* check range */
     end = prg->start_addr + prg->size - 1;
     if (end > 0xffff) {
         log_error(log, "Invalid size of '%s': %" PRIu32, file_name, prg->size);
+        lib_free(prg);
         return NULL;
     }
 
     /* load to memory */
     prg->data = lib_malloc(prg->size);
-    if (prg->data == NULL) {
-        log_error(log, "No memory for '%s'", file_name);
-        return NULL;
-    }
 
     /* copy data to memory */
     ptr = prg->start_addr;
@@ -113,6 +106,7 @@ static autostart_prg_t * load_prg(const char *file_name, fileio_info_t *finfo, l
         if (fileio_read(finfo, &(prg->data[i]), 1) != 1) {
             log_error(log, "Error loading data from '%s'", file_name);
             lib_free(prg->data);
+            lib_free(prg);
             return NULL;
         }
         ptr++;
@@ -142,17 +136,24 @@ void autostart_prg_shutdown(void)
     }
 }
 
-int autostart_prg_with_virtual_fs(const char *file_name,
+int autostart_prg_with_virtual_fs(int unit, int drive, const char *file_name,
                                   fileio_info_t *fh,
                                   log_t log)
 {
     char *directory;
     char *file;
 
-    DBG(("autostart_prg_with_virtual_fs"));    
+    DBG(("autostart_prg_with_virtual_fs (unit: %d drive: %d file_name:%s)",
+         unit, drive, file_name));
 
-    /* Extract the directory path to allow FS-based drive emulation to
-       work.  */
+    if (unit < 8) {
+        return -1;
+    }
+    if (drive != 1) {
+        drive = 0;
+    }
+
+    /* Extract the directory path to allow FS-based drive emulation to work.  */
     util_fname_split(file_name, &directory, &file);
 
     if (archdep_path_is_relative(directory)) {
@@ -164,9 +165,14 @@ int autostart_prg_with_virtual_fs(const char *file_name,
         /* FIXME: We should actually eat `.'s and `..'s from `directory'
            instead.  */
     }
+    DBG(("autostart_prg_with_virtual_fs (directory:%s)", directory));
 
     /* Setup FS-based drive emulation.  */
-    fsdevice_set_directory(directory ? directory : ".", 8);
+    /* resources_set_int("VirtualDevices", 1); FIXME: not restored */
+    resources_set_int_sprintf("FSDevice%dConvertP00", 1, unit);
+    file_system_detach_disk(unit, drive);              /* FIXME: not restored */
+    resources_set_int_sprintf("FileSystemDevice%d", ATTACH_DEVICE_FS, unit);
+    fsdevice_set_directory(directory ? directory : ".", unit);
     log_message(autostart_log, "using virtual filesystem on: %s.", directory);
 
     /* other setup was done by autostart_prg() */
@@ -191,12 +197,11 @@ int autostart_prg_with_ram_injection(const char *file_name,
     return (inject_prg == NULL) ? -1 : 0;
 }
 
-int autostart_prg_with_disk_image(const char *file_name,
+int autostart_prg_with_disk_image(int unit, int drive, const char *file_name,
                                   fileio_info_t *fh,
                                   log_t log,
                                   const char *image_name)
 {
-    const int drive = 8;
     const int secondary = 1;
     autostart_prg_t *prg;
     vdrive_t *vdrive;
@@ -207,20 +212,30 @@ int autostart_prg_with_disk_image(const char *file_name,
     int result, result2;
     char tempname[32];
 
+    DBG(("autostart_prg_with_disk_image (unit: %d drive: %d file_name :%s image_name :%s)",
+         unit, drive, file_name, image_name));
+
+    if (unit < 8) {
+        return -1;
+    }
+    if (drive != 1) {
+        drive = 0;
+    }
+
     /* identify disk image type */
-    switch (drive_get_disk_drive_type(drive - 8)) {
+    switch (drive_get_disk_drive_type(unit - 8)) {
     case DRIVE_TYPE_1540:
     case DRIVE_TYPE_1541:
     case DRIVE_TYPE_1541II:
     case DRIVE_TYPE_1551:
     case DRIVE_TYPE_1570:
     case DRIVE_TYPE_2031:
-        disk_image_type = DISK_IMAGE_TYPE_D64; 
+        disk_image_type = DISK_IMAGE_TYPE_D64;
         break;
     case DRIVE_TYPE_2040:
     case DRIVE_TYPE_3040:
     case DRIVE_TYPE_4040:
-        disk_image_type = DISK_IMAGE_TYPE_D67; 
+        disk_image_type = DISK_IMAGE_TYPE_D67;
         break;
     case DRIVE_TYPE_1571:
     case DRIVE_TYPE_1571CR:
@@ -229,7 +244,7 @@ int autostart_prg_with_disk_image(const char *file_name,
     case DRIVE_TYPE_1581:
     case DRIVE_TYPE_2000:
     case DRIVE_TYPE_4000:
-        disk_image_type = DISK_IMAGE_TYPE_D81; 
+        disk_image_type = DISK_IMAGE_TYPE_D81;
         break;
     case DRIVE_TYPE_8050:
         disk_image_type = DISK_IMAGE_TYPE_D80;
@@ -238,7 +253,7 @@ int autostart_prg_with_disk_image(const char *file_name,
     case DRIVE_TYPE_1001:
         disk_image_type = DISK_IMAGE_TYPE_D82;
         break;
-    default: 
+    default:
         log_error(log, "No idea what disk image format to use.");
         return -1;
     }
@@ -255,17 +270,22 @@ int autostart_prg_with_disk_image(const char *file_name,
         /* create empty image */
         if (vdrive_internal_create_format_disk_image(image_name, (char *)"AUTOSTART", disk_image_type) < 0) {
             log_error(log, "Error creating autostart disk image: %s", image_name);
+            ui_error("Error creating autostart disk image '%s'.\n"
+                     "(%d: %s)\n"
+                     "\n"
+                     "Make sure the directory exists and is writable.",
+                     image_name, errno, strerror(errno));
             break;
         }
 
         /* attach disk image */
-        if (file_system_attach_disk(drive, image_name) < 0) {
+        if (file_system_attach_disk(unit, drive, image_name) < 0) {
             log_error(log, "Could not attach disk image: %s", image_name);
             break;
         }
 
-        /* get vdrive */
-        vdrive = file_system_get_vdrive((unsigned int)drive);
+        /* get vdrive with current drive from attachement */
+        vdrive = file_system_get_vdrive((unsigned int)unit);
         if (vdrive == NULL) {
             break;
         }
@@ -276,7 +296,7 @@ int autostart_prg_with_disk_image(const char *file_name,
             if (i == 16) {
                 break;
             }
-            if ((i < 16) && (!strcasecmp((const char*)&fh->name[i], ".prg"))) {
+            if ((i < 16) && (!util_strcasecmp((const char*)&fh->name[i], ".prg"))) {
                 break;
             }
             tempname[i] = fh->name[i];
@@ -289,7 +309,7 @@ int autostart_prg_with_disk_image(const char *file_name,
         if (file_name_size > 16) {
             file_name_size = 16;
         }
-            
+
         /* open file on disk */
         if (vdrive_iec_open(vdrive, (const uint8_t *)tempname, file_name_size, secondary, NULL) != SERIAL_OK) {
             log_error(log, "Could not open file");
@@ -344,6 +364,13 @@ int autostart_prg_perform_injection(log_t log)
         return -1;
     }
 
+    mem_get_basic_text(&start, &end);
+
+    /* load to basic start if requested */
+    if (autostart_basic_load) {
+        prg->start_addr = start;
+    }
+
     log_message(autostart_log, "Injecting program data at $%04x (size $%04x)",
                 prg->start_addr, (unsigned int)prg->size);
 
@@ -353,7 +380,6 @@ int autostart_prg_perform_injection(log_t log)
     }
 
     /* now simulate a basic load */
-    mem_get_basic_text(&start, &end);
     end = (uint16_t)(prg->start_addr + prg->size);
     mem_set_basic_text(start, end);
 

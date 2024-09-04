@@ -25,7 +25,7 @@
 namespace IG
 {
 
-static const char *androidBitmapResultToStr(int result)
+constexpr auto androidBitmapResultToStr(int result)
 {
 	switch(result)
 	{
@@ -37,7 +37,7 @@ static const char *androidBitmapResultToStr(int result)
 	}
 }
 
-AndroidFontManager::AndroidFontManager(Base::ApplicationContext ctx):
+AndroidFontManager::AndroidFontManager(ApplicationContext ctx):
 	appPtr{&ctx.application()},
 	jRecycleBitmap{ctx.application().recycleBitmapMethod()}
 {
@@ -53,14 +53,12 @@ AndroidFontManager::AndroidFontManager(Base::ApplicationContext ctx):
 		{
 			"charMetricsCallback", "(JIIIII)V",
 			(void*)(void (*)(JNIEnv*, jobject, jlong, jint, jint, jint, jint, jint))
-			([](JNIEnv* env, jobject thiz, jlong metricsAddr,
+			([](JNIEnv*, jobject, jlong metricsAddr,
 					jint xSize, jint ySize, jint xOff, jint yOff, jint xAdv)
 			{
 				auto &metrics = *((GlyphMetrics*)metricsAddr);
-				metrics.xSize = xSize;
-				metrics.ySize = ySize;
-				metrics.xOffset = xOff;
-				metrics.yOffset = yOff;
+				metrics.size = {int16_t(xSize), int16_t(ySize)};
+				metrics.offset = {int16_t(xOff), int16_t(yOff)};
 				metrics.xAdvance = xAdv;
 				/*logDMsg("char metrics: size %dx%d offset %dx%d advance %d", metrics.xSize, metrics.ySize,
 					metrics.xOffset, metrics.yOffset, metrics.xAdvance);*/
@@ -77,7 +75,7 @@ Font FontManager::makeSystem() const
 
 Font FontManager::makeBoldSystem() const
 {
-	return {*this};
+	return {*this, FontWeight::BOLD};
 }
 
 std::pair<jobject, GlyphMetrics> AndroidFontManager::makeBitmap(JNIEnv *env, int idx, AndroidFontSize &size) const
@@ -98,9 +96,9 @@ GlyphMetrics AndroidFontManager::makeMetrics(JNIEnv *env, int idx, AndroidFontSi
 	return metrics;
 }
 
-jobject AndroidFontManager::makePaint(JNIEnv *env, int pixelHeight, bool isBold) const
+jobject AndroidFontManager::makePaint(JNIEnv *env, int pixelHeight, FontWeight weight) const
 {
-	return jMakePaint(env, renderer, pixelHeight, isBold);
+	return jMakePaint(env, renderer, pixelHeight, weight == FontWeight::BOLD);
 }
 
 Font::operator bool() const
@@ -108,51 +106,39 @@ Font::operator bool() const
 	return true;
 }
 
-Font::Glyph Font::glyph(int idx, FontSize &size, std::errc &ec)
+Font::Glyph Font::glyph(int idx, FontSize &size)
 {
 	auto &mgr = manager();
 	auto env = mgr.app().thisThreadJniEnv();
 	auto [bitmap, metrics] = mgr.makeBitmap(env, idx, size);
 	if(!bitmap)
-	{
-		ec = std::errc::invalid_argument;
 		return {};
-	}
-	ec = {};
 	void *data{};
-	auto res = AndroidBitmap_lockPixels(env, bitmap, &data);
-	auto pix = Base::makePixmapView(env, bitmap, data, PIXEL_A8);
+	[[maybe_unused]] auto res = AndroidBitmap_lockPixels(env, bitmap, &data);
+	auto pix = makePixmapView(env, bitmap, data, PixelFmtA8);
 	//logMsg("AndroidBitmap_lockPixels returned %s", androidBitmapResultToStr(res));
 	assert(res == ANDROID_BITMAP_RESULT_SUCCESS);
 	return {{{env, bitmap, mgr.recycleBitmapMethod()}, pix}, metrics};
 }
 
-GlyphMetrics Font::metrics(int idx, FontSize &size, std::errc &ec)
+GlyphMetrics Font::metrics(int idx, FontSize &size)
 {
 	auto &mgr = manager();
 	auto env = mgr.app().thisThreadJniEnv();
 	auto metrics = mgr.makeMetrics(env, idx, size);
-	if(!metrics.xSize)
-	{
-		ec = std::errc::invalid_argument;
+	if(!metrics)
 		return {};
-	}
-	ec = {};
 	return metrics;
 }
 
-FontSize Font::makeSize(FontSettings settings, std::errc &ec)
+FontSize Font::makeSize(FontSettings settings)
 {
 	auto &mgr = manager();
 	auto env = mgr.app().thisThreadJniEnv();
-	auto paint = mgr.makePaint(env, settings.pixelHeight(), isBold);
+	auto paint = mgr.makePaint(env, settings.pixelHeight(), weight);
 	if(!paint)
-	{
-		ec = std::errc::invalid_argument;
 		return {};
-	}
-	logMsg("allocated new size %dpx @ 0x%p", settings.pixelHeight(), paint);
-	ec = {};
+	logMsg("allocated new size %dpx @ %p", settings.pixelHeight(), paint);
 	return {{env, paint}};
 }
 
@@ -160,10 +146,10 @@ AndroidFontSize::AndroidFontSize(JNI::UniqueGlobalRef paint):
 	paint_{std::move(paint)}
 {}
 
-AndroidGlyphImage::AndroidGlyphImage(JNI::LockedLocalBitmap lockedBitmap, IG::Pixmap pixmap):
+AndroidGlyphImage::AndroidGlyphImage(JNI::LockedLocalBitmap lockedBitmap, PixmapView pixmap):
 	lockedBitmap{std::move(lockedBitmap)},	pixmap_{pixmap} {}
 
-IG::Pixmap GlyphImage::pixmap()
+PixmapView GlyphImage::pixmap()
 {
 	return pixmap_;
 }

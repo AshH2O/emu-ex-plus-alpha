@@ -24,11 +24,16 @@
 #include "loadres.h"
 #include <cstddef>
 #include <string>
+#include <span>
+#include <optional>
+#include <ctime>
 #include <imagine/util/DelegateFunc.hh>
 
 namespace gambatte {
 
 enum { BG_PALETTE = 0, SP1_PALETTE = 1, SP2_PALETTE = 2 };
+
+using VideoFrameDelegate = IG::DelegateFuncS<sizeof(void*)*3, void()>;
 
 class GB {
 public:
@@ -84,7 +89,7 @@ public:
 	  */
 	std::ptrdiff_t runFor(gambatte::uint_least32_t *videoBuf, std::ptrdiff_t pitch,
 	                      gambatte::uint_least32_t *audioBuf, std::size_t &samples,
-	                      DelegateFunc<void()> videoFrameCallback);
+												gambatte::VideoFrameDelegate videoFrameCallback);
 
 	/**
 	  * Reset to initial state.
@@ -99,6 +104,7 @@ public:
 	void setDmgPaletteColor(int palNum, int colorNum, unsigned long rgb32);
 
 	void refreshPalettes();
+	void setColorConversionFlags(unsigned flags);
 
 	/** Sets the callback used for getting input state. */
 	void setInputGetter(InputGetter *getInput);
@@ -117,6 +123,12 @@ public:
 
 	/** Writes persistent cartridge data to disk. Done implicitly on ROM close. */
 	void saveSavedata();
+
+	void loadSavedata();
+
+	std::span<unsigned char> srambank();
+	std::optional<std::time_t> rtcTime() const;
+	void setRtcTime(std::time_t time);
 
 	/**
 	  * Saves emulator state to the state slot selected with selectState().
@@ -148,11 +160,16 @@ public:
 	bool saveState(gambatte::uint_least32_t const *videoBuf, std::ptrdiff_t pitch,
 	               std::string const &filepath);
 
+	bool saveState(gambatte::uint_least32_t const *videoBuf, std::ptrdiff_t pitch,
+	               std::ostream &file);
+
 	/**
 	  * Loads emulator state from the file given by 'filepath'.
 	  * @return success
 	  */
 	bool loadState(std::string const &filepath);
+
+	bool loadState(std::istream &file);
 
 	/**
 	  * Selects which state slot to save state to or load state from.

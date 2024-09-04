@@ -24,6 +24,8 @@
  *
  */
 
+/* #define DEBUG_RAMCART */
+
 #include "vice.h"
 
 #include <stdio.h>
@@ -43,6 +45,7 @@
 #include "machine.h"
 #include "mem.h"
 #include "monitor.h"
+#include "ram.h"
 #include "resources.h"
 #include "snapshot.h"
 #include "types.h"
@@ -52,6 +55,12 @@
 #define CARTRIDGE_INCLUDE_PRIVATE_API
 #include "ramcart.h"
 #undef CARTRIDGE_INCLUDE_PRIVATE_API
+
+#ifdef DEBUG_RAMCART
+#define DBG(x)  log_debug   x
+#else
+#define DBG(x)
+#endif
 
 /*
     "RamCart"
@@ -156,7 +165,8 @@ static io_source_t ramcart_io1_device = {
     ramcart_dump,           /* device state information dump function */
     CARTRIDGE_RAMCART,      /* cartridge ID */
     IO_PRIO_NORMAL,         /* normal priority, device read needs to be checked for collisions */
-    0                       /* insertion order, gets filled in by the registration function */
+    0,                      /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE          /* NO mirroring */
 };
 
 static io_source_t ramcart_io2_device = {
@@ -172,7 +182,8 @@ static io_source_t ramcart_io2_device = {
     ramcart_dump,           /* device state information dump function */
     CARTRIDGE_RAMCART,      /* cartridge ID */
     IO_PRIO_NORMAL,         /* normal priority, device read needs to be checked for collisions */
-    0                       /* insertion order, gets filled in by the registration function */
+    0,                      /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE          /* NO mirroring */
 };
 
 static io_source_list_t *ramcart_io1_list_item = NULL;
@@ -267,13 +278,27 @@ static int ramcart_dump(void)
     bank += ramcart[0];
 
     mon_out("RAM size: %s, bank: %d, status: %s\n",
-            (ramcart_size_kb == 128) ? "128Kb" : "64Kb",
+            (ramcart_size_kb == 128) ? "128KiB" : "64KiB",
             bank,
             (ramcart_readonly) ? ((mirrored) ? "read-only and mirrored at $8000-$80FF" : "read-only") : "read/write");
     return 0;
 }
 
 /* ------------------------------------------------------------------------- */
+
+/* FIXME: this still needs to be tweaked to match the hardware */
+static RAMINITPARAM ramparam = {
+    .start_value = 255,
+    .value_invert = 2,
+    .value_offset = 1,
+
+    .pattern_invert = 0x100,
+    .pattern_invert_value = 255,
+
+    .random_start = 0,
+    .random_repeat = 0,
+    .random_chance = 0,
+};
 
 static int ramcart_activate(void)
 {
@@ -285,12 +310,16 @@ static int ramcart_activate(void)
 
     /* Clear newly allocated RAM.  */
     if (ramcart_size > old_ramcart_ram_size) {
-        memset(ramcart_ram, 0, (size_t)(ramcart_size - old_ramcart_ram_size));
+        /* memset(ramcart_ram, 0, (size_t)(ramcart_size - old_ramcart_ram_size)); */
+        ram_init_with_pattern(&ramcart_ram[old_ramcart_ram_size],
+                              (unsigned int)(ramcart_size - old_ramcart_ram_size), &ramparam);
+        DBG(("ramcart clear offset: %x length: %x total size: %x old size: %x",
+             old_ramcart_ram_size, ramcart_size - old_ramcart_ram_size, ramcart_size, old_ramcart_ram_size));
     }
 
     old_ramcart_ram_size = ramcart_size;
 
-    log_message(ramcart_log, "%dKB unit installed.", ramcart_size >> 10);
+    log_message(ramcart_log, "%dKiB unit installed.", ramcart_size >> 10);
 
     if (!util_check_null_string(ramcart_filename)) {
         if (util_file_load(ramcart_filename, ramcart_ram, (size_t)ramcart_size, UTIL_FILE_LOAD_RAW) < 0) {
@@ -495,7 +524,7 @@ static const cmdline_option_t cmdline_options[] =
       NULL, "Disable the RamCart expansion" },
     { "-ramcartsize", SET_RESOURCE, CMDLINE_ATTRIB_NEED_ARGS,
       NULL, NULL, "RAMCARTsize", NULL,
-      "<size in KB>", "Size of the RAMCART expansion. (64/128)" },
+      "<size in KiB>", "Size of the RAMCART expansion. (64/128)" },
     { "-ramcartimage", SET_RESOURCE, CMDLINE_ATTRIB_NEED_ARGS,
       NULL, NULL, "RAMCARTfilename", NULL,
       "<Name>", "Specify name of RAMCART image" },
@@ -521,7 +550,7 @@ int ramcart_cmdline_options_init(void)
 
 /* ------------------------------------------------------------------------- */
 
-const char *ramcart_get_file_name(void)
+const char *ramcart_get_filename_by_type(void)
 {
     return ramcart_filename;
 }
@@ -668,7 +697,7 @@ int ramcart_peek_mem(uint16_t addr, uint8_t *value)
    ARRAY | RAM       | 65536 or 131072 BYTES of RAM data
  */
 
-static char snap_module_name[] = "CARTRAMCART";
+static const char snap_module_name[] = "CARTRAMCART";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   0
 

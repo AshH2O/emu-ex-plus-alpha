@@ -17,25 +17,18 @@
 
 #include <imagine/config/defs.hh>
 #include <imagine/thread/Semaphore.hh>
+#include <imagine/util/utility.h>
+#include <concepts>
 #include <thread>
-#include <type_traits>
-#include <utility>
-#include <pthread.h>
+#include <span>
 
 namespace IG
 {
 
-template<class T>
-T thisThreadID()
+static std::thread makeThreadSync(std::invocable<std::binary_semaphore&> auto &&f)
 {
-	return static_cast<T>(pthread_self());
-}
-
-template<class Func>
-static std::thread makeThreadSync(Func &&f)
-{
-	Semaphore sem{0};
-	if constexpr(std::is_copy_constructible_v<Func>)
+	std::binary_semaphore sem{0};
+	if constexpr(std::is_copy_constructible_v<decltype(f)>)
 	{
 		std::thread t
 		{
@@ -44,7 +37,7 @@ static std::thread makeThreadSync(Func &&f)
 				f(sem);
 			}
 		};
-		sem.wait();
+		sem.acquire();
 		return t;
 	}
 	else
@@ -56,23 +49,21 @@ static std::thread makeThreadSync(Func &&f)
 				f(sem);
 			}
 		};
-		sem.wait();
+		sem.acquire();
 		return t;
 	}
 }
 
-template<class Func>
-static void makeDetachedThread(Func &&f)
+static void makeDetachedThread(std::invocable auto &&f)
 {
-	std::thread t{std::forward<Func>(f)};
+	std::thread t{IG_forward(f)};
 	t.detach();
 }
 
-template<class Func>
-static void makeDetachedThreadSync(Func &&f)
+static void makeDetachedThreadSync(std::invocable<std::binary_semaphore&> auto &&f)
 {
-	Semaphore sem{0};
-	if constexpr(std::is_copy_constructible_v<Func>)
+	std::binary_semaphore sem{0};
+	if constexpr(std::is_copy_constructible_v<decltype(f)>)
 	{
 		std::thread t
 		{
@@ -94,10 +85,22 @@ static void makeDetachedThreadSync(Func &&f)
 		};
 		t.detach();
 	}
-	sem.wait();
+	sem.acquire();
 }
 
+#ifdef __linux__
+using ThreadId = pid_t;
+#else
+using ThreadId = uint64_t;
+#endif
+
+using CPUMask = uint32_t;
+static constexpr int maxCPUs = 32;
+
+void setThreadCPUAffinityMask(std::span<const ThreadId>, CPUMask mask);
+void setThreadPriority(ThreadId, int nice);
 void setThisThreadPriority(int nice);
 int thisThreadPriority();
+ThreadId thisThreadId();
 
 }

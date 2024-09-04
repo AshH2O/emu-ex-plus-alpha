@@ -134,7 +134,8 @@ static io_source_t epyxfastload_io1_device = {
     epyxfastload_dump,            /* device state information dump function */
     CARTRIDGE_EPYX_FASTLOAD,      /* cartridge ID */
     IO_PRIO_NORMAL,               /* normal priority, device read needs to be checked for collisions */
-    0                             /* insertion order, gets filled in by the registration function */
+    0,                            /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE                /* NO mirroring */
 };
 
 static io_source_t epyxfastload_io2_device = {
@@ -150,7 +151,8 @@ static io_source_t epyxfastload_io2_device = {
     epyxfastload_dump,            /* device state information dump function */
     CARTRIDGE_EPYX_FASTLOAD,      /* cartridge ID */
     IO_PRIO_NORMAL,               /* normal priority, device read needs to be checked for collisions */
-    0                             /* insertion order, gets filled in by the registration function */
+    0,                            /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE                /* NO mirroring */
 };
 
 static io_source_list_t *epyxfastload_io1_list_item = NULL;
@@ -256,7 +258,7 @@ void epyxfastload_detach(void)
    ARRAY | ROML   |   0.0+  | 8192 BYTES of ROML data
  */
 
-static char snap_module_name[] = "CARTEPYX";
+static const char snap_module_name[] = "CARTEPYX";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   1
 
@@ -272,7 +274,7 @@ int epyxfastload_snapshot_write_module(snapshot_t *s)
 
     if (0
         || (SMW_B(m, (uint8_t)epyxrom_active) < 0)
-        || (SMW_DW(m, epyxrom_alarm_time) < 0)
+        || (SMW_CLOCK(m, epyxrom_alarm_time) < 0)
         || (SMW_BA(m, roml_banks, 0x2000) < 0)) {
         snapshot_module_close(m);
         return -1;
@@ -310,7 +312,7 @@ int epyxfastload_snapshot_read_module(snapshot_t *s)
     }
 
     if (0
-        || (SMR_DW(m, &temp_clk) < 0)
+        || (SMR_CLOCK(m, &temp_clk) < 0)
         || (SMR_BA(m, roml_banks, 0x2000) < 0)) {
         goto fail;
     }

@@ -13,305 +13,233 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "GameController"
 #include <imagine/base/ApplicationContext.hh>
 #include <imagine/base/Application.hh>
 #include <imagine/time/Time.hh>
-#include <imagine/input/Input.hh>
-#include <imagine/input/Device.hh>
+#include <imagine/input/Event.hh>
+#include <imagine/input/apple/AppleGameDevice.hh>
 #include <imagine/logger/logger.h>
 #include <imagine/util/coreFoundation.h>
-#include <imagine/util/string.h>
 #include <imagine/util/algorithm.h>
 #import <GameController/GameController.h>
 
-namespace Input
+namespace IG::Input
 {
+
+constexpr SystemLogger log{"GameController"};
 
 static const char *appleGCButtonName(Key k);
 
-struct AppleGameDevice : public Device
+AppleGameDevice::AppleGameDevice(ApplicationContext ctx, GCController *gcController):
+	BaseDevice{0, Map::APPLE_GAME_CONTROLLER, {.gamepad = true}, [gcController.vendorName UTF8String]},
+	ctx{ctx}, gcController_{(void*)CFBridgingRetain(gcController)}
 {
-	Base::ApplicationContext ctx{};
-	GCController *gcController = nil;
-	uint32_t joystickAxisAsDpadBits_ = 0;
-	bool pushState[AppleGC::COUNT]{};
-	
-	AppleGameDevice(Base::ApplicationContext ctx, GCController *gcController, uint32_t enumId):
-		Device{enumId, Map::APPLE_GAME_CONTROLLER, TYPE_BIT_GAMEPAD, [gcController.vendorName UTF8String]},
-		ctx{ctx}, gcController{gcController}
+	if(gcController.extendedGamepad)
 	{
-		auto extGamepad = gcController.extendedGamepad;
-		if(extGamepad)
-		{
-			type_ |= TYPE_BIT_JOYSTICK;
-			subtype_ = SUBTYPE_APPLE_EXTENDED_GAMEPAD;
-			setJoystickAxisAsDpadBits(AXIS_BIT_X | AXIS_BIT_Y);
-			setGamepadBlocks(gcController, extGamepad);
-			setExtendedGamepadBlocks(gcController, extGamepad);
-		}
-		else
-		{
-			auto gamepad = gcController.gamepad;
-			setGamepadBlocks(gcController, gamepad);
-		}
-		gcController.controllerPausedHandler =
-			^(GCController *controller)
-			{
-				this->handleKey(AppleGC::PAUSE, Keycode::MENU, true, false);
-				this->handleKey(AppleGC::PAUSE, Keycode::MENU, false, false);
-			};
-		logMsg("controller %d with vendor: %s", devId, name());
+		typeFlags_.joystick = true;
+		subtype_ = Subtype::APPLE_EXTENDED_GAMEPAD;
+		axis[0] = {Input::AxisId::X};
+		axis[1] = {Input::AxisId::Y};
+		axis[2] = {Input::AxisId::Z};
+		axis[3] = {Input::AxisId::RZ};
 	}
-	
-	template <class T>
-	void setGamepadBlocks(GCController *controller, T gamepad)
-	{
-		gamepad.buttonA.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				this->handleKey(AppleGC::A, Keycode::GAME_A, value != 0.f);
-			};
-		gamepad.buttonB.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				this->handleKey(AppleGC::B, Keycode::GAME_B, value != 0.f);
-			};
-		gamepad.buttonX.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				this->handleKey(AppleGC::X, Keycode::GAME_X, value != 0.f);
-			};
-		gamepad.buttonY.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				this->handleKey(AppleGC::Y, Keycode::GAME_Y, value != 0.f);
-			};
-		gamepad.leftShoulder.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				this->handleKey(AppleGC::L1, Keycode::GAME_L1, value != 0.f);
-			};
-		gamepad.rightShoulder.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				this->handleKey(AppleGC::R1, Keycode::GAME_R1, value != 0.f);
-			};
-		gamepad.dpad.up.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				this->handleKey(AppleGC::UP, Keycode::UP, pressed);
-			};
-		gamepad.dpad.down.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				this->handleKey(AppleGC::DOWN, Keycode::DOWN, pressed);
-			};
-		gamepad.dpad.left.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				this->handleKey(AppleGC::LEFT, Keycode::LEFT, pressed);
-			};
-		gamepad.dpad.right.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				this->handleKey(AppleGC::RIGHT, Keycode::RIGHT, pressed);
-			};
-	}
-	
-	void setExtendedGamepadBlocks(GCController *controller, GCExtendedGamepad *extGamepad)
-	{
-		extGamepad.leftTrigger.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				this->handleKey(AppleGC::L2, Keycode::GAME_L2, pressed);
-			};
-		extGamepad.rightTrigger.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				this->handleKey(AppleGC::R2, Keycode::GAME_R2, pressed);
-			};
-		extGamepad.leftThumbstick.up.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				Key key = (this->joystickAxisAsDpadBits_ & AXIS_BIT_Y) ? AppleGC::UP : AppleGC::LSTICK_UP;
-				Key sysKey = key == AppleGC::UP ? Keycode::UP : Keycode::JS1_YAXIS_NEG;
-				this->handleKey(key, sysKey, pressed);
-			};
-		extGamepad.leftThumbstick.down.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				Key key = (this->joystickAxisAsDpadBits_ & AXIS_BIT_Y) ? AppleGC::DOWN : AppleGC::LSTICK_DOWN;
-				Key sysKey = key == AppleGC::DOWN ? Keycode::DOWN : Keycode::JS1_YAXIS_POS;
-				this->handleKey(key, sysKey, pressed);
-			};
-		extGamepad.leftThumbstick.left.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				Key key = (this->joystickAxisAsDpadBits_ & AXIS_BIT_X) ? AppleGC::LEFT : AppleGC::LSTICK_LEFT;
-				Key sysKey = key == AppleGC::LEFT ? Keycode::LEFT : Keycode::JS1_XAXIS_NEG;
-				this->handleKey(key, sysKey, pressed);
-			};
-		extGamepad.leftThumbstick.right.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				Key key = (this->joystickAxisAsDpadBits_ & AXIS_BIT_X) ? AppleGC::RIGHT : AppleGC::LSTICK_RIGHT;
-				Key sysKey = key == AppleGC::RIGHT ? Keycode::RIGHT : Keycode::JS1_XAXIS_POS;
-				this->handleKey(key, sysKey, pressed);
-			};
-		extGamepad.rightThumbstick.up.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				Key key = (this->joystickAxisAsDpadBits_ & AXIS_BIT_RZ) ? AppleGC::UP : AppleGC::RSTICK_UP;
-				Key sysKey = key == AppleGC::UP ? Keycode::UP : Keycode::JS2_YAXIS_NEG;
-				this->handleKey(key, sysKey, pressed);
-			};
-		extGamepad.rightThumbstick.down.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				Key key = (this->joystickAxisAsDpadBits_ & AXIS_BIT_RZ) ? AppleGC::DOWN : AppleGC::RSTICK_DOWN;
-				Key sysKey = key == AppleGC::DOWN ? Keycode::DOWN : Keycode::JS2_YAXIS_POS;
-				this->handleKey(key, sysKey, pressed);
-			};
-		extGamepad.rightThumbstick.left.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				Key key = (this->joystickAxisAsDpadBits_ & AXIS_BIT_Z) ? AppleGC::LEFT : AppleGC::RSTICK_LEFT;
-				Key sysKey = key == AppleGC::LEFT ? Keycode::LEFT : Keycode::JS2_XAXIS_NEG;
-				this->handleKey(key, sysKey, pressed);
-			};
-		extGamepad.rightThumbstick.right.valueChangedHandler =
-			^(GCControllerButtonInput *button, float value, BOOL pressed)
-			{
-				Key key = (this->joystickAxisAsDpadBits_ & AXIS_BIT_Z) ? AppleGC::RIGHT : AppleGC::RSTICK_RIGHT;
-				Key sysKey = key == AppleGC::RIGHT ? Keycode::RIGHT : Keycode::JS2_XAXIS_POS;
-				this->handleKey(key, sysKey, pressed);
-			};
-	}
-	
-	void handleKey(Key key, Key sysKey, bool pressed, bool repeatable = true)
-	{
-		assert(key < AppleGC::COUNT);
-		if(pushState[key] == pressed)
-			return;
-		auto time = IG::steadyClockTimestamp();
-		pushState[key] = pressed;
-		ctx.endIdleByUserActivity();
-		Event event{enumId(), Map::APPLE_GAME_CONTROLLER, key, sysKey, pressed ? Action::PUSHED : Action::RELEASED, 0, 0, Source::GAMEPAD, time, this};
-		if(repeatable)
-			ctx.application().dispatchRepeatableKeyInputEvent(event);
-		else
-			ctx.application().dispatchKeyInputEvent(event);
-		
-	}
-
-	void setJoystickAxisAsDpadBits(uint32_t axisMask) final
-	{
-		joystickAxisAsDpadBits_ = axisMask;
-	}
-	
-	uint32_t joystickAxisAsDpadBits() final
-	{
-		return joystickAxisAsDpadBits_;
-	}
-
-	uint32_t joystickAxisBits() final
-	{
-		return subtype_ == SUBTYPE_APPLE_EXTENDED_GAMEPAD ? (AXIS_BITS_STICK_1 | AXIS_BITS_STICK_2) : 0;
-	}
-
-	uint32_t joystickAxisAsDpadBitsDefault() final
-	{
-		return AXIS_BITS_STICK_1;
-	}
-	
-	const char *keyName(Key k) const final
-	{
-		return appleGCButtonName(k);
-	}
-	
-	bool operator ==(AppleGameDevice const& rhs) const
-	{
-		return gcController == rhs.gcController;
-	}
-};
-
-static std::vector<std::unique_ptr<AppleGameDevice>> gcList{};
-
-static uint32_t findFreeDevId()
-{
-	uint32_t id[5]{};
-	for(auto &e : gcList)
-	{
-		if(e->enumId() < std::size(id))
-			id[e->enumId()] = 1;
-	}
-	for(const auto &e : id)
-	{
-		if(e == 0)
-			return &e - id;
-	}
-	logWarn("too many devices to enumerate");
-	return 0;
+	log.info("controller vendor:{}", name_);
 }
 
-static AppleGameDevice *deviceForGCController(GCController *controller)
+AppleGameDevice::~AppleGameDevice()
 {
-	for(auto &e : gcList)
+	CFRelease(gcController_);
+}
+
+template <class T>
+void AppleGameDevice::setGamepadBlocks(Device& dev, GCController*, T gamepad)
+{
+	gamepad.buttonA.valueChangedHandler =
+		^(GCControllerButtonInput*, float value, [[maybe_unused]] BOOL pressed)
+		{
+			this->handleKey(dev, AppleGC::A, value != 0.f);
+		};
+	gamepad.buttonB.valueChangedHandler =
+		^(GCControllerButtonInput*, float value, [[maybe_unused]] BOOL pressed)
+		{
+			this->handleKey(dev, AppleGC::B, value != 0.f);
+		};
+	gamepad.buttonX.valueChangedHandler =
+		^(GCControllerButtonInput*, float value, [[maybe_unused]] BOOL pressed)
+		{
+			this->handleKey(dev, AppleGC::X, value != 0.f);
+		};
+	gamepad.buttonY.valueChangedHandler =
+		^(GCControllerButtonInput*, float value, [[maybe_unused]] BOOL pressed)
+		{
+			this->handleKey(dev, AppleGC::Y, value != 0.f);
+		};
+	gamepad.leftShoulder.valueChangedHandler =
+		^(GCControllerButtonInput*, float value, [[maybe_unused]] BOOL pressed)
+		{
+			this->handleKey(dev, AppleGC::L1, value != 0.f);
+		};
+	gamepad.rightShoulder.valueChangedHandler =
+		^(GCControllerButtonInput*, float value, [[maybe_unused]] BOOL pressed)
+		{
+			this->handleKey(dev, AppleGC::R1, value != 0.f);
+		};
+	gamepad.dpad.up.valueChangedHandler =
+		^(GCControllerButtonInput*, [[maybe_unused]] float value, BOOL pressed)
+		{
+			this->handleKey(dev, AppleGC::UP, pressed);
+		};
+	gamepad.dpad.down.valueChangedHandler =
+		^(GCControllerButtonInput*, [[maybe_unused]] float value, BOOL pressed)
+		{
+			this->handleKey(dev, AppleGC::DOWN, pressed);
+		};
+	gamepad.dpad.left.valueChangedHandler =
+		^(GCControllerButtonInput*, [[maybe_unused]] float value, BOOL pressed)
+		{
+			this->handleKey(dev, AppleGC::LEFT, pressed);
+		};
+	gamepad.dpad.right.valueChangedHandler =
+		^(GCControllerButtonInput*, [[maybe_unused]] float value, BOOL pressed)
+		{
+			this->handleKey(dev, AppleGC::RIGHT, pressed);
+		};
+}
+
+void AppleGameDevice::setExtendedGamepadBlocks(Device &dev, GCController*, GCExtendedGamepad* extGamepad)
+{
+	extGamepad.leftTrigger.valueChangedHandler =
+		^(GCControllerButtonInput*, [[maybe_unused]] float value, BOOL pressed)
+		{
+			this->handleKey(dev, AppleGC::L2, pressed);
+		};
+	extGamepad.rightTrigger.valueChangedHandler =
+		^(GCControllerButtonInput*, [[maybe_unused]] float value, BOOL pressed)
+		{
+			this->handleKey(dev, AppleGC::R2, pressed);
+		};
+	extGamepad.leftThumbstick.xAxis.valueChangedHandler =
+		^(GCControllerAxisInput*, float value)
+		{
+			if(axis[0].dispatchInputEvent(value, Map::APPLE_GAME_CONTROLLER, SteadyClock::now(), dev, ctx.mainWindow()))
+				ctx.endIdleByUserActivity();
+		};
+	extGamepad.leftThumbstick.yAxis.valueChangedHandler =
+		^(GCControllerAxisInput*, float value)
+		{
+			if(axis[1].dispatchInputEvent(value, Map::APPLE_GAME_CONTROLLER, SteadyClock::now(), dev, ctx.mainWindow()))
+				ctx.endIdleByUserActivity();
+		};
+	extGamepad.rightThumbstick.xAxis.valueChangedHandler =
+		^(GCControllerAxisInput*, float value)
+		{
+			if(axis[2].dispatchInputEvent(value, Map::APPLE_GAME_CONTROLLER, SteadyClock::now(), dev, ctx.mainWindow()))
+				ctx.endIdleByUserActivity();
+		};
+	extGamepad.rightThumbstick.yAxis.valueChangedHandler =
+		^(GCControllerAxisInput*, float value)
+		{
+			if(axis[3].dispatchInputEvent(value, Map::APPLE_GAME_CONTROLLER, SteadyClock::now(), dev, ctx.mainWindow()))
+				ctx.endIdleByUserActivity();
+		};
+}
+
+void AppleGameDevice::handleKey(Device &dev, Key key, bool pressed, bool repeatable)
+{
+	if(pushState[key] == pressed)
+		return;
+	auto time = SteadyClock::now();
+	pushState[key] = pressed;
+	ctx.endIdleByUserActivity();
+	KeyEvent event{Map::APPLE_GAME_CONTROLLER, key, pressed ? Action::PUSHED : Action::RELEASED, 0, 0, Source::GAMEPAD, time, &dev};
+	if(repeatable)
+		ctx.application().dispatchRepeatableKeyInputEvent(event);
+	else
+		ctx.application().dispatchKeyInputEvent(event);
+}
+
+const char *AppleGameDevice::keyName(Key k) const
+{
+	return appleGCButtonName(k);
+}
+
+bool AppleGameDevice::operator==(AppleGameDevice const& rhs) const
+{
+	return gcController_ == rhs.gcController_;
+}
+
+void AppleGameDevice::setKeys(Device &dev)
+{
+	auto extGamepad = gcController().extendedGamepad;
+	if(extGamepad)
 	{
-		if(e->gcController == controller)
-			return e.get();
+		setGamepadBlocks(dev, gcController(), extGamepad);
+		setExtendedGamepadBlocks(dev, gcController(), extGamepad);
+	}
+	else
+	{
+		auto gamepad = gcController().gamepad;
+		setGamepadBlocks(dev, gcController(), gamepad);
+	}
+	gcController().controllerPausedHandler =
+		^(GCController*)
+		{
+			this->handleKey(dev, AppleGC::PAUSE, true, false);
+			this->handleKey(dev, AppleGC::PAUSE, false, false);
+		};
+}
+
+static AppleGameDevice *deviceForGCController(Application &app, GCController *controller)
+{
+	for(auto &devPtr : app.inputDevices())
+	{
+		auto gameDevPtr = std::get_if<AppleGameDevice>(devPtr.get());
+		if(gameDevPtr && gameDevPtr->gcController() == controller)
+			return gameDevPtr;
 	}
 	return nullptr;
 }
 
-static bool devListContainsController(GCController *controller)
+static bool devListContainsController(Application &app, GCController *controller)
 {
-	for(auto &e : gcList)
-	{
-		if(e->gcController == controller)
-			return true;
-	}
-	return false;
+	return deviceForGCController(app, controller);
 }
 
-static void addController(Base::ApplicationContext ctx, GCController *controller, bool notify)
+static void addController(ApplicationContext ctx, GCController *controller, bool notify)
 {
-	if(devListContainsController(controller))
+	if(devListContainsController(ctx.application(), controller))
 	{
-		logMsg("controller %p already in list", controller);
+		log.info("controller {} already in list", (__bridge void*)controller);
 		return;
 	}
-	logMsg("adding controller: %p", controller);
-	auto &gc = gcList.emplace_back(std::make_unique<AppleGameDevice>(ctx, controller, findFreeDevId()));
-	ctx.application().addSystemInputDevice(*gc, notify);
+	log.info("adding controller:{}", (__bridge void*)controller);
+	auto &dev = ctx.application().addInputDevice(ctx, std::make_unique<Input::Device>(std::in_place_type<AppleGameDevice>, ctx, controller), notify);
+	getAs<AppleGameDevice>(dev).setKeys(dev);
 }
 
-static void removeController(Base::ApplicationContext ctx, GCController *controller)
+static void removeController(ApplicationContext ctx, Application &app, GCController *controller)
 {
-	if(auto removedDev = IG::moveOutIf(gcList, [&](std::unique_ptr<AppleGameDevice> &dev){ return dev->gcController == controller; });
-		removedDev)
-	{
-		logMsg("removing controller: %p", controller);
-		ctx.application().removeSystemInputDevice(*removedDev, true);
-		logMsg("name: %s", removedDev->name());
-		return;
-	}
+	app.removeInputDeviceIf(ctx,
+		[&](auto &devPtr)
+		{
+			auto gameDevPtr = std::get_if<AppleGameDevice>(devPtr.get());
+			return gameDevPtr && gameDevPtr->gcController() == controller;
+		}, true);
 }
 
-void initAppleGameControllers(Base::ApplicationContext ctx)
+void initAppleGameControllers(ApplicationContext ctx)
 {
 	if(kCFCoreFoundationVersionNumber < kCFCoreFoundationVersionNumber_iOS_7_0)
 	{
 		return; // needs at least iOS 7
 	}
-	logMsg("checking for game controllers");
+	log.info("checking for game controllers");
 	NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
 	[center addObserverForName:GCControllerDidConnectNotification object:nil
 		queue:nil usingBlock:
 		^(NSNotification *note)
 		{
-			logMsg("game controller connected");
+			log.info("game controller connected");
 			GCController *controller = note.object;
 			addController(ctx, controller, true);
 		}];
@@ -319,13 +247,13 @@ void initAppleGameControllers(Base::ApplicationContext ctx)
 		queue:nil usingBlock:
 		^(NSNotification *note)
 		{
-			logMsg("game controller disconnected");
+			log.info("game controller disconnected");
 			GCController *controller = note.object;
-			removeController(ctx, controller);
+			removeController(ctx, ctx.application(), controller);
 		}];
 	for(GCController *controller in [GCController controllers])
 	{
-		logMsg("checking game controller: %p", controller);
+		log.info("checking game controller:{}", (__bridge void*)controller);
 		addController(ctx, controller, false);
 	}
 }

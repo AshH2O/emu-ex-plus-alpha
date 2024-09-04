@@ -18,7 +18,7 @@ static_assert(__has_feature(objc_arc), "This file requires ARC");
 #include <imagine/font/Font.hh>
 #include <imagine/base/ApplicationContext.hh>
 #include <imagine/logger/logger.h>
-#include <imagine/util/container/array.hh>
+#include <imagine/util/mdspan.hh>
 #import <CoreGraphics/CGBitmapContext.h>
 #import <CoreGraphics/CGContext.h>
 #import <UIKit/UIKit.h>
@@ -32,9 +32,11 @@ struct GlyphRenderData
 	GlyphMetrics metrics{};
 	void *pixData{};
 	void *startOfCharInPixData{};
+
+	constexpr explicit operator bool() const { return bool(metrics); }
 };
 
-static void renderTextIntoBuffer(NSString *str, void *buff, uint32_t xSize, uint32_t ySize,
+static void renderTextIntoBuffer(NSString *str, void *buff, int xSize, int ySize,
 		CGColorSpaceRef colorSpace, CGColorRef textColor, UIFont *font)
 {
 	auto context = CGBitmapContextCreate(buff, xSize, ySize, 8, xSize, colorSpace, kCGImageAlphaOnly);
@@ -53,7 +55,7 @@ static void renderTextIntoBuffer(NSString *str, void *buff, uint32_t xSize, uint
 }
 
 static GlyphRenderData makeGlyphRenderData(int idx, FontSize &fontSize, CGColorSpaceRef grayColorSpace,
-	CGColorRef textColor, bool keepPixData, std::errc &ec)
+	CGColorRef textColor, bool keepPixData)
 {
 	UniChar uniChar = idx;
 	auto str = [[NSString alloc] initWithCharacters:&uniChar length:1];
@@ -63,27 +65,25 @@ static GlyphRenderData makeGlyphRenderData(int idx, FontSize &fontSize, CGColorS
 	if(!size.width || !size.height)
 	{
 		logMsg("invalid char 0x%X size %f:%f", idx, size.width, size.height);
-		ec = std::errc::invalid_argument;
 		return {};
 	}
-	ec = (std::errc)0;
 	//logMsg("char %c size %f:%f", idx, size.width, size.height);
-	uint32_t cXFullSize = size.width;
-	uint32_t cYFullSize = size.height;
+	int cXFullSize = size.width;
+	int cYFullSize = size.height;
 
 	// render char into buffer
-	uint32_t bufferSize = cXFullSize * cYFullSize;
+	auto bufferSize = cXFullSize * cYFullSize;
 	auto pixBuffer = (char*)std::calloc(1, bufferSize);
 	renderTextIntoBuffer(str, pixBuffer, size.width, size.height,
 		grayColorSpace, textColor, fontSize.font());
 
 	// measure real bounds
-	auto pixView = IG::ArrayView2<char>{pixBuffer, cXFullSize};
-	uint32_t minX = cXFullSize, maxX = 0, minY = cYFullSize, maxY = 0;
-	iterateTimes(cYFullSize, y)
-		iterateTimes(cXFullSize, x)
+	auto pixView = mdspan{pixBuffer, cYFullSize, cXFullSize};
+	int minX = cXFullSize, maxX = 0, minY = cYFullSize, maxY = 0;
+	for(auto y : iotaCount(cYFullSize))
+		for(auto x : iotaCount(cXFullSize))
 		{
-			if(pixView[y][x])
+			if(pixView[y, x])
 			{
 				if (x < minX) minX = x;
 				if (x > maxX) maxX = x;
@@ -92,17 +92,15 @@ static GlyphRenderData makeGlyphRenderData(int idx, FontSize &fontSize, CGColorS
 			}
 		}
 	//logMsg("min bounds %d:%d:%d:%d", minX, minY, maxX, maxY);
-	auto cXOffset = minX;
-	uint32_t cXSize = (maxX - minX) + 1;
-	auto cYOffset = minY;
-	uint32_t cYSize = (maxY - minY) + 1;
-	auto startOfCharInPixBuffer = &pixView[cYOffset][cXOffset];
+	int16_t cXOffset = minX;
+	int16_t cXSize = (maxX - minX) + 1;
+	int16_t cYOffset = minY;
+	int16_t cYSize = (maxY - minY) + 1;
+	auto startOfCharInPixBuffer = &pixView[cYOffset, cXOffset];
 
 	GlyphMetrics metrics;
-	metrics.xSize = cXSize;
-	metrics.ySize = cYSize;
-	metrics.xOffset = cXOffset;
-	metrics.yOffset = -cYOffset;
+	metrics.size = {cXSize, cYSize};
+	metrics.offset = {cXOffset, int16_t(-cYOffset)};
 	metrics.xAdvance = cXFullSize;
 	
 	if(keepPixData)
@@ -116,7 +114,7 @@ static GlyphRenderData makeGlyphRenderData(int idx, FontSize &fontSize, CGColorS
 	}
 }
 
-UIKitFontFontManager::UIKitFontFontManager(Base::ApplicationContext)
+UIKitFontFontManager::UIKitFontFontManager(ApplicationContext)
 {
 	grayColorSpace = CGColorSpaceCreateDeviceGray();
 	const CGFloat component[]{1., 1.};
@@ -136,7 +134,7 @@ Font FontManager::makeSystem() const
 
 Font FontManager::makeBoldSystem() const
 {
-	return {grayColorSpace, textColor, true};
+	return {grayColorSpace, textColor, FontWeight::BOLD};
 }
 
 Font::operator bool() const
@@ -144,55 +142,53 @@ Font::operator bool() const
 	return true;
 }
 
-Font::Glyph Font::glyph(int idx, FontSize &size, std::errc &ec)
+Font::Glyph Font::glyph(int idx, FontSize &size)
 {
-	auto glyphData = makeGlyphRenderData(idx, size, grayColorSpace, textColor, true, ec);
-	if((bool)ec)
+	auto glyphData = makeGlyphRenderData(idx, size, grayColorSpace, textColor, true);
+	if(!glyphData)
 	{
 		return {};
 	}
-	IG::Pixmap pix
+	PixmapView pix
 	{
 		{
-			{glyphData.metrics.xSize, glyphData.metrics.ySize},
-			IG::PIXEL_FMT_A8
+			glyphData.metrics.size.as<int>(),
+			IG::PixelFmtA8
 		},
 		glyphData.startOfCharInPixData,
-		{(uint32_t)glyphData.metrics.xAdvance, IG::Pixmap::BYTE_UNITS}
+		{glyphData.metrics.xAdvance, PixmapView::Units::BYTE}
 	};
 	return {{pix, glyphData.pixData}, glyphData.metrics};
 }
 
-GlyphMetrics Font::metrics(int idx, FontSize &size, std::errc &ec)
+GlyphMetrics Font::metrics(int idx, FontSize &size)
 {
-	auto glyphData = makeGlyphRenderData(idx, size, grayColorSpace, textColor, false, ec);
-	if((bool)ec)
+	auto glyphData = makeGlyphRenderData(idx, size, grayColorSpace, textColor, false);
+	if(!glyphData)
 	{
 		return {};
 	}
 	return glyphData.metrics;
 }
 
-FontSize Font::makeSize(FontSettings settings, std::errc &ec)
+FontSize Font::makeSize(FontSettings settings)
 {
 	if(settings.pixelHeight() <= 0)
 	{
-		ec = std::errc::invalid_argument;
 		return {};
 	}	
-	ec = (std::errc)0;
-	if(isBold)
+	if(weight == FontWeight::BOLD)
 		return {(void*)CFBridgingRetain([UIFont boldSystemFontOfSize:(CGFloat)settings.pixelHeight()])};
 	else
 		return {(void*)CFBridgingRetain([UIFont systemFontOfSize:(CGFloat)settings.pixelHeight()])};
 }
 
-UIKitFontSize::UIKitFontSize(UIKitFontSize &&o)
+UIKitFontSize::UIKitFontSize(UIKitFontSize &&o) noexcept
 {
 	*this = std::move(o);
 }
 
-UIKitFontSize &UIKitFontSize::operator=(UIKitFontSize &&o)
+UIKitFontSize &UIKitFontSize::operator=(UIKitFontSize &&o) noexcept
 {
 	deinit();
 	font_ = std::exchange(o.font_, {});
@@ -211,12 +207,12 @@ void UIKitFontSize::deinit()
 	CFRelease(font_);
 }
 
-UIKitGlyphImage::UIKitGlyphImage(UIKitGlyphImage &&o)
+UIKitGlyphImage::UIKitGlyphImage(UIKitGlyphImage &&o) noexcept
 {
 	*this = std::move(o);
 }
 
-UIKitGlyphImage &UIKitGlyphImage::operator=(UIKitGlyphImage &&o)
+UIKitGlyphImage &UIKitGlyphImage::operator=(UIKitGlyphImage &&o) noexcept
 {
 	deinit();
 	pixmap_ = o.pixmap_;
@@ -237,7 +233,7 @@ void UIKitGlyphImage::deinit()
 	}
 }
 
-IG::Pixmap GlyphImage::pixmap()
+PixmapView GlyphImage::pixmap()
 {
 	return pixmap_;
 }

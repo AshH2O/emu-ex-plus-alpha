@@ -6,13 +6,17 @@ ifeq ($(origin AR), default)
  AR := llvm-ar
 endif
 
-CFLAGS_OPTIMIZE_DEBUG_DEFAULT ?= -O1
-
-CFLAGS_WARN += -Wno-attributes -Wno-missing-braces
-
 ifndef RELEASE
  CFLAGS_CODEGEN += -g
 endif
+
+CFLAGS_CODEGEN += -fstrict-vtable-pointers
+
+# needed for <ranges>
+CPPFLAGS += -D_LIBCPP_ENABLE_EXPERIMENTAL
+
+# needed for DelegateFuncSet.hh
+CXXFLAGS_WARN += -Wno-vla-extension
 
 ifeq ($(LTO_MODE),lto)
  ltoMode := lto

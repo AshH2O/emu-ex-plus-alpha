@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -21,7 +21,7 @@
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 Missile::Missile(uInt32 collisionMask)
-  : myCollisionMaskDisabled(collisionMask)
+  : myCollisionMaskDisabled{collisionMask}
 {
 }
 
@@ -40,10 +40,10 @@ void Missile::reset()
   myIsRendering = false;
   myIsVisible = false;
   myRenderCounter = 0;
+  myCopy = 1;
   myColor = myObjectColor = myDebugColor = 0;
   myDebugEnabled = false;
   collision = myCollisionMaskDisabled;
-  myIsEnabled = false;
   myInvertedPhaseClock = false;
   myUseInvertedPhaseClock = false;
 }
@@ -222,6 +222,23 @@ void Missile::applyColors()
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+uInt8 Missile::getColor() const
+{
+  if(!myDebugEnabled)
+    return myColor;
+  else
+    switch (myCopy)
+    {
+      case 2:
+        return myColor - 2;
+      case 3:
+        return myColor + 2;
+      default:
+        return myColor;
+    }
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 uInt8 Missile::getPosition() const
 {
   // position =
@@ -268,6 +285,7 @@ bool Missile::save(Serializer& out) const
     out.putBool(myIsVisible);
     out.putBool(myIsRendering);
     out.putByte(myRenderCounter);
+    out.putByte(myCopy);
 
     out.putByte(myDecodesOffset);
 
@@ -308,6 +326,7 @@ bool Missile::load(Serializer& in)
     myIsVisible = in.getBool();
     myIsRendering = in.getBool();
     myRenderCounter = in.getByte();
+    myCopy = in.getByte();
 
     myDecodesOffset = in.getByte();
     myDecodes = DrawCounterDecodes::get().missileDecodes()[myDecodesOffset];

@@ -13,17 +13,17 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/input/Input.hh>
+#include <imagine/input/Event.hh>
 #include <imagine/input/Device.hh>
 #include <imagine/base/Window.hh>
 #include <imagine/base/Timer.hh>
 #include <imagine/base/ApplicationContext.hh>
 #include <imagine/base/Application.hh>
-#include <imagine/util/algorithm.h>
+#include <imagine/util/ranges.hh>
 #include <imagine/logger/logger.h>
 #include <optional>
 
-namespace Input
+namespace IG::Input
 {
 
 static constexpr Key iCadeMap[12]
@@ -31,8 +31,8 @@ static constexpr Key iCadeMap[12]
 	Keycode::UP, Keycode::RIGHT, Keycode::DOWN, Keycode::LEFT,
 	Keycode::GAME_X, Keycode::GAME_B,
 	Keycode::GAME_A, Keycode::GAME_Y,
-	Keycode::GAME_C, Keycode::GAME_Z,
-	Keycode::GAME_START, Keycode::GAME_SELECT
+	Keycode::GAME_R1, Keycode::GAME_L1,
+	Keycode::GAME_START, Keycode::GAME_SELECT // labeled E1 & E2 on some controllers
 };
 
 static Key keyToICadeOnKey(Key key)
@@ -75,7 +75,7 @@ static Key keyToICadeOffKey(Key key)
 	return 0;
 }
 
-const char *Event::mapName(Map map)
+std::string_view BaseEvent::mapName(Map map)
 {
 	switch(map)
 	{
@@ -83,7 +83,7 @@ const char *Event::mapName(Map map)
 		case Map::SYSTEM: return "Key Input";
 		case Map::POINTER: return "Pointer";
 		case Map::REL_POINTER: return "Relative Pointer";
-		#ifdef CONFIG_BLUETOOTH
+		#ifdef CONFIG_INPUT_BLUETOOTH
 		case Map::WIIMOTE: return "Wiimote";
 		case Map::WII_CC: return "Classic / Wii U Pro Controller";
 		case Map::ICONTROLPAD: return "iControlPad";
@@ -92,33 +92,15 @@ const char *Event::mapName(Map map)
 		#ifdef CONFIG_BLUETOOTH_SERVER
 		case Map::PS3PAD: return "PS3 Gamepad";
 		#endif
-		case Map::ICADE: return "iCade";
 		#ifdef CONFIG_INPUT_APPLE_GAME_CONTROLLER
 		case Map::APPLE_GAME_CONTROLLER: return "Apple Game Controller";
 		#endif
 	}
 }
 
-uint32_t Event::mapNumKeys(Map map)
+size_t BaseEvent::mapNumKeys(Map)
 {
-	switch(map)
-	{
-		default: return 0;
-		case Map::SYSTEM: return Input::Keycode::COUNT;
-		#ifdef CONFIG_BLUETOOTH
-		case Map::WIIMOTE: return Input::Wiimote::COUNT;
-		case Map::WII_CC: return Input::WiiCC::COUNT;
-		case Map::ICONTROLPAD: return Input::iControlPad::COUNT;
-		case Map::ZEEMOTE: return Input::Zeemote::COUNT;
-		#endif
-		#ifdef CONFIG_BLUETOOTH_SERVER
-		case Map::PS3PAD: return Input::PS3::COUNT;
-		#endif
-		case Map::ICADE: return Input::ICade::COUNT;
-		#ifdef CONFIG_INPUT_APPLE_GAME_CONTROLLER
-		case Map::APPLE_GAME_CONTROLLER: return Input::AppleGC::COUNT;
-		#endif
-	}
+	return Input::Keycode::COUNT;
 }
 
 const char *sourceStr(Source src)
@@ -147,6 +129,8 @@ const char *actionStr(Action act)
 		case Action::MOVED_RELATIVE: return "Moved Relative";
 		case Action::EXIT_VIEW: return "Exit View";
 		case Action::ENTER_VIEW: return "Enter View";
+		case Action::SCROLL_UP: return "Scroll Up";
+		case Action::SCROLL_DOWN: return "Scroll Down";
 		case Action::CANCELED: return "Canceled";
 	}
 	return "Unknown";
@@ -158,7 +142,7 @@ Map validateMap(uint8_t mapValue)
 	{
 		default: return Map::UNKNOWN;
 		case (uint8_t)Map::SYSTEM:
-		#ifdef CONFIG_BLUETOOTH
+		#ifdef CONFIG_INPUT_BLUETOOTH
 		case (uint8_t)Map::WIIMOTE:
 		case (uint8_t)Map::WII_CC:
 		case (uint8_t)Map::ICONTROLPAD:
@@ -167,7 +151,6 @@ Map validateMap(uint8_t mapValue)
 		#ifdef CONFIG_BLUETOOTH_SERVER
 		case (uint8_t)Map::PS3PAD:
 		#endif
-		case (uint8_t)Map::ICADE:
 		#ifdef CONFIG_INPUT_APPLE_GAME_CONTROLLER
 		case (uint8_t)Map::APPLE_GAME_CONTROLLER:
 		#endif
@@ -175,12 +158,17 @@ Map validateMap(uint8_t mapValue)
 	}
 }
 
+DirectionKeys directionKeys()
+{
+	return {Keycode::UP, Keycode::RIGHT, Keycode::DOWN, Keycode::LEFT};
 }
 
-namespace Base
+}
+
+namespace IG
 {
 
-void BaseApplication::startKeyRepeatTimer(Input::Event event)
+void BaseApplication::startKeyRepeatTimer(Input::KeyEvent event)
 {
 	if(!allowKeyRepeatTimer_)
 		return;
@@ -196,8 +184,8 @@ void BaseApplication::startKeyRepeatTimer(Input::Event event)
 	keyRepeatEvent.setRepeatCount(1);
 	if(!keyRepeatTimer) [[unlikely]]
 	{
-		keyRepeatTimer.emplace("keyRepeatTimer",
-			[this]()
+		keyRepeatTimer.emplace(TimerDesc{.debugLabel = "keyRepeatTimer"},
+			[this]
 			{
 				//logMsg("repeating key event");
 				if(keyRepeatEvent.pushed()) [[likely]]
@@ -231,80 +219,97 @@ void BaseApplication::setAllowKeyRepeatTimer(bool on)
 	}
 }
 
-const std::vector<Input::Device*> &BaseApplication::systemInputDevices() const
+const InputDeviceContainer &BaseApplication::inputDevices() const
 {
 	return inputDev;
 }
 
-void BaseApplication::addSystemInputDevice(Input::Device &d, bool notify)
+Input::Device &BaseApplication::addInputDevice(ApplicationContext ctx, std::unique_ptr<Input::Device> ptr, bool notify)
 {
-	d.idx = inputDev.size();
-	inputDev.emplace_back(&d);
+	ptr->setEnumId(nextInputDeviceEnumId(ptr->name()));
+	auto &devPtr = inputDev.emplace_back(std::move(ptr));
 	if(notify)
 	{
-		dispatchInputDeviceChange(d, {Input::DeviceAction::ADDED});
+		onEvent(ctx, Input::DeviceChangeEvent{*devPtr, Input::DeviceChange::added});
+	}
+	return *devPtr;
+}
+
+void BaseApplication::removeInputDevice(ApplicationContext ctx, Input::Device &d, bool notify)
+{
+	removeInputDeviceIf(ctx, [&](const auto &devPtr){ return devPtr.get() == &d; }, notify);
+}
+
+void BaseApplication::removeInputDevice(ApplicationContext ctx, Input::Map map, int id, bool notify)
+{
+	removeInputDeviceIf(ctx, [&](const auto &devPtr){ return devPtr->map() == map && devPtr->id() == id; }, notify);
+}
+
+void BaseApplication::removeInputDevices(ApplicationContext ctx, Input::Map map, bool notify)
+{
+	while(auto removedDevice = moveOut(inputDev, [&](const auto &iDev){ return iDev->map() == map; }))
+	{
+		if(notify)
+		{
+			onEvent(ctx, Input::DeviceChangeEvent{*removedDevice, Input::DeviceChange::removed});
+		}
 	}
 }
 
-void BaseApplication::removeSystemInputDevice(Input::Device &d, bool notify)
+void BaseApplication::removeInputDevice(ApplicationContext ctx, InputDeviceContainer::iterator it, bool notify)
 {
-	logMsg("removing device: %s,%d", d.name(), d.enumId());
+	if(it == inputDev.end()) [[unlikely]]
+		return;
+	auto removedDevPtr = std::move(*it);
+	inputDev.erase(it);
+	logMsg("removed input device:%s,%d", removedDevPtr->name().data(), removedDevPtr->enumId());
 	cancelKeyRepeatTimer();
-	IG::eraseFirst(inputDev, &d);
-	indexSystemInputDevices();
 	if(notify)
 	{
-		dispatchInputDeviceChange(d, {Input::DeviceAction::REMOVED});
+		onEvent(ctx, Input::DeviceChangeEvent{*removedDevPtr, Input::DeviceChange::removed});
 	}
 }
 
-void BaseApplication::indexSystemInputDevices()
+uint8_t BaseApplication::nextInputDeviceEnumId(std::string_view name) const
 {
-	// re-number device indices
-	uint32_t i = 0;
-	for(auto &e : inputDev)
+	static constexpr uint8_t maxEnum = 64;
+	for(auto i : iotaCount(maxEnum))
 	{
-		e->idx = i;
-		i++;
+		auto it = std::ranges::find_if(inputDev,
+			[&](auto &devPtr){ return devPtr->name() == name && devPtr->enumId() == i; });
+		if(it == inputDev.end())
+			return i;
 	}
+	return maxEnum;
 }
 
-bool BaseApplication::dispatchRepeatableKeyInputEvent(Input::Event e, Window &win)
+bool BaseApplication::dispatchRepeatableKeyInputEvent(Input::KeyEvent e, Window &win)
 {
 	e.setKeyFlags(swappedConfirmKeys());
 	return win.dispatchRepeatableKeyInputEvent(e);
 }
 
-bool BaseApplication::dispatchRepeatableKeyInputEvent(Input::Event e)
+bool BaseApplication::dispatchRepeatableKeyInputEvent(Input::KeyEvent e)
 {
 	return dispatchRepeatableKeyInputEvent(e, mainWindow());
 }
 
-bool BaseApplication::dispatchKeyInputEvent(Input::Event e, Window &win)
+bool BaseApplication::dispatchKeyInputEvent(Input::KeyEvent e, Window &win)
 {
-	assert(e.isKey());
 	e.setKeyFlags(swappedConfirmKeys());
+	if(e.device()->iCadeMode() && processICadeKey(e, win))
+		return true;
 	return win.dispatchInputEvent(e);
 }
 
-bool BaseApplication::dispatchKeyInputEvent(Input::Event e)
+bool BaseApplication::dispatchKeyInputEvent(Input::KeyEvent e)
 {
 	return dispatchKeyInputEvent(e, mainWindow());
 }
 
-void BaseApplication::setOnInputDeviceChange(InputDeviceChangeDelegate del)
+void BaseApplication::dispatchInputDeviceChange(ApplicationContext ctx, const Input::Device &d, Input::DeviceChange change)
 {
-	onInputDeviceChange = del;
-}
-
-void BaseApplication::dispatchInputDeviceChange(const Input::Device &d, Input::DeviceChange change)
-{
-	onInputDeviceChange.callCopySafe(d, change);
-}
-
-void BaseApplication::setOnInputDevicesEnumerated(InputDevicesEnumeratedDelegate del)
-{
-	onInputDevicesEnumerated = del;
+	onEvent(ctx, Input::DeviceChangeEvent{d, change});
 }
 
 std::optional<bool> BaseApplication::swappedConfirmKeysOption() const
@@ -331,9 +336,11 @@ uint8_t BaseApplication::keyEventFlags() const
 	return swappedConfirmKeys();
 }
 
+[[gnu::weak]] void ApplicationContext::enumInputDevices() const {}
+
 bool ApplicationContext::keyInputIsPresent() const
 {
-	return Input::Device::anyTypeBitsPresent(*this, Input::Device::TYPE_BIT_KEYBOARD | Input::Device::TYPE_BIT_GAMEPAD);
+	return Input::Device::anyTypeFlagsPresent(*this, {.keyboard = true, .gamepad = true});
 }
 
 void ApplicationContext::flushInputEvents()
@@ -347,25 +354,27 @@ void ApplicationContext::flushInternalInputEvents()
 	// TODO
 }
 
+[[gnu::weak]] bool ApplicationContext::hasInputDeviceHotSwap() const { return Config::Input::DEVICE_HOTSWAP; }
+
 [[gnu::weak]] void ApplicationContext::flushSystemInputEvents() {}
 
-bool BaseApplication::processICadeKey(Input::Key key, Input::Action action, Input::Time time, const Input::Device &dev, Window &win)
+bool BaseApplication::processICadeKey(const Input::KeyEvent &e, Window &win)
 {
-	using namespace Input;
-	if(auto onKey = keyToICadeOnKey(key))
+	using namespace IG::Input;
+	if(auto onKey = keyToICadeOnKey(e.key()))
 	{
-		if(action == Action::PUSHED)
+		if(e.state() == Action::PUSHED)
 		{
 			//logMsg("pushed iCade keyboard key: %s", dev.keyName(key));
-			dispatchRepeatableKeyInputEvent({0, Map::ICADE, onKey, onKey, Action::PUSHED, 0, 0, Source::GAMEPAD, time, &dev}, win);
+			dispatchRepeatableKeyInputEvent({Map::SYSTEM, onKey, Action::PUSHED, 0, 0, Source::GAMEPAD, e.time(), e.device()}, win);
 		}
 		return true;
 	}
-	if(auto offKey = keyToICadeOffKey(key))
+	if(auto offKey = keyToICadeOffKey(e.key()))
 	{
-		if(action == Action::PUSHED)
+		if(e.state() == Action::PUSHED)
 		{
-			dispatchRepeatableKeyInputEvent({0, Map::ICADE, offKey, offKey, Action::RELEASED, 0, 0, Source::GAMEPAD, time, &dev}, win);
+			dispatchRepeatableKeyInputEvent({Map::SYSTEM, offKey, Action::RELEASED, 0, 0, Source::GAMEPAD, e.time(), e.device()}, win);
 		}
 		return true;
 	}

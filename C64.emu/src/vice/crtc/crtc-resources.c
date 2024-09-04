@@ -60,21 +60,20 @@ void crtc_update_renderer(void)
         /* 80 columns */
         crtc.video_chip_cap->single_mode.sizex = 1;
         crtc.video_chip_cap->single_mode.sizey = 2;
-        crtc.video_chip_cap->single_mode.rmode = VIDEO_RENDER_CRT_1X2;
+        crtc.video_chip_cap->single_mode.rmode = VIDEO_RENDER_CRT_MONO_1X2;
         crtc.video_chip_cap->double_mode.sizex = 2;
         crtc.video_chip_cap->double_mode.sizey = 4;
-        crtc.video_chip_cap->double_mode.rmode = VIDEO_RENDER_CRT_2X4;
-        crtc.video_chip_cap->scale2x_allowed = 0;
+        crtc.video_chip_cap->double_mode.rmode = VIDEO_RENDER_CRT_MONO_2X4;
     } else {
         /* 40 columns */
         crtc.video_chip_cap->single_mode.sizex = 1;
         crtc.video_chip_cap->single_mode.sizey = 1;
-        crtc.video_chip_cap->single_mode.rmode = VIDEO_RENDER_CRT_1X1;
+        crtc.video_chip_cap->single_mode.rmode = VIDEO_RENDER_CRT_MONO_1X1;
         crtc.video_chip_cap->double_mode.sizex = 2;
         crtc.video_chip_cap->double_mode.sizey = 2;
-        crtc.video_chip_cap->double_mode.rmode = VIDEO_RENDER_CRT_2X2;
-        crtc.video_chip_cap->scale2x_allowed = ARCHDEP_CRTC_DSIZE;
+        crtc.video_chip_cap->double_mode.rmode = VIDEO_RENDER_CRT_MONO_2X2;
     }
+    crtc.video_chip_cap->video_has_palntsc = 0;
 }
 
 static int set_stretch(int val, void *param)
@@ -100,9 +99,7 @@ int crtc_resources_init(void)
     video_chip_cap.dsize_limit_width = 800; /* 2 times the 80cols screen */
     video_chip_cap.dsize_limit_height = 700; /* 4 times the 80cols screen */
     video_chip_cap.dscan_allowed = ARCHDEP_CRTC_DSCAN;
-    video_chip_cap.hwscale_allowed = ARCHDEP_CRTC_HWSCALE;
     video_chip_cap.external_palette_name = "green";
-    video_chip_cap.double_buffering_allowed = ARCHDEP_CRTC_DBUF;
     fullscreen_capability(&(video_chip_cap.fullscreen));
 
     if (raster_resources_chip_init("Crtc", &crtc.raster, &video_chip_cap) < 0) {

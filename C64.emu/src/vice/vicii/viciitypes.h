@@ -130,13 +130,10 @@ typedef enum vicii_video_mode_s vicii_video_mode_t;
 /* Current vertical position of the raster.  Unlike `rasterline', which is
    only accurate if a pending drawing event has been served, this is
    guarranteed to be always correct.  It is a bit slow, though.  */
-#define VICII_RASTER_Y(clk)        ((unsigned int)((clk) \
-                                                   / vicii.cycles_per_line) \
-                                    % vicii.screen_height)
+#define VICII_RASTER_Y(clk)        ((unsigned int)(((clk) / vicii.cycles_per_line) % vicii.screen_height))
 
 /* Cycle # within the current line.  */
-#define VICII_RASTER_CYCLE(clk)    ((unsigned int)((clk) \
-                                                   % vicii.cycles_per_line))
+#define VICII_RASTER_CYCLE(clk)    ((unsigned int)((clk) % vicii.cycles_per_line))
 /* DTV Cycle # within the current line.
    Handles the "hole" on PAL systems at cycles 54-55 and the 1 cycle shift */
 #define VICIIDTV_RASTER_CYCLE(clk) ((unsigned int)((((clk) - 1) % vicii.cycles_per_line) + ((vicii.cycles_per_line == 63 && (((clk) - 1) % vicii.cycles_per_line) > 53) ? 2 : 0)))
@@ -387,6 +384,9 @@ struct vicii_s {
     uint16_t store_addr;
     uint8_t store_value;
 
+    /* Read-modify-write instruction detection */
+    CLOCK last_write_clk;
+
     /* Stores to 0x3fff idle location (used for idle sprite fetch).  */
     unsigned int num_idle_3fff;
     idle_3fff_t *idle_3fff;
@@ -404,6 +404,9 @@ struct vicii_s {
 
     /* C128 2mhz cycle counter */
     int half_cycles;
+
+    /* Last value put on the bus by the C128 CPU in 2mhz mode */
+    uint8_t last_cpu_val;
 
     /* Last value read from VICII (used for RMW access).  */
     uint8_t last_read;
@@ -442,12 +445,12 @@ typedef struct vicii_s vicii_t;
 extern vicii_t vicii;
 
 /* Private function calls, used by the other VIC-II modules.  */
-extern void vicii_update_memory_ptrs(unsigned int cycle);
-extern void vicii_update_video_mode(unsigned int cycle);
-extern void vicii_raster_draw_alarm_handler(CLOCK offset, void *data);
-extern void vicii_handle_pending_alarms(int num_write_cycles);
-extern void vicii_delay_clk(void);
-extern void vicii_delay_oldclk(CLOCK num);
+void vicii_update_memory_ptrs(unsigned int cycle);
+void vicii_update_video_mode(unsigned int cycle);
+void vicii_raster_draw_alarm_handler(CLOCK offset, void *data);
+void vicii_handle_pending_alarms(CLOCK num_write_cycles);
+void vicii_delay_clk(void);
+void vicii_delay_oldclk(CLOCK num);
 
 /* Debugging options.  */
 

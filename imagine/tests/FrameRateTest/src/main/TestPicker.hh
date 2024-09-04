@@ -19,23 +19,20 @@
 #include <imagine/gui/TableView.hh>
 #include "tests.hh"
 
-class TestTableEntry : public DualTextMenuItem
+namespace FrameRateTest
+{
+
+using namespace IG;
+
+class TestPicker : public IG::TableView
 {
 public:
-	bool redText{};
-
-	TestTableEntry(Gfx::GlyphTextureSet *face, SelectDelegate);
-	void draw(Gfx::RendererCommands &, Gfx::GC xPos, Gfx::GC yPos, Gfx::GC xSize, Gfx::GC ySize,
-		Gfx::GC xIndent, _2DOrigin align, const Gfx::ProjectionPlane &, Gfx::Color) const final;
-};
-
-class TestPicker : public TableView
-{
-public:
-	TestPicker(ViewAttachParams attach);
+	TestPicker(IG::ViewAttachParams attach);
 	void setTests(const TestDesc *testParams, unsigned tests);
 
 private:
-	std::vector<TestTableEntry> testEntry{};
-	std::vector<TestParams> testParam{};
+	std::vector<DualTextMenuItem> testEntry;
+	std::vector<TestParams> testParam;
 };
+
+}

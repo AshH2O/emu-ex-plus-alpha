@@ -18,62 +18,19 @@
 #include <imagine/config/defs.hh>
 #include <imagine/base/BaseApplication.hh>
 #include <imagine/fs/FSDefs.hh>
-#ifdef CONFIG_BASE_DBUS
+#if CONFIG_PACKAGE_DBUS
 #include <gio/gio.h>
 #endif
-#ifdef CONFIG_INPUT_EVDEV
 #include <imagine/base/EventLoop.hh>
-#include <imagine/input/AxisKeyEmu.hh>
-#include <imagine/input/Device.hh>
-#include <vector>
 #include <memory>
-#endif
 
 struct _XDisplay;
 union _XEvent;
 
-#ifdef CONFIG_INPUT_EVDEV
-namespace Base
+namespace IG
 {
+
 class LinuxApplication;
-class ApplicationContext;
-}
-
-namespace Input
-{
-
-class EvdevInputDevice : public Device
-{
-public:
-	EvdevInputDevice();
-	EvdevInputDevice(int id, int fd, uint32_t type, const char *name);
-	void setEnumId(int id);
-	void processInputEvents(Base::LinuxApplication &app, input_event *event, uint32_t events);
-	bool setupJoystickBits();
-	void addPollEvent(Base::LinuxApplication &app);
-	void close(Base::LinuxApplication &app);
-	void setJoystickAxisAsDpadBits(uint32_t axisMask) final;
-	uint32_t joystickAxisAsDpadBits() final;
-	int fileDesc() const;
-	int identifier() const;
-
-protected:
-	static constexpr unsigned AXIS_SIZE = 24;
-	int id{};
-	int fd{-1};
-	struct Axis
-	{
-		AxisKeyEmu<int> keyEmu;
-		bool active{};
-	} axis[AXIS_SIZE];
-	Base::FDEventSource fdSrc{-1};
-};
-
-}
-#endif
-
-namespace Base
-{
 
 struct ApplicationInitParams
 {
@@ -97,18 +54,12 @@ public:
 	void endIdleByUserActivity();
 	bool registerInstance(ApplicationInitParams, const char *name);
 	void setAcceptIPC(bool on, const char *name);
-	FS::PathString appPath() const;
+	const FS::PathString &appPath() const;
 	void setAppPath(FS::PathString);
-	#ifdef CONFIG_INPUT_EVDEV
-	std::vector<std::unique_ptr<Input::EvdevInputDevice>> &evInputDevices();
-	#endif
 
 protected:
-	#ifdef CONFIG_INPUT_EVDEV
-	std::vector<std::unique_ptr<Input::EvdevInputDevice>> evDevice{};
-	FDEventSource evdevSrc{};
-	#endif
-	#ifdef CONFIG_BASE_DBUS
+	FDEventSource evdevSrc;
+	#if CONFIG_PACKAGE_DBUS
 	GDBusConnection *gbus{};
 	unsigned openPathSub{};
 	uint32_t screenSaverCookie{};
@@ -118,7 +69,7 @@ protected:
 
 	bool initDBus();
 	void deinitDBus();
-	void initEvdev(Base::EventLoop);
+	void initEvdev(EventLoop);
 };
 
 }

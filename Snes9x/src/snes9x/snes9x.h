@@ -8,7 +8,7 @@
 #define _SNES9X_H_
 
 #ifndef VERSION
-#define VERSION	"1.60"
+#define VERSION	"1.63"
 #endif
 
 #include "port.h"
@@ -22,23 +22,27 @@
 #define WRITE_FSTREAM(p, l, s)	gzwrite(s, p, l)
 #define GETS_FSTREAM(p, l, s)	gzgets(s, p, l)
 #define GETC_FSTREAM(s)			gzgetc(s)
-#define OPEN_FSTREAM(f, m)		gzopen(f, m)
+#define OPEN_FSTREAM(f, m)		gzopenHelper(f, m)
 #define REOPEN_FSTREAM(f, m)		gzdopen(f, m)
 #define FIND_FSTREAM(f)			gztell(f)
 #define REVERT_FSTREAM(s, o, p)	gzseek(s, o, p)
 #define CLOSE_FSTREAM(s)			gzclose(s)
+gzFile gzopenHelper(const char *filename, const char *mode);
 #else
 #define FSTREAM					FILE *
 #define READ_FSTREAM(p, l, s)	fread(p, 1, l, s)
 #define WRITE_FSTREAM(p, l, s)	fwrite(p, 1, l, s)
 #define GETS_FSTREAM(p, l, s)	fgets(p, l, s)
 #define GETC_FSTREAM(s)			fgetc(s)
-#define OPEN_FSTREAM(f, m)		fopen(f, m)
+#define OPEN_FSTREAM(f, m)		fopenHelper(f, m)
 #define REOPEN_FSTREAM(f, m)		fdopen(f, m)
 #define FIND_FSTREAM(s)			ftell(s)
 #define REVERT_FSTREAM(s, o, p)	fseek(s, o, p)
 #define CLOSE_FSTREAM(s)			fclose(s)
 #endif
+
+FILE *fopenHelper(const char *filename, const char *mode);
+void removeFileHelper(const char *filename);
 
 #include "stream.h"
 
@@ -58,11 +62,13 @@
 #define SNES_HEIGHT_EXTENDED		239
 #define MAX_SNES_WIDTH				(SNES_WIDTH * 2)
 #define MAX_SNES_HEIGHT				(SNES_HEIGHT_EXTENDED * 2)
-#define IMAGE_WIDTH					(Settings.SupportHiRes ? MAX_SNES_WIDTH : SNES_WIDTH)
-#define IMAGE_HEIGHT				(Settings.SupportHiRes ? MAX_SNES_HEIGHT : SNES_HEIGHT_EXTENDED)
 
 #define	NTSC_MASTER_CLOCK			21477272.727272 // 21477272 + 8/11 exact
 #define	PAL_MASTER_CLOCK			21281370.0
+#define NTSC_PROGRESSIVE_FRAME_RATE	60.09881389744051
+#define NTSC_INTERLACED_FRAME_RATE	59.94005994
+#define PAL_PROGRESSIVE_FRAME_RATE	50.006977968
+
 
 #define SNES_MAX_NTSC_VCOUNTER		262
 #define SNES_MAX_PAL_VCOUNTER		312
@@ -141,8 +147,6 @@ struct SCPUState
 	uint8	WhichEvent;
 	int32	NextEvent;
 	bool8	WaitingForInterrupt;
-	uint32	AutoSaveTimer;
-	bool8	SRAMModified;
 	void (*exec)();
 };
 
@@ -236,10 +240,10 @@ struct SSettings
 	uint32	FrameTimeNTSC = 16667;
 	uint32	FrameTime = 0;
 
-	static const bool8	SoundSync = 1;
+	static const bool8	SoundSync = 0;
 	static const bool8	SixteenBitSound = 1;
-	uint32	SoundPlaybackRate = 44100;
-	static const uint32	SoundInputRate = 32040;
+	int	SoundPlaybackRate = 44100;
+	double SoundInputRate = 32040.;
 	static const bool8	Stereo = 1;
 	static const bool8	ReverseStereo = 0;
 	bool8	Mute = 0;
@@ -247,20 +251,22 @@ struct SSettings
 	static const int32	DynamicRateLimit = 5; /* Multiplied by 1000 */
 	static const int32	InterpolationMethod = 2;
 
-	static const bool8	SupportHiRes = 1;
 	static const bool8	Transparency = 1;
 	uint8	BG_Forced = 0;
 	static const bool8	DisableGraphicWindows = 0;
+	uint16  ForcedBackdrop = 0;
 
 	static const bool8	DisplayTime = 0;
 	static const bool8	DisplayFrameRate = 0;
 	static const bool8	DisplayWatchedAddresses = 0;
 	static const bool8	DisplayPressedKeys = 0;
 	static const bool8	DisplayMovieFrame = 0;
+	static const bool	DisplayIndicators = 0;
 	static const bool8	AutoDisplayMessages = 0;
 	static const uint32	InitialInfoStringTimeout = 0;
 	static uint16	DisplayColor;
 	static const bool8	BilinearFilter = 0;
+	static const bool	ShowOverscan = 0;
 
 	static const bool8	Multi = 0;
 	char	CartAName[PATH_MAX + 1]{};
@@ -273,7 +279,7 @@ struct SSettings
 
 	static const bool8	ForcedPause = 0;
 	static const bool8	Paused = 0;
-	static const bool8	StopEmulation = 0;
+	static bool8	StopEmulation;
 
 	static uint32	SkipFrames;
 	static uint32	TurboSkipFrames;
@@ -305,10 +311,8 @@ struct SSettings
 	bool8	IgnorePatchChecksum = 0;
 	bool8	IsPatched = 0;
 	static const int32	AutoSaveDelay = 30;
-	static const bool8	DontSaveOopsSnapshot = 0;
+	static const bool8	DontSaveOopsSnapshot = 1;
 	static const bool8	UpAndDown = 0;
-
-	static const bool8	OpenGLEnable = 1;
 
   static const bool8  SeparateEchoBuffer = 0;
 	uint32	SuperFXClockMultiplier = 100;

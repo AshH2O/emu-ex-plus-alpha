@@ -15,40 +15,47 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/base/eventLoopDefs.hh>
-#include <imagine/util/typeTraits.hh>
+#include <imagine/base/baseDefs.hh>
+#include <imagine/util/used.hh>
+#include <imagine/util/memory/UniqueFileDescriptor.hh>
 #include <glib.h>
+#include <memory>
+#include <utility>
 
-namespace Base
+namespace IG
 {
 
-static const int POLLEV_IN = G_IO_IN, POLLEV_OUT = G_IO_OUT, POLLEV_ERR = G_IO_ERR, POLLEV_HUP = G_IO_HUP;
+constexpr int pollEventInput = G_IO_IN, pollEventOutput = G_IO_OUT,
+	pollEventError = G_IO_ERR, pollEventHangUp = G_IO_HUP;
 
-struct GlibSource : public GSource
+struct PollEventGSource : public GSource
 {
 	PollEventDelegate callback{};
 };
 
+void destroyGSource(GSource *);
+
+struct GSourceDeleter
+{
+	void operator()(GSource *src) const
+	{
+		destroyGSource(src);
+	}
+};
+using UniqueGSource = std::unique_ptr<GSource, GSourceDeleter>;
+
 class GlibFDEventSource
 {
 public:
-	constexpr GlibFDEventSource() {}
-	GlibFDEventSource(int fd) : GlibFDEventSource{nullptr, fd} {}
-	GlibFDEventSource(const char *debugLabel, int fd);
-	GlibFDEventSource(GlibFDEventSource &&o);
-	GlibFDEventSource &operator=(GlibFDEventSource &&o);
-	~GlibFDEventSource();
+	GlibFDEventSource(MaybeUniqueFileDescriptor, FDEventSourceDesc, PollEventDelegate);
 
 protected:
-	IG_enableMemberIf(Config::DEBUG_BUILD, const char *, debugLabel){};
-	GSource *source{};
+	UniqueGSource source{};
 	gpointer tag{};
-	int fd_ = -1;
-	IG_enableMemberIfOrConstant(Config::DEBUG_BUILD, bool, true, usingGlibSource){};
+	MaybeUniqueFileDescriptor fd_{};
 
-	bool attachGSource(GSource *, GIOCondition events, GMainContext *);
-	void deinit();
-	const char *label() const;
+	static PollEventDelegate& getDelegate(GSource*);
+	static UniqueGSource makeSource(PollEventDelegate);
 };
 
 using FDEventSourceImpl = GlibFDEventSource;
@@ -56,7 +63,7 @@ using FDEventSourceImpl = GlibFDEventSource;
 class GlibEventLoop
 {
 public:
-	constexpr GlibEventLoop() {}
+	constexpr GlibEventLoop() = default;
 	constexpr GlibEventLoop(GMainContext *ctx): mainContext{ctx} {}
 	GMainContext *nativeObject() const { return mainContext; }
 

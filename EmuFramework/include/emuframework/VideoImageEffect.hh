@@ -17,63 +17,62 @@
 
 #include <imagine/gfx/Texture.hh>
 #include <imagine/gfx/Program.hh>
-#include <system_error>
-#include <optional>
+#include <imagine/gfx/Quads.hh>
+#include <imagine/util/enum.hh>
+
+namespace EmuEx
+{
+
+using namespace IG;
+
+WISE_ENUM_CLASS((ImageEffectId, uint8_t),
+	(DIRECT, 0),
+	(HQ2X, 1),
+	(SCALE2X, 2),
+	(PRESCALE2X, 3),
+	(PRESCALE3X, 4),
+	(PRESCALE4X, 5));
 
 class VideoImageEffect
 {
 public:
-	enum
-	{
-		NO_EFFECT = 0,
-		HQ2X = 1,
-		SCALE2X = 2,
-		PRESCALE2X = 3,
-
-		LAST_EFFECT_VAL
-	};
+	using Id = ImageEffectId;
 
 	struct EffectDesc
 	{
 		const char *vShaderFilename;
 		const char *fShaderFilename;
-		IG::WP scale;
+		WSize scale;
 	};
 
-	struct EffectParams
-	{
-		IG::PixelFormatID formatID;
-		uint8_t effectID;
-	};
-
-	constexpr	VideoImageEffect() {}
-	void setEffect(Gfx::Renderer &r, unsigned effect, unsigned bitDepth, bool isExternalTex, const Gfx::TextureSampler &compatTexSampler);
-	EffectParams effectParams() const;
-	void setImageSize(Gfx::Renderer &r, IG::WP size, const Gfx::TextureSampler &compatTexSampler);
-	void setBitDepth(Gfx::Renderer &r, unsigned bitDepth, const Gfx::TextureSampler &compatTexSampler);
-	void setCompatTextureSampler(const Gfx::TextureSampler &);
+	constexpr	VideoImageEffect() = default;
+	VideoImageEffect(Gfx::Renderer &r, Id effect, PixelFormat, Gfx::ColorSpace, Gfx::TextureSamplerConfig, WSize size);
+	void setImageSize(Gfx::Renderer &r, WSize size, Gfx::TextureSamplerConfig);
+	void setFormat(Gfx::Renderer &r, IG::PixelFormat, Gfx::ColorSpace, Gfx::TextureSamplerConfig);
+	void setSampler(Gfx::TextureSamplerConfig);
 	Gfx::Program &program();
 	Gfx::Texture &renderTarget();
-	void drawRenderTarget(Gfx::RendererCommands &cmds, const Gfx::Texture &img);
-	void deinit(Gfx::Renderer &r);
+	void drawRenderTarget(Gfx::RendererCommands &, Gfx::TextureSpan);
+	constexpr IG::PixelFormat imageFormat() const { return format; }
+	operator bool() const { return (bool)prog; }
 
 private:
-	Gfx::Texture renderTarget_{};
-	Gfx::Program prog{};
-	Gfx::Shader vShader{};
-	Gfx::Shader fShader{};
+	Gfx::ITexQuads quad;
+	Gfx::Texture renderTarget_;
+	Gfx::Program prog;
 	int srcTexelDeltaU{};
 	int srcTexelHalfDeltaU{};
 	int srcPixelsU{};
-	IG::WP renderTargetScale{};
-	IG::WP renderTargetImgSize{};
-	IG::WP inputImgSize{1, 1};
-	uint8_t effect_ = NO_EFFECT;
-	bool useRGB565RenderTarget = true;
+	WSize renderTargetScale;
+	WSize renderTargetImgSize;
+	WSize inputImgSize{1, 1};
+	IG::PixelFormat format;
+	Gfx::ColorSpace colorSpace{Gfx::ColorSpace::LINEAR};
 
-	void initRenderTargetTexture(Gfx::Renderer &r, const Gfx::TextureSampler &compatTexSampler);
+	void initRenderTargetTexture(Gfx::Renderer &r, Gfx::TextureSamplerConfig);
 	void updateProgramUniforms(Gfx::Renderer &r);
-	void compile(Gfx::Renderer &r, bool isExternalTex, const Gfx::TextureSampler &compatTexSampler);
-	std::optional<std::system_error> compileEffect(Gfx::Renderer &r, EffectDesc desc, bool isExternalTex, bool useFallback);
-	void deinitProgram(Gfx::Renderer &r);
+	void compile(Gfx::Renderer &r, EffectDesc desc, Gfx::TextureSamplerConfig);
+	void compileEffect(Gfx::Renderer &r, EffectDesc desc, bool useFallback);
 };
+
+}

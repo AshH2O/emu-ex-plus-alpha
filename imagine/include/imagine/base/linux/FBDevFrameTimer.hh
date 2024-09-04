@@ -15,23 +15,24 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/base/FrameTimer.hh>
 #include <imagine/base/EventLoop.hh>
-#include <semaphore.h>
+#include <semaphore>
+#include <thread>
 
-namespace Base
+namespace IG
 {
 
 class Screen;
 
-class FBDevFrameTimer : public FrameTimerI
+class FBDevFrameTimer
 {
 public:
-	constexpr FBDevFrameTimer() {}
 	FBDevFrameTimer(Screen &screen, EventLoop loop = {});
-	~FBDevFrameTimer() final;
-	void scheduleVSync() final;
-	void cancel() final;
+	~FBDevFrameTimer();
+	void scheduleVSync();
+	void cancel();
+	void setFrameRate(FrameRate) {}
+	void setEventsOnThisThread(ApplicationContext);
 	static bool testSupport();
 
 	explicit operator bool() const
@@ -40,8 +41,9 @@ public:
 	}
 
 private:
-	Base::FDEventSource fdSrc{};
-	sem_t sem{};
+	FDEventSource fdSrc;
+	std::thread thread{};
+	std::binary_semaphore sem{0};
 	bool requested{};
 	bool cancelled{};
 	bool quiting{};

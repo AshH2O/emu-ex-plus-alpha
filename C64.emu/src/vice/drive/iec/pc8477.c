@@ -26,9 +26,9 @@
 
 #include "vice.h"
 
+#include <stdio.h>
 #include <string.h>
 
-#include "clkguard.h"
 #include "diskimage.h"
 #include "drive.h"
 #include "drivetypes.h"
@@ -39,6 +39,9 @@
 #include "alarm.h"
 #include "drivesync.h"
 #include "fdd.h"
+#include "monitor.h"
+
+/* #define PC8477_DEBUG */
 
 #ifdef PC8477_DEBUG
 #define debug(_x_) log_message _x_
@@ -46,8 +49,8 @@
 #define debug(_x_)
 #endif
 
-#define STEP_RATE ((16 - drv->step_rate) * drv->mycontext->drive->clock_frequency * 500000 / drv->rate)
-#define BYTE_RATE (drv->mycontext->drive->clock_frequency * 8000 / drv->rate)
+#define STEP_RATE ((16 - drv->step_rate) * drv->mycontext->clock_frequency * 500000 / drv->rate)
+#define BYTE_RATE (drv->mycontext->clock_frequency * 8000 / drv->rate)
 
 typedef enum pc8477_state_e {
     PC8477_WAIT, PC8477_COMMAND, PC8477_READ, PC8477_WRITE, PC8477_EXEC, PC8477_RESULT
@@ -143,7 +146,7 @@ struct pc8477_s {
     pc8477_cmd_t command;
     pc8477_state_t state;
     int int_step, sub_step;
-    struct drive_context_s *mycontext;
+    struct diskunit_context_s *mycontext;
 
     /* Floppy drives */
     struct {
@@ -173,7 +176,7 @@ struct pc8477_s {
     int rate;
 
     int sector; /* sector register */
-    int is8477; /* dp8473 or pc 8477 */
+    int is8477; /* dp8473=0 or pc8477!=0 */
 
     alarm_t *seek_alarm;
     int byte_count;
@@ -204,7 +207,11 @@ static void seek_alarm_handler(CLOCK offset, void *data)
             drv->fdds[i].seeking = 1;
             if (drv->fdds[i].recalibrating && drv->fdds[i].seek_pulses == 0
                 && !fdd_track0(drv->fdds[i].fdd)) {
-                drv->st[0] |= PC8477_ST0_EC;
+                /* CMD FD2000's mechanism also sets bit 5 and 6 on
+                   recalibration timeout, it is hard coded in ROM to check for
+                   $71 on result (@ $878a) and try again */
+                /* The FD4000 uses 85 pulses, so this shouldn't timeout */
+                drv->st[0] |= (PC8477_ST0_EC | 0x60);
             }
             break;
         }
@@ -226,21 +233,8 @@ static void seek_alarm_handler(CLOCK offset, void *data)
     }
 }
 
-/* Clock overflow handling.  */
-static void clk_overflow_callback(CLOCK sub, void *data)
-{
-    pc8477_t *drv = (pc8477_t *)data;
-
-    if (drv->clk > (CLOCK) 0) {
-        drv->clk -= sub;
-    }
-    if (drv->motor_clk > (CLOCK) 0) {
-        drv->motor_clk -= sub;
-    }
-}
-
 /* Functions using drive context.  */
-void pc8477d_init(drive_context_t *drv)
+void pc8477d_init(diskunit_context_t *drv)
 {
     char *name;
 
@@ -248,18 +242,16 @@ void pc8477d_init(drive_context_t *drv)
         pc8477_log = log_open("PC8477");
     }
 
-    clk_guard_add_callback(drv->cpu->clk_guard, clk_overflow_callback, drv->pc8477);
-
     name = lib_msprintf("%sEXEC", drv->pc8477->myname);
     drv->pc8477->seek_alarm = alarm_new(drv->cpu->alarm_context, name, seek_alarm_handler, drv->pc8477);
     lib_free(name);
 }
 
-void pc8477_setup_context(drive_context_t *drv)
+void pc8477_setup_context(diskunit_context_t *drv)
 {
     int i;
     drv->pc8477 = lib_calloc(1, sizeof(pc8477_t));
-    drv->pc8477->myname = lib_msprintf("PC8477_%d", drv->mynumber);
+    drv->pc8477->myname = lib_msprintf("PC8477_%u", drv->mynumber);
     for (i = 0; i < 4; i++) {
         drv->pc8477->fdds[i].num = i;
         drv->pc8477->fdds[i].fdd = NULL;
@@ -268,7 +260,7 @@ void pc8477_setup_context(drive_context_t *drv)
     }
     drv->pc8477->fdds[0].motor_on = (pc8477_motor_on_callback_t)drivesync_set_4000;
     drv->pc8477->fdds[0].motor_on_data = (void *)drv;
-    drv->pc8477->fdds[1].fdd = fdd_init(1, drv->drive);
+    drv->pc8477->fdds[1].fdd = fdd_init(1, drv->drives[0]);
     drv->pc8477->fdds[1].motor_on = (pc8477_motor_on_callback_t)fdd_set_motor;
     drv->pc8477->fdds[1].motor_on_data = (void *)drv->pc8477->fdds[1].fdd;
     drv->pc8477->mycontext = drv;
@@ -302,20 +294,25 @@ static void pc8477_result(pc8477_t *drv)
         case PC8477_CMD_SENSE_INTERRUPT:
             drv->res[0] = drv->st[0];
             drv->res[1] = drv->current->track;
+            debug((pc8477_log, "RESULT: %02x %02x", drv->res[0], drv->res[1]));
             return;
         case PC8477_CMD_VERSION:
             drv->res[0] = 0x90;
+            debug((pc8477_log, "RESULT: %02x", drv->res[0]));
             return;
         case PC8477_CMD_NSC:
             drv->res[0] = 0x72;
+            debug((pc8477_log, "RESULT: %02x", drv->res[0]));
             return;
         case PC8477_CMD_SENSE_DRIVE_STATUS:
             drv->res[0] = drv->st[3] | 0x20 | (drv->is8477 ? 0x08 : 0)
                           | (fdd_track0(drv->fdd) ? PC8477_ST3_TK0 : 0)
                           | (fdd_write_protect(drv->fdd) ? PC8477_ST3_WP : 0);
+            debug((pc8477_log, "RESULT: %02x", drv->res[0]));
             return;
         case PC8477_CMD_READ_ID:
             memcpy(drv->res, drv->st, 3);
+            debug((pc8477_log, "RESULT: %02x %02x %02x %02x %02x %02x", drv->res[0], drv->res[1], drv->res[2], drv->res[3], drv->res[4], drv->res[5]));
             return;
         case PC8477_CMD_RECALIBRATE:
             return;
@@ -333,19 +330,23 @@ static void pc8477_result(pc8477_t *drv)
             drv->res[7] |= (drv->fdds[1].perpendicular ? 0x04 : 0);
             drv->res[7] |= (drv->fdds[2].perpendicular ? 0x08 : 0);
             drv->res[7] |= (drv->fdds[3].perpendicular ? 0x10 : 0);
+            debug((pc8477_log, "RESULT: %02x %02x %02x %02x %02x %02x %02x", drv->res[0], drv->res[1], drv->res[2], drv->res[3], drv->res[4], drv->res[5], drv->res[6]));
             /* TODO */
             return;
         case PC8477_CMD_SET_TRACK:
             drv->res[0] = drv->current->track >> ((drv->cmd[1] & 4) ? 8 : 0);
+            debug((pc8477_log, "RESULT: %02x", drv->res[0]));
             return;
         case PC8477_CMD_READ_DATA:
         case PC8477_CMD_WRITE_DATA:
         case PC8477_CMD_FORMAT_A_TRACK:
             memcpy(drv->res, drv->st, 3);
             memcpy(drv->res + 3, drv->cmd + 2, 4);
+            debug((pc8477_log, "RESULT: %02x %02x %02x %02x %02x %02x", drv->res[0], drv->res[1], drv->res[2], drv->res[3], drv->res[4], drv->res[5]));
             return;
         default:
             drv->res[0] = drv->st[0];
+            debug((pc8477_log, "RESULT: %02x", drv->res[0]));
     }
 }
 
@@ -498,7 +499,8 @@ static pc8477_state_t pc8477_execute(pc8477_t *drv)
             return PC8477_EXEC;
         case PC8477_CMD_RECALIBRATE:
             debug((pc8477_log, "RECALIBRATE #%d", drv->current->num));
-            drv->current->seek_pulses = drv->is8477 ? -77 : -85;
+            /* the pc8477 returns -85, the dp8473 returns -77 */
+            drv->current->seek_pulses = drv->is8477 ? -85 : -77;
             drv->current->track = 0;
             drv->current->recalibrating = 1;
             if (!drv->seeking_active) {
@@ -969,7 +971,7 @@ static pc8477_state_t pc8477_execute(pc8477_t *drv)
         default:
             break;
     }
-    debug((pc8477_log, "invalid command %02x", drv->cmd[0]));
+    debug((pc8477_log, "invalid command %02x", drv->command));
     drv->command = PC8477_CMD_INVALID;
     drv->st[0] = drv->st[3] | 0x80; /* invalid command */
     drv->res_size = 1;
@@ -1230,6 +1232,19 @@ static uint8_t pc8477_peek(pc8477_t *drv, uint16_t addr)
     return result;
 }
 
+void pc8477d_dump(diskunit_context_t *ctx)
+{
+    int i;
+    pc8477_t *drv = ctx->pc8477;
+    mon_out("Type: %s\n", drv->is8477 ? "pc8477" : "dp8473");
+    mon_out("Rate: %dkHz\n", drv->rate);
+    for (i = 0; i < 4; i++) {
+        mon_out("FDD #%d:\n", i);
+        mon_out(" Track:%d (seeking:%s)\n", drv->fdds[i].track, drv->fdds[i].seeking ? "yes" : "no");
+        mon_out(" Motor:%s\n", drv->fdds[i].motor_on_out ? "on" : "off");
+    }
+}
+
 void pc8477_reset(pc8477_t *drv, int is8477)
 {
     int i;
@@ -1259,17 +1274,18 @@ int pc8477_irq(pc8477_t *drv)
     return drv->irq;
 }
 
-void pc8477d_store(drive_context_t *drv, uint16_t addr, uint8_t byte)
+void pc8477d_store(diskunit_context_t *drv, uint16_t addr, uint8_t byte)
 {
+    drv->cpu->cpu_last_data = byte;
     pc8477_store(drv->pc8477, (uint16_t)(addr & 7), byte);
 }
 
-uint8_t pc8477d_read(drive_context_t *drv, uint16_t addr)
+uint8_t pc8477d_read(diskunit_context_t *drv, uint16_t addr)
 {
-    return pc8477_read(drv->pc8477, (uint16_t)(addr & 7));
+    return drv->cpu->cpu_last_data = pc8477_read(drv->pc8477, (uint16_t)(addr & 7));
 }
 
-uint8_t pc8477d_peek(drive_context_t *drv, uint16_t addr)
+uint8_t pc8477d_peek(diskunit_context_t *drv, uint16_t addr)
 {
     return pc8477_peek(drv->pc8477, (uint16_t)(addr & 7));
 }
@@ -1278,7 +1294,7 @@ uint8_t pc8477d_peek(drive_context_t *drv, uint16_t addr)
 
 int pc8477_attach_image(disk_image_t *image, unsigned int unit)
 {
-    if (unit < 8 || unit > 8 + DRIVE_NUM) {
+    if (unit < 8 || unit > 8 + NUM_DISK_UNITS) {
         return -1;
     }
 
@@ -1287,19 +1303,19 @@ int pc8477_attach_image(disk_image_t *image, unsigned int unit)
         case DISK_IMAGE_TYPE_D1M:
         case DISK_IMAGE_TYPE_D2M:
         case DISK_IMAGE_TYPE_D4M:
-            disk_image_attach_log(image, pc8477_log, unit);
+            disk_image_attach_log(image, pc8477_log, unit, 0);
             break;
         default:
             return -1;
     }
 
-    fdd_image_attach(drive_context[unit - 8]->pc8477->fdds[1].fdd, image);
+    fdd_image_attach(diskunit_context[unit - 8]->pc8477->fdds[1].fdd, image);
     return 0;
 }
 
 int pc8477_detach_image(disk_image_t *image, unsigned int unit)
 {
-    if (image == NULL || unit < 8 || unit > 8 + DRIVE_NUM) {
+    if (image == NULL || unit < 8 || unit > 8 + NUM_DISK_UNITS) {
         return -1;
     }
 
@@ -1308,12 +1324,12 @@ int pc8477_detach_image(disk_image_t *image, unsigned int unit)
         case DISK_IMAGE_TYPE_D1M:
         case DISK_IMAGE_TYPE_D2M:
         case DISK_IMAGE_TYPE_D4M:
-            disk_image_detach_log(image, pc8477_log, unit);
+            disk_image_detach_log(image, pc8477_log, unit, 0);
             break;
         default:
             return -1;
     }
 
-    fdd_image_detach(drive_context[unit - 8]->pc8477->fdds[1].fdd);
+    fdd_image_detach(diskunit_context[unit - 8]->pc8477->fdds[1].fdd);
     return 0;
 }

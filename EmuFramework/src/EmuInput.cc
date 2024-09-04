@@ -15,582 +15,665 @@
 
 #include <emuframework/EmuSystem.hh>
 #include <emuframework/EmuApp.hh>
-#include <emuframework/InputManagerView.hh>
-#include "privateInput.hh"
-#include "WindowData.hh"
-#include "EmuOptions.hh"
-#include <imagine/base/ApplicationContext.hh>
-#include <imagine/util/algorithm.h>
-#include <imagine/util/math/int.hh>
-#include <imagine/gfx/Renderer.hh>
-#include <cstdlib>
+#include <emuframework/EmuViewController.hh>
+#include <emuframework/AppKeyCode.hh>
+#include <emuframework/FilePicker.hh>
+#include <emuframework/Option.hh>
+#include "InputDeviceData.hh"
+#include "gui/ResetAlertView.hh"
+#include <emuframework/EmuOptions.hh>
+#include <imagine/logger/logger.h>
 
-struct RelPtr  // for Android trackball
+namespace EmuEx
 {
-	int x = 0, y = 0;
-	unsigned xAction = 0, yAction = 0;
-};
-static RelPtr relPtr{};
 
-std::list<InputDeviceSavedConfig> savedInputDevList{};
-std::list<KeyConfig> customKeyConfig{};
+constexpr SystemLogger log{"InputManager"};
 
-static void processRelPtr(EmuApp &app, Input::Event e)
+bool InputManager::handleKeyInput(EmuApp& app, KeyInfo keyInfo, const Input::Event &srcEvent)
 {
-	using namespace IG;
-	if(relPtr.x != 0 && sign(relPtr.x) != sign(e.pos().x))
+	if(!keyInfo.flags.appCode)
 	{
-		//logMsg("reversed trackball X direction");
-		relPtr.x = e.pos().x;
-		EmuSystem::handleInputAction(&app, Input::Action::RELEASED, relPtr.xAction);
+		handleSystemKeyInput(app, keyInfo, srcEvent.state(), srcEvent.metaKeyBits());
 	}
 	else
-		relPtr.x += e.pos().x;
-
-	if(e.pos().x)
 	{
-		relPtr.xAction = EmuSystem::translateInputAction(e.pos().x > 0 ? EmuControls::systemKeyMapStart+1 : EmuControls::systemKeyMapStart+3);
-		EmuSystem::handleInputAction(&app, Input::Action::PUSHED, relPtr.xAction);
-	}
-
-	if(relPtr.y != 0 && sign(relPtr.y) != sign(e.pos().y))
-	{
-		//logMsg("reversed trackball Y direction");
-		relPtr.y = e.pos().y;
-		EmuSystem::handleInputAction(&app, Input::Action::RELEASED, relPtr.yAction);
-	}
-	else
-		relPtr.y += e.pos().y;
-
-	if(e.pos().y)
-	{
-		relPtr.yAction = EmuSystem::translateInputAction(e.pos().y > 0 ? EmuControls::systemKeyMapStart+2 : EmuControls::systemKeyMapStart);
-		EmuSystem::handleInputAction(&app, Input::Action::PUSHED, relPtr.yAction);
-	}
-
-	//logMsg("trackball event %d,%d, rel ptr %d,%d", e.x, e.y, relPtr.x, relPtr.y);
-}
-
-void TurboInput::update(EmuApp *app)
-{
-	static const unsigned turboFrames = 4;
-
-	for(auto e : activeAction)
-	{
-		if(e.action)
+		for(auto c : keyInfo.codes)
 		{
-			if(clock == 0)
-			{
-				//logMsg("turbo push for player %d, action %d", e.player, e.action);
-				EmuSystem::handleInputAction(app, Input::Action::PUSHED, e.action);
-			}
-			else if(clock == turboFrames/2)
-			{
-				//logMsg("turbo release for player %d, action %d", e.player, e.action);
-				EmuSystem::handleInputAction(app, Input::Action::RELEASED, e.action);
-			}
+			if(handleAppActionKeyInput(app, {c, keyInfo.flags, srcEvent.state(), srcEvent.metaKeyBits()}, srcEvent))
+				return true;
 		}
 	}
-	clock++;
-	if(clock == turboFrames) clock = 0;
+	return false;
 }
 
-void commonUpdateInput()
+bool InputManager::handleAppActionKeyInput(EmuApp& app, InputAction action, const Input::Event &srcEvent)
 {
-#if 0
-	auto applyRelPointerDecel =
-		[](int val)
+	bool isPushed = action.state == Input::Action::PUSHED;
+	auto& viewController = app.viewController();
+	auto& system = app.system();
+	assert(action.flags.appCode);
+	using enum AppKeyCode;
+	switch(AppKeyCode(action.code))
+	{
+		case fastForward:
 		{
-			return std::max(std::abs(val) - (int)optionRelPointerDecel, 0) * IG::sign(val);
-		};
-
-	if(relPtr.x)
-	{
-		relPtr.x = applyRelPointerDecel(relPtr.x);
-		if(!relPtr.x)
-			EmuSystem::handleInputAction(Input::RELEASED, relPtr.xAction);
-	}
-	if(relPtr.y)
-	{
-		relPtr.y = applyRelPointerDecel(relPtr.y);
-		if(!relPtr.y)
-			EmuSystem::handleInputAction(Input::RELEASED, relPtr.yAction);
-	}
-#endif
-}
-
-void EmuApp::updateInputDevices(Base::ApplicationContext ctx)
-{
-	int i = 0;
-	inputDevConf.clear();
-	for(auto &e : ctx.inputDevices())
-	{
-		logMsg("input device %d: name: %s, id: %d, map: %d", i, e->name(), e->enumId(), (int)e->map());
-		inputDevConf.emplace_back(e);
-		for(auto &saved : savedInputDevList)
-		{
-			if(saved.matchesDevice(*e))
-			{
-				logMsg("has saved config");
-				inputDevConf.back().setSavedConf(&saved);
-			}
+			viewController.inputView.setAltSpeedMode(AltSpeedMode::fast, isPushed);
 		}
-		i++;
-	}
-	onUpdateInputDevices_.callCopySafe();
-	keyMapping.buildAll(inputDevConf, ctx.inputDevices());
-}
-
-void EmuApp::setOnUpdateInputDevices(DelegateFunc<void ()> del)
-{
-	if(del)
-	{
-		assert(!onUpdateInputDevices_);
-	}
-	onUpdateInputDevices_ = del;
-}
-
-// KeyConfig
-
-const KeyConfig &KeyConfig::defaultConfigForDevice(const Input::Device &dev)
-{
-	switch(dev.map())
-	{
-		default: return defaultConfigsForDevice(dev)[0];
-		case Input::Map::SYSTEM:
+		break;
+		case openContent:
 		{
-			#if defined CONFIG_BASE_ANDROID || defined CONFIG_BASE_X11
-			unsigned confs = 0;
-			auto conf = defaultConfigsForDevice(dev, confs);
-			iterateTimes(confs, i)
-			{
-				// Look for the first config to match the device subtype
-				if(dev.subtype() == conf[i].devSubtype)
-				{
-					return conf[i];
-				}
-			}
-			#endif
-			return defaultConfigsForDevice(dev)[0];
-		}
-	}
-}
-
-const KeyConfig *KeyConfig::defaultConfigsForInputMap(Input::Map map, unsigned &size)
-{
-	switch(map)
-	{
-		default: return nullptr;
-		case Input::Map::SYSTEM:
-			size = EmuControls::defaultKeyProfiles;
-			return EmuControls::defaultKeyProfile;
-		#ifdef CONFIG_BLUETOOTH
-		case Input::Map::WIIMOTE:
-			size = EmuControls::defaultWiimoteProfiles;
-			return EmuControls::defaultWiimoteProfile;
-		case Input::Map::WII_CC:
-			size = EmuControls::defaultWiiCCProfiles;
-			return EmuControls::defaultWiiCCProfile;
-		case Input::Map::ICONTROLPAD:
-			size = EmuControls::defaultIControlPadProfiles;
-			return EmuControls::defaultIControlPadProfile;
-		case Input::Map::ZEEMOTE:
-			size = EmuControls::defaultZeemoteProfiles;
-			return EmuControls::defaultZeemoteProfile;
-		#endif
-		#ifdef CONFIG_BLUETOOTH_SERVER
-		case Input::Map::PS3PAD:
-			size = EmuControls::defaultPS3Profiles;
-			return EmuControls::defaultPS3Profile;
-		#endif
-		#ifdef CONFIG_INPUT_ICADE
-		case Input::Map::ICADE:
-			size = EmuControls::defaultICadeProfiles;
-			return EmuControls::defaultICadeProfile;
-		#endif
-		#ifdef CONFIG_INPUT_APPLE_GAME_CONTROLLER
-		case Input::Map::APPLE_GAME_CONTROLLER:
-			size = EmuControls::defaultAppleGCProfiles;
-			return EmuControls::defaultAppleGCProfile;
-		#endif
-	}
-}
-
-const KeyConfig *KeyConfig::defaultConfigsForDevice(const Input::Device &dev, unsigned &size)
-{
-	auto conf = defaultConfigsForInputMap(dev.map(), size);
-	if(!conf)
-	{
-		bug_unreachable("device map:%d missing default configs", (int)dev.map());
-		return nullptr;
-	}
-	return conf;
-}
-
-const KeyConfig *KeyConfig::defaultConfigsForDevice(const Input::Device &dev)
-{
-	unsigned size;
-	return defaultConfigsForDevice(dev, size);
-}
-
-// InputDeviceConfig
-
-template <size_t S>
-void uniqueCustomConfigName(char (&name)[S])
-{
-	iterateTimes(99, i) // Try up to "Custom 99"
-	{
-		string_printf(name, "Custom %d", i+1);
-		// Check if this name is free
-		logMsg("checking %s", name);
-		bool exists = 0;
-		for(auto &e : customKeyConfig)
-		{
-			logMsg("against %s", e.name);
-			if(string_equal(e.name, name))
-			{
-				exists = 1;
+			if(!isPushed)
 				break;
+			log.info("show load game view from key event");
+			viewController.popToRoot();
+			viewController.pushAndShow(FilePicker::forLoading(app.attachParams(), srcEvent), srcEvent, false);
+			return true;
+		}
+		case closeContent:
+		{
+			if(!isPushed)
+				break;
+			viewController.pushAndShowModal(app.makeCloseContentView(), srcEvent, false);
+			return true;
+		}
+		case openSystemActions:
+		{
+			if(!isPushed)
+				break;
+			log.info("show system actions view from key event");
+			app.showSystemActionsViewFromSystem(app.attachParams(), srcEvent);
+			return true;
+		}
+		case saveState:
+		{
+			if(!isPushed)
+				break;
+			static auto doSaveState = [](EmuApp &app, bool notify){	app.saveStateWithSlot(app.system().stateSlot(), notify); };
+			if(app.shouldOverwriteExistingState())
+			{
+				doSaveState(app, app.confirmOverwriteState);
+			}
+			else
+			{
+				viewController.pushAndShowModal(std::make_unique<YesNoAlertView>(app.attachParams(), "Really Overwrite State?",
+					YesNoAlertView::Delegates
+					{
+						.onYes = [&app]
+						{
+							doSaveState(app, false);
+							app.showEmulation();
+						},
+						.onNo = [&app]{ app.showEmulation(); }
+					}), srcEvent, false);
+			}
+			return true;
+		}
+		case loadState:
+		{
+			if(!isPushed)
+				break;
+			app.loadStateWithSlot(system.stateSlot());
+			return true;
+		}
+		case decStateSlot:
+		{
+			if(!isPushed)
+				break;
+			auto suspendCtx = app.suspendEmulationThread();
+			system.decStateSlot();
+			app.postMessage(1, false, std::format("State Slot: {}", system.stateSlotName()));
+			return true;
+		}
+		case incStateSlot:
+		{
+			if(!isPushed)
+				break;
+			auto suspendCtx = app.suspendEmulationThread();
+			system.incStateSlot();
+			app.postMessage(1, false, std::format("State Slot: {}", system.stateSlotName()));
+			return true;
+		}
+		case takeScreenshot:
+		{
+			if(!isPushed)
+				break;
+			app.video.takeGameScreenshot();
+			return true;
+		}
+		case toggleFastForward:
+		{
+			if(!isPushed)
+				break;
+			viewController.inputView.toggleAltSpeedMode(AltSpeedMode::fast);
+		}
+		break;
+		case openMenu:
+		{
+			if(!isPushed)
+				break;
+			log.info("show last view from key event");
+			app.showLastViewFromSystem(app.attachParams(), srcEvent);
+			return true;
+		}
+		case turboModifier:
+		{
+			turboModifierActive = isPushed;
+			if(!isPushed)
+				turboActions = {};
+		}
+		break;
+		case exitApp:
+		{
+			if(!isPushed)
+				break;
+			viewController.pushAndShowModal(std::make_unique<YesNoAlertView>(app.attachParams(), "Really Exit?",
+				YesNoAlertView::Delegates{.onYes = [&app]{ app.appContext().exit(); }}), srcEvent, false);
+		}
+		break;
+		case slowMotion:
+		{
+			viewController.inputView.setAltSpeedMode(AltSpeedMode::slow, isPushed);
+		}
+		break;
+		case toggleSlowMotion:
+		{
+			if(!isPushed)
+				break;
+			viewController.inputView.toggleAltSpeedMode(AltSpeedMode::slow);
+		}
+		break;
+		case rewind:
+		{
+			if(!isPushed)
+				break;
+			if(app.rewindManager.maxStates)
+			{
+				app.rewindManager.rewindState(app);
+			}
+			else
+			{
+				auto suspendCtx = app.suspendEmulationThread();
+				app.postMessage(3, false, "Please set rewind states in Options➔System");
 			}
 		}
-		if(!exists)
-			break;
-	}
-	logMsg("unique custom key config name: %s", name);
-}
-
-void InputDeviceConfig::deleteConf()
-{
-	if(savedConf)
-	{
-		logMsg("removing device config for %s", savedConf->name);
-		auto removed = IG::eraseFirst(savedInputDevList, *savedConf);
-		assert(removed);
-		savedConf = nullptr;
-	}
-}
-
-#ifdef CONFIG_INPUT_ICADE
-bool InputDeviceConfig::setICadeMode(bool on)
-{
-	// delete device's config since its properties will change with iCade mode switch
-	deleteConf();
-	dev->setICadeMode(on);
-	save();
-	if(!savedConf)
-	{
-		logErr("can't save iCade mode");
-		return 0;
-	}
-	savedConf->iCadeMode = on;
-	return 1;
-}
-
-bool InputDeviceConfig::iCadeMode()
-{
-	return dev->iCadeMode();
-}
-#endif
-
-unsigned InputDeviceConfig::joystickAxisAsDpadBits()
-{
-	return dev->joystickAxisAsDpadBits();
-}
-
-void InputDeviceConfig::setJoystickAxisAsDpadBits(unsigned axisMask)
-{
-	dev->setJoystickAxisAsDpadBits(axisMask);
-}
-
-const KeyConfig &InputDeviceConfig::keyConf() const
-{
-	if(savedConf && savedConf->keyConf)
-	{
-		//logMsg("has saved config %p", savedConf->keyConf_);
-		return *savedConf->keyConf;
-	}
-	assert(dev);
-	return KeyConfig::defaultConfigForDevice(*dev);
-}
-
-void InputDeviceConfig::setKeyConf(const KeyConfig &kConf)
-{
-	save();
-	savedConf->keyConf = &kConf;
-}
-
-void InputDeviceConfig::setDefaultKeyConf()
-{
-	if(savedConf)
-	{
-		savedConf->keyConf = nullptr;
-	}
-}
-
-KeyConfig *InputDeviceConfig::mutableKeyConf()
-{
-	auto currConf = &keyConf();
-	//logMsg("curr key config %p", currConf);
-	for(auto &e : customKeyConfig)
-	{
-		//logMsg("checking key config %p", &e);
-		if(&e == currConf)
+		break;
+		case softReset:
 		{
-			return &e;
+			if(!isPushed)
+				break;
+			auto suspendCtx = app.suspendEmulationThread();
+			system.reset(app, EmuSystem::ResetMode::SOFT);
+		}
+		break;
+		case hardReset:
+		{
+			if(!isPushed)
+				break;
+			auto suspendCtx = app.suspendEmulationThread();
+			system.reset(app, EmuSystem::ResetMode::HARD);
+		}
+		break;
+		case resetMenu:
+		{
+			if(!isPushed)
+				break;
+			viewController.pushAndShowModal(resetAlertView(app.attachParams(), app), srcEvent, false);
+		}
+		break;
+	}
+	return false;
+}
+
+void InputManager::handleSystemKeyInput(EmuApp& app, KeyInfo keyInfo, Input::Action act, uint32_t metaState, SystemKeyInputFlags flags)
+{
+	if(flags.allowTurboModifier && turboModifierActive && std::ranges::all_of(keyInfo.codes, app.allowsTurboModifier))
+		keyInfo.flags.turbo = 1;
+	if(keyInfo.flags.toggle)
+	{
+		toggleInput.updateEvent(app, keyInfo, act);
+	}
+	else if(keyInfo.flags.turbo)
+	{
+		turboActions.updateEvent(app, keyInfo, act);
+	}
+	else
+	{
+		app.defaultVController().updateSystemKeys(keyInfo, act == Input::Action::PUSHED);
+		for(auto code : keyInfo.codes)
+		{
+			app.system().handleInputAction(&app, {code, keyInfo.flags, act, metaState});
 		}
 	}
-	return nullptr;
 }
 
-KeyConfig *InputDeviceConfig::makeMutableKeyConf(EmuApp &app)
+void InputManager::updateInputDevices(ApplicationContext ctx)
 {
-	auto conf = mutableKeyConf();
-	if(!conf)
+	for(auto &devPtr : ctx.inputDevices())
 	{
-		logMsg("current config not mutable, creating one");
-		char name[96];
-		uniqueCustomConfigName(name);
-		conf = setKeyConfCopiedFromExisting(name);
-		app.printfMessage(3, false, "Automatically created profile: %s", conf->name);
+		log.info("input device:{}, id:{}, map:{}", devPtr->name(), devPtr->enumId(), (int)devPtr->map());
+		devPtr->makeAppData<InputDeviceData>(*this, *devPtr);
 	}
-	return conf;
+	vController.setPhysicalControlsPresent(ctx.keyInputIsPresent());
+	onUpdateDevices.callCopySafe();
 }
 
-KeyConfig *InputDeviceConfig::setKeyConfCopiedFromExisting(const char *name)
+KeyConfig* InputManager::customKeyConfig(std::string_view name, const Input::Device &dev) const
 {
-	customKeyConfig.emplace_back();
-	auto &newConf = customKeyConfig.back();
-	newConf = keyConf();
-	string_copy(newConf.name, name);
-	setKeyConf(newConf);
-	return &newConf;
+	return findPtr(customKeyConfigs, [&](auto &ptr){ return ptr->name == name && ptr->desc().map == dev.map(); });
 }
 
-void InputDeviceConfig::save()
+KeyConfigDesc InputManager::keyConfig(std::string_view name, const Input::Device &dev) const
 {
-	if(!savedConf)
+	auto conf = customKeyConfig(name, dev);
+	if(conf)
+		return conf->desc();
+	for(auto &conf : EmuApp::defaultKeyConfigs())
 	{
-		savedInputDevList.emplace_back();
-		logMsg("allocated new device config, %d total", (int)savedInputDevList.size());
-		savedConf = &savedInputDevList.back();
-		*savedConf = InputDeviceSavedConfig();
+		if(conf.name == name && conf.map == dev.map())
+			return conf;
 	}
-	savedConf->player = player;
-	savedConf->enabled = enabled;
-	savedConf->enumId = dev->enumId();
-	savedConf->joystickAxisAsDpadBits = dev->joystickAxisAsDpadBits();
-	#ifdef CONFIG_INPUT_ICADE
-	savedConf->iCadeMode = dev->iCadeMode();
-	#endif
-	string_copy(savedConf->name, dev->name());
+	return {};
 }
 
-void InputDeviceConfig::setSavedConf(InputDeviceSavedConfig *savedConf)
+static void removeKeyConfFromAllDevices(InputManager &inputManager, std::string_view conf, ApplicationContext ctx)
 {
-	this->savedConf = savedConf;
-	if(savedConf)
+	log.info("removing saved key config {} from all devices", conf);
+	for(auto &ePtr : inputManager.savedDevConfigs)
 	{
-		player = savedConf->player;
-		enabled = savedConf->enabled;
-		dev->setJoystickAxisAsDpadBits(savedConf->joystickAxisAsDpadBits);
-		#ifdef CONFIG_INPUT_ICADE
-		dev->setICadeMode(savedConf->iCadeMode);
-		#endif
+		auto &e = *ePtr;
+		if(e.keyConfName == conf)
+		{
+			log.info("used by saved device config {},{}", e.name, e.enumId);
+			e.keyConfName.clear();
+		}
+		if(auto ptr = findPtr(ctx.inputDevices(), [&](auto &devPtr){ return e.matchesDevice(*devPtr); });
+			ptr)
+		{
+			inputDevData(*ptr).buildKeyMap(inputManager, *ptr);
+		}
 	}
 }
 
-bool InputDeviceConfig::setKey(EmuApp &app, Input::Key mapKey, const KeyCategory &cat, int keyIdx)
+void InputManager::deleteKeyProfile(ApplicationContext ctx, KeyConfig *profile)
 {
-	auto conf = makeMutableKeyConf(app);
-	if(!conf)
-		return false;
-	auto &keyEntry = conf->key(cat)[keyIdx];
-	logMsg("changing key mapping from %s (0x%X) to %s (0x%X)",
-			dev->keyName(keyEntry), keyEntry, dev->keyName(mapKey), mapKey);
-	keyEntry = mapKey;
+	removeKeyConfFromAllDevices(*this, profile->name, ctx);
+	std::erase_if(customKeyConfigs, [&](auto &confPtr){ return confPtr.get() == profile; });
+}
+
+template<class SavedConfig>
+static void deleteDeviceSavedConfigImpl(InputManager &mgr, ApplicationContext ctx, const SavedConfig& savedConf, auto& savedConfs)
+{
+	for(auto &devPtr : ctx.inputDevices())
+	{
+		auto &inputDevConf = inputDevData(*devPtr).devConf;
+		if(inputDevConf.hasSavedConf(savedConf))
+		{
+			log.info("removing from active device");
+			inputDevConf.setSavedConf(mgr, (SavedConfig*){});
+			break;
+		}
+	}
+	std::erase_if(savedConfs, [&](auto &ptr){ return ptr.get() == &savedConf; });
+}
+
+void InputManager::deleteDeviceSavedConfig(ApplicationContext ctx, const InputDeviceSavedConfig& savedConf)
+{
+	log.info("deleting device settings for:{},{}", savedConf.name, savedConf.enumId);
+	deleteDeviceSavedConfigImpl(*this, ctx, savedConf, savedDevConfigs);
+}
+
+void InputManager::deleteDeviceSavedConfig(ApplicationContext ctx, const InputDeviceSavedSessionConfig& savedConf)
+{
+	log.info("deleting session device settings for:{},{}", savedConf.name, savedConf.enumId);
+	deleteDeviceSavedConfigImpl(*this, ctx, savedConf, savedSessionDevConfigs);
+}
+
+void InputManager::writeCustomKeyConfigs(FileIO &io) const
+{
+	for(const auto &c : customKeyConfigs)
+	{
+		c->writeConfig(io);
+	}
+}
+
+void InputManager::writeSavedInputDevices(ApplicationContext ctx, FileIO &io) const
+{
+	if(!savedDevConfigs.size())
+		return;
+	// compute total size
+	ssize_t bytes = 2; // config key size
+	bytes += 1; // number of configs
+	for(auto &ePtr : savedDevConfigs)
+	{
+		auto &e = *ePtr;
+		bytes += 1; // device id
+		bytes += 1; // enabled
+		bytes += 1; // player
+		bytes += 1; // mapJoystickAxis1ToDpad
+		if(hasICadeInput)
+			bytes += 1; // iCade mode
+		bytes += sizedDataBytes<uint8_t>(e.name);
+		bytes += 1; // key config map
+		bytes += sizedDataBytes<uint8_t>(e.keyConfName);
+	}
+	if(bytes > 0xFFFF)
+	{
+		bug_unreachable("excessive input device config size, should not happen");
+	}
+	// write to config file
+	log.info("saving {} input device configs, {} bytes", savedDevConfigs.size(), bytes);
+	io.put(uint16_t(bytes));
+	io.put(uint16_t(CFGKEY_INPUT_DEVICE_CONFIGS));
+	io.put(uint8_t(savedDevConfigs.size()));
+	for(auto &ePtr : savedDevConfigs)
+	{
+		auto &e = *ePtr;
+		log.info("writing config {}, id {}", e.name, e.enumId);
+		uint8_t enumIdWithFlags = e.enumId;
+		if(e.handleUnboundEvents)
+			enumIdWithFlags |= e.HANDLE_UNBOUND_EVENTS_FLAG;
+		io.put(uint8_t(enumIdWithFlags));
+		io.put(uint8_t(e.enabled));
+		io.put(uint8_t(e.player));
+		io.put(std::bit_cast<uint8_t>(e.joystickAxisAsDpadFlags));
+		if(hasICadeInput)
+			io.put(uint8_t(e.iCadeMode));
+		writeSizedData<uint8_t>(io, e.name);
+		auto devPtr = ctx.inputDevice(e.name, e.enumId);
+		uint8_t keyConfMap = devPtr ? (uint8_t)devPtr->map() : 0;
+		io.put(keyConfMap);
+		if(e.keyConfName.size())
+		{
+			log.info("has key conf {}, map {}", e.keyConfName, keyConfMap);
+		}
+		writeSizedData<uint8_t>(io, e.keyConfName);
+	}
+}
+
+bool InputManager::readCustomKeyConfig(MapIO &io)
+{
+	auto conf = KeyConfig::readConfig(io);
+	if(conf)
+	{
+		customKeyConfigs.emplace_back(std::make_unique<KeyConfig>(conf));
+	}
 	return true;
 }
 
-// KeyMapping
-
-void KeyMapping::buildAll(const std::vector<InputDeviceConfig> &inputDevConf, const Base::InputDeviceContainer &inputDevices)
+bool InputManager::readSavedInputDevices(MapIO &io)
 {
-	if(!inputDevConf.size())
+	auto confs = io.get<uint8_t>();
+	for([[maybe_unused]] auto confIdx : iotaCount(confs))
+	{
+		InputDeviceSavedConfig devConf;
+		auto enumIdWithFlags = io.get<uint8_t>();
+		devConf.handleUnboundEvents = enumIdWithFlags & devConf.HANDLE_UNBOUND_EVENTS_FLAG;
+		devConf.enumId = enumIdWithFlags & devConf.ENUM_ID_MASK;
+		devConf.enabled = io.get<uint8_t>();
+		devConf.player = io.get<uint8_t>();
+		if(devConf.player != playerIndexMulti && devConf.player > EmuSystem::maxPlayers)
+		{
+			log.warn("player {} out of range", devConf.player);
+			devConf.player = 0;
+		}
+		devConf.joystickAxisAsDpadFlags = std::bit_cast<AxisAsDpadFlags>(io.get<uint8_t>());
+		if(hasICadeInput)
+		{
+			devConf.iCadeMode = io.get<uint8_t>();
+		}
+		readSizedData<uint8_t>(io, devConf.name);
+		if(devConf.name.empty())
+		{
+			log.error("unexpected 0 length device name");
+			return false;
+		}
+		[[maybe_unused]] auto keyConfMap = Input::validateMap(io.get<uint8_t>());
+		readSizedData<uint8_t>(io, devConf.keyConfName);
+		if(!find(savedDevConfigs, [&](const auto &confPtr){ return *confPtr == devConf;}))
+		{
+			log.info("read input device config:{}, id:{}", devConf.name, devConf.enumId);
+			savedDevConfigs.emplace_back(std::make_unique<InputDeviceSavedConfig>(std::move(devConf)));
+		}
+		else
+		{
+			log.warn("ignoring duplicate input device config:{}, id:{}", devConf.name, devConf.enumId);
+		}
+	}
+	return true;
+}
+
+void InputManager::resetSessionOptions(ApplicationContext ctx)
+{
+	for(auto& devPtr: ctx.inputDevices())
+	{
+		inputDevData(*devPtr).devConf.setSavedConf(*this, (InputDeviceSavedSessionConfig*){});
+	}
+	savedSessionDevConfigs.clear();
+}
+
+bool InputManager::readSessionConfig(ApplicationContext ctx, MapIO& io, uint16_t key)
+{
+	if(key == CFGKEY_INPUT_DEVICE_CONTENT_CONFIGS)
+	{
+		readInputDeviceSessionConfigs(ctx, io);
+		return true;
+	}
+	return false;
+}
+
+void InputManager::writeSessionConfig(FileIO& io) const
+{
+	writeInputDeviceSessionConfigs(io);
+}
+
+void InputManager::writeInputDeviceSessionConfigs(FileIO &io) const
+{
+	if(!savedSessionDevConfigs.size())
 		return;
-	assert(inputDevConf.size() == inputDevices.size());
-	inputDevActionTable.resize(0);
-	inputDevActionTablePtr = std::make_unique<ActionGroup*[]>(inputDevices.size());
-	// calculate & allocate complete map including all devices
+	// compute total size
+	ssize_t bytes = 2; // config key size
+	bytes += 1; // number of configs
+	for(auto &ePtr : savedSessionDevConfigs)
 	{
-		unsigned totalKeys = 0;
-		for(auto &e : inputDevices)
-		{
-			totalKeys += Input::Event::mapNumKeys(e->map());
-		}
-		if(!totalKeys) [[unlikely]]
-		{
-			logMsg("no keys in mapping");
-			inputDevActionTablePtr[0] = nullptr;
-			return;
-		}
-		logMsg("allocating key mapping with %d keys", totalKeys);
-		inputDevActionTable.resize(totalKeys);
+		auto &e = *ePtr;
+		bytes += 1; // device id
+		bytes += 1; // player
+		bytes += sizedDataBytes<uint8_t>(e.name);
+		bytes += sizedDataBytes<uint8_t>(e.keyConfName);
 	}
-	unsigned totalKeys = 0;
-	int i = 0;
-	for(auto &e : inputDevices)
+	if(bytes > 0xFFFF)
 	{
-		// set the offset for this device from the full action table
-		inputDevActionTablePtr[i] = &inputDevActionTable[totalKeys];
-		auto mapKeys = Input::Event::mapNumKeys(e->map());
-		totalKeys += mapKeys;
-		auto actionGroup = inputDevActionTablePtr[i];
-		if(!inputDevConf[i].enabled)
-		{
-			i++;
-			continue;
-		}
-		KeyConfig::KeyArray key = inputDevConf[i].keyConf().key();
-		if(inputDevConf[i].player != InputDeviceConfig::PLAYER_MULTI)
-		{
-			logMsg("transposing keys for player %d", inputDevConf[i].player+1);
-			EmuControls::transposeKeysForPlayer(key, inputDevConf[i].player);
-		}
-		iterateTimes(MAX_KEY_CONFIG_KEYS, k)
-		{
-			//logMsg("mapping key %d to %u %s", k, key, Input::buttonName(inputDevConf[i].dev->map, key[k]));
-			assert(key[k] < Input::Event::mapNumKeys(e->map()));
-			auto &group = actionGroup[key[k]];
-			auto slot = IG::find_if(group, [](Action a){ return a == 0; });
-			if(slot != group.end())
-				*slot = k+1; // add 1 to avoid 0 value (considered unmapped)
-		}
-
-		i++;
+		bug_unreachable("excessive input device config size, should not happen");
+	}
+	// write to config file
+	log.info("saving {} input device content configs, {} bytes", savedSessionDevConfigs.size(), bytes);
+	io.put(uint16_t(bytes));
+	io.put(uint16_t(CFGKEY_INPUT_DEVICE_CONTENT_CONFIGS));
+	io.put(uint8_t(savedSessionDevConfigs.size()));
+	for(auto &ePtr : savedSessionDevConfigs)
+	{
+		auto &e = *ePtr;
+		log.info("writing config {}, id {}", e.name, e.enumId);
+		io.put(uint8_t(e.enumId));
+		io.put(int8_t(e.player));
+		writeSizedData<uint8_t>(io, e.name);
+		writeSizedData<uint8_t>(io, e.keyConfName);
 	}
 }
 
-void KeyMapping::free()
+bool InputManager::readInputDeviceSessionConfigs(ApplicationContext ctx, MapIO &io)
 {
-	inputDevActionTable.resize(0);
-	inputDevActionTablePtr.reset();
-}
-
-KeyMapping::operator bool() const
-{
-	return (bool)inputDevActionTablePtr;
-}
-
-namespace EmuControls
-{
-
-void generic2PlayerTranspose(KeyConfig::KeyArray &key, unsigned player, unsigned startCategory)
-{
-	if(player == 0)
+	savedSessionDevConfigs.clear();
+	auto confs = io.get<uint8_t>();
+	for([[maybe_unused]] auto confIdx : iotaCount(confs))
 	{
-		// clear P2 joystick keys
-		std::fill_n(&key[category[startCategory+1].configOffset], category[startCategory+1].keys, 0);
-	}
-	else
-	{
-		// transpose joystick keys
-		std::copy_n(&key[category[startCategory].configOffset], category[startCategory].keys, &key[category[startCategory+1].configOffset]);
-		std::fill_n(&key[category[startCategory].configOffset], category[startCategory].keys, 0);
-	}
-}
-
-void genericMultiplayerTranspose(KeyConfig::KeyArray &key, unsigned player, unsigned startCategory)
-{
-	iterateTimes(EmuSystem::maxPlayers, i)
-	{
-		if(player && i == player)
+		InputDeviceSavedSessionConfig devConf;
+		devConf.enumId = io.get<uint8_t>();
+		devConf.player = io.get<int8_t>();
+		if(devConf.player != playerIndexMulti && devConf.player != playerIndexUnset && devConf.player > EmuSystem::maxPlayers)
 		{
-			//logMsg("moving to player %d map", i);
-			std::copy_n(&key[category[startCategory].configOffset], category[startCategory].keys, &key[category[i+startCategory].configOffset]);
-			std::fill_n(&key[category[startCategory].configOffset], category[startCategory].keys, 0);
+			log.warn("player {} out of range", devConf.player);
+			devConf.player = playerIndexUnset;
 		}
-		else if(i)
+		readSizedData<uint8_t>(io, devConf.name);
+		if(devConf.name.empty())
 		{
-			//logMsg("clearing player %d map", i);
-			std::fill_n(&key[category[i+startCategory].configOffset], category[i+startCategory].keys, 0);
+			log.error("unexpected 0 length device name");
+			return false;
+		}
+		readSizedData<uint8_t>(io, devConf.keyConfName);
+		if(!find(savedSessionDevConfigs, [&](const auto &conf){ return *conf == devConf;}))
+		{
+			log.info("read input device content config:{}, id:{}", devConf.name, devConf.enumId);
+			auto& confPtr = savedSessionDevConfigs.emplace_back(std::make_unique<InputDeviceSavedSessionConfig>(std::move(devConf)));
+			for(auto& devPtr: ctx.inputDevices())
+			{
+				if(confPtr->matchesDevice(*devPtr))
+				{
+					log.info("{} has saved session config", devPtr->name());
+					inputDevData(*devPtr).devConf.setSavedConf(*this, confPtr.get());
+					break;
+				}
+			}
+		}
+		else
+		{
+			log.warn("ignoring duplicate input device content config:{}, id:{}", devConf.name, devConf.enumId);
 		}
 	}
+	return true;
 }
 
-}
-
-void EmuApp::applyEnabledFaceButtons(std::span<const std::pair<int, bool>> applyEnableMap)
+KeyConfigDesc InputManager::defaultConfig(const Input::Device &dev) const
 {
-	if constexpr(Config::EmuFramework::VCONTROLS_GAMEPAD)
+	KeyConfigDesc firstConfig{}, firstSubtypeConfig{};
+	for(const auto &conf : EmuApp::defaultKeyConfigs())
 	{
-		auto &vController = defaultVController();
-		auto &btnGroup = vController.gamePad().faceButtons();
-		for(auto [idx, enabled] : applyEnableMap)
-		{
-			btnGroup.buttons()[idx].setEnabled(enabled);
-		}
-		if(!vController.hasWindow())
-			return;
-		vController.place();
-		EmuSystem::clearInputBuffers(emuViewController->inputView());
+		if(dev.map() == conf.map && !firstConfig)
+			firstConfig = conf;
+		if(dev.subtype() == conf.devSubtype && !firstSubtypeConfig)
+			firstSubtypeConfig = conf;
 	}
+	return firstSubtypeConfig ?: firstConfig;
 }
 
-void EmuApp::updateKeyboardMapping()
+KeyInfo InputManager::transpose(KeyInfo c, int index) const
 {
-	defaultVController().updateKeyboardMapping();
+	if(index != playerIndexMulti)
+		c.flags.deviceId = index;
+	return c;
 }
 
-void EmuApp::toggleKeyboard()
+std::string InputManager::toString(KeyInfo k) const
 {
-	defaultVController().toggleKeyboard();
-}
-
-void EmuApp::updateVControllerMapping()
-{
-	defaultVController().updateMapping();
-}
-
-void TurboInput::addEvent(unsigned action)
-{
-	Action *slot = IG::find_if(activeAction, [](Action a){ return a == 0; });
-	if(slot != activeAction.end())
+	std::string s{toString(k.codes[0], k.flags)};
+	for(const auto &c : k.codes | std::ranges::views::drop(1))
 	{
-		slot->action = action;
-		logMsg("added turbo event action %d", action);
+		s += " + ";
+		s += toString(c, k.flags);
 	}
+	if(k.flags.turbo && k.flags.toggle)
+		s += " (Turbo Toggle)";
+	else if(k.flags.turbo)
+		s += " (Turbo)";
+	else if(k.flags.toggle)
+		s += " (Toggle)";
+	return s;
 }
 
-void TurboInput::removeEvent(unsigned action)
+std::string InputManager::toString(KeyCode c, KeyFlags flags) const
 {
-	for(auto &e : activeAction)
+	if(flags.appCode)
+		return std::string{EmuEx::toString(AppKeyCode(c))};
+	return std::string{EmuApp::systemKeyCodeToString(c)};
+}
+
+void InputManager::updateKeyboardMapping()
+{
+	vController.updateKeyboardMapping();
+}
+
+void InputManager::toggleKeyboard()
+{
+	vController.resetHighlightedKeys();
+	vController.toggleKeyboard();
+}
+
+void EmuApp::setDisabledInputKeys(std::span<const KeyCode> keys)
+{
+	auto &vController = inputManager.vController;
+	vController.setDisabledInputKeys(keys);
+	if(!vController.hasWindow())
+		return;
+	vController.place();
+	system().clearInputBuffers(viewController().inputView);
+}
+
+void EmuApp::unsetDisabledInputKeys()
+{
+	setDisabledInputKeys({});
+}
+
+bool InputDeviceSavedConfig::matchesDevice(const Input::Device& dev) const
+{
+	return dev.enumId() == enumId && dev.name() == name;
+}
+
+bool InputDeviceSavedSessionConfig::matchesDevice(const Input::Device& dev) const
+{
+	return dev.enumId() == enumId && dev.name() == name;
+}
+
+const KeyCategory *InputManager::categoryOfKeyCode(KeyInfo key) const
+{
+	if(key.isAppKey())
+		return &appKeyCategory;
+	for(const auto &cat : EmuApp::keyCategories())
 	{
-		if(e.action == action)
-		{
-			e.action = 0;
-			logMsg("removed turbo event action %d", action);
-		}
+		if(find(cat.keys, [&](auto &k) { return k.codes == key.codes; }))
+			return &cat;
 	}
+	return {};
 }
 
-bool KeyConfig::operator ==(KeyConfig const& rhs) const
+KeyInfo InputManager::validateSystemKey(KeyInfo key, bool isUIKey) const
 {
-	return string_equal(name, rhs.name);
+	if(!categoryOfKeyCode(key))
+	{
+		log.warn("resetting invalid system key:{}", key.codes[0]);
+		if(isUIKey)
+			return appKeyCategory.keys[0];
+		else
+			return EmuApp::keyCategories()[0].keys[0];
+	}
+	return key;
 }
 
-KeyConfig::Key *KeyConfig::key(const KeyCategory &category)
+std::string_view toString(AppKeyCode code)
 {
-	assert(category.configOffset + category.keys <= MAX_KEY_CONFIG_KEYS);
-	return &key_[category.configOffset];
+	switch(code)
+	{
+		case AppKeyCode::openContent: return "Open Content";
+		case AppKeyCode::closeContent: return "Close Content";
+		case AppKeyCode::openSystemActions: return "Open System Actions";
+		case AppKeyCode::saveState: return "Save State";
+		case AppKeyCode::loadState: return "Load State";
+		case AppKeyCode::decStateSlot: return "Decrement State Slot";
+		case AppKeyCode::incStateSlot: return "Increment State Slot";
+		case AppKeyCode::fastForward: return "Fast-forward";
+		case AppKeyCode::takeScreenshot: return "Take Screenshot";
+		case AppKeyCode::openMenu: return "Open Menu";
+		case AppKeyCode::toggleFastForward: return "Toggle Fast-forward";
+		case AppKeyCode::turboModifier: return "Turbo Modifier";
+		case AppKeyCode::exitApp: return "Exit App";
+		case AppKeyCode::slowMotion: return "Slow-motion";
+		case AppKeyCode::toggleSlowMotion: return "Toggle Slow-motion";
+		case AppKeyCode::rewind: return "Rewind One State";
+		case AppKeyCode::softReset: return "Soft Reset";
+		case AppKeyCode::hardReset: return "Hard Reset";
+		case AppKeyCode::resetMenu: return "Open Reset Menu";
+	};
+	return "";
 }
 
-const KeyConfig::Key *KeyConfig::key(const KeyCategory &category) const
-{
-	assert(category.configOffset + category.keys <= MAX_KEY_CONFIG_KEYS);
-	return &key_[category.configOffset];
-}
-
-void KeyConfig::unbindCategory(const KeyCategory &category)
-{
-	std::fill_n(key(category), category.keys, 0);
 }

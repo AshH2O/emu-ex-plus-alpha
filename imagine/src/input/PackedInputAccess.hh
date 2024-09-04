@@ -1,16 +1,15 @@
 #pragma once
 
-#include <imagine/input/Input.hh>
+#include <imagine/input/inputDefs.hh>
 
-namespace Input
+namespace IG::Input
 {
 
 struct PackedInputAccess
 {
 	uint32_t byteOffset;
 	uint32_t mask;
-	Key keyEvent;
-	Key sysKey;
+	Key key;
 
 	int updateState(const uint8_t *prev, const uint8_t *curr) const
 	{

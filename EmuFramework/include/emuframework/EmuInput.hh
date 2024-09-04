@@ -16,136 +16,207 @@
 	along with EmuFramework.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <emuframework/config.hh>
-#include <emuframework/inGameActionKeys.hh>
-#ifdef CONFIG_EMUFRAMEWORK_VCONTROLS
 #include <emuframework/VController.hh>
-#endif
-#include <imagine/input/Input.hh>
-#include <imagine/input/Device.hh>
-#include <imagine/util/container/VMemArray.hh>
+#include <emuframework/TurboInput.hh>
+#include <emuframework/ToggleInput.hh>
+#include <emuframework/inputDefs.hh>
+#include <imagine/input/inputDefs.hh>
+#include <string>
+#include <string_view>
+#include <memory>
+#include <span>
+#include <algorithm>
 
-namespace Input
+namespace EmuEx
 {
-class Device;
-}
 
-static constexpr unsigned MAX_INPUT_DEVICE_NAME_SIZE = 64;
-static constexpr unsigned MAX_KEY_CONFIG_NAME_SIZE = 80;
-static constexpr unsigned MAX_KEY_CONFIG_KEYS = 256;
-static constexpr unsigned MAX_DEFAULT_KEY_CONFIGS_PER_TYPE = 10;
+using namespace IG;
+class InputDeviceConfig;
+struct InputAction;
 
-struct InputDeviceConfig;
+constexpr int8_t playerIndexMulti = -1;
+constexpr int8_t playerIndexUnset = -2;
 
 struct KeyCategory
 {
-	constexpr KeyCategory() {}
-	template <size_t S>
-	constexpr KeyCategory(const char *name, const char *(&keyName)[S],
-			unsigned configOffset, bool isMultiplayer = false) :
-	name(name), keyName(keyName), keys(S), configOffset(configOffset), isMultiplayer(isMultiplayer) {}
+	std::string_view name;
+	std::span<const KeyInfo> keys;
+	int multiplayerIndex{}; // if > 0, category appears when one input device is assigned multiple players
 
-	const char *name{};
-	const char **keyName{};
-	unsigned keys = 0;
-	unsigned configOffset = 0;
-	bool isMultiplayer = false; // category appears when one input device is assigned multiple players
+	constexpr KeyCategory(std::string_view name, std::span<const KeyInfo> keys, int multiplayerIndex = 0):
+		name{name}, keys{keys}, multiplayerIndex{multiplayerIndex} {}
+	constexpr KeyCategory(std::string_view name, const auto &keys, int multiplayerIndex = 0):
+		name{name}, keys{keys.data(), keys.size()}, multiplayerIndex{multiplayerIndex} {}
 };
 
-struct KeyConfig
+struct KeyConfigDesc
 {
-	Input::Map map;
-	unsigned devSubtype;
-	char name[MAX_KEY_CONFIG_NAME_SIZE];
-	using Key = Input::Key;
-	using KeyArray = std::array<Key, MAX_KEY_CONFIG_KEYS>;
-	KeyArray key_;
+	std::string_view name;
+	std::span<const KeyMapping> keyMap;
+	Input::Map map{};
+	Input::DeviceSubtype devSubtype{};
 
+	constexpr KeyConfigDesc() = default;
+	constexpr KeyConfigDesc(Input::Map map, Input::DeviceSubtype devSubtype, std::string_view name, std::span<const KeyMapping> keyMap):
+		name{name}, keyMap{keyMap}, map{map}, devSubtype{devSubtype} {}
+	constexpr KeyConfigDesc(Input::Map map, std::string_view name, std::span<const KeyMapping> keyMap):
+		KeyConfigDesc{map, {}, name, keyMap} {}
+	constexpr operator bool() { return keyMap.size(); }
+
+	constexpr auto find(KeyInfo key)
+	{
+		return std::ranges::find_if(keyMap, [&](auto &val){ return val.key == key; });
+	}
+
+	constexpr MappedKeys get(KeyInfo key)
+	{
+		auto it = find(key);
+		if(it == keyMap.end())
+			return {};
+		return it->mapKey;
+	}
+
+	constexpr auto findMapped(MappedKeys v)
+	{
+		return std::ranges::find_if(keyMap, [&](auto &val){ return val.mapKey == v; });
+	}
+
+	constexpr KeyInfo getMapped(MappedKeys v)
+	{
+		auto it = findMapped(v);
+		if(it == keyMap.end())
+			return {};
+		return it->key;
+	}
+};
+
+class KeyConfig
+{
+public:
+	std::string name;
+
+	constexpr KeyConfig() = default;
+	constexpr KeyConfig(Input::Map map, Input::DeviceSubtype devSubtype, std::string_view name, auto &&keyMap):
+		name{name}, keyMap{std::begin(keyMap), std::end(keyMap)}, map{map}, devSubtype{devSubtype} {}
+	constexpr KeyConfig(Input::Map map, std::string_view name, auto &&keyMap):
+		KeyConfig{map, {}, name, IG_forward(keyMap)} {}
+	constexpr KeyConfig(KeyConfigDesc desc):
+		KeyConfig{desc.map, desc.devSubtype, desc.name, desc.keyMap} {}
+
+	constexpr bool operator==(KeyConfig const& rhs) const { return name == rhs.name; }
+	constexpr bool operator==(KeyConfigDesc const& rhs) const { return name == rhs.name; }
+	constexpr explicit operator bool() { return name.size(); }
+	constexpr KeyConfigDesc desc() const { return{map, devSubtype, name, keyMap}; }
+	void set(KeyInfo, MappedKeys);
 	void unbindCategory(const KeyCategory &category);
-	bool operator ==(KeyConfig const& rhs) const;
-	Key *key(const KeyCategory &category);
-	const Key *key(const KeyCategory &category) const;
+	void resetCategory(const KeyCategory &category, KeyConfigDesc defaultConf);
+	constexpr auto find(KeyInfo key) { return std::ranges::find_if(keyMap, [&](auto &val){ return val.key == key; }); }
+	constexpr MappedKeys get(KeyInfo key) const { return desc().get(key); }
+	static KeyConfig readConfig(MapIO &);
+	void writeConfig(FileIO &) const;
 
-	const KeyArray &key() const
-	{
-		return key_;
-	}
-
-	KeyArray &key()
-	{
-		return key_;
-	}
-
-	static const KeyConfig *defaultConfigsForInputMap(Input::Map map, unsigned &size);
-	static const KeyConfig &defaultConfigForDevice(const Input::Device &dev);
-	static const KeyConfig *defaultConfigsForDevice(const Input::Device &dev, unsigned &size);
-	static const KeyConfig *defaultConfigsForDevice(const Input::Device &dev);
+private:
+	std::vector<KeyMapping> keyMap;
+	Input::Map map{};
+	Input::DeviceSubtype devSubtype{};
 };
 
-struct KeyMapping
+struct AxisAsDpadFlags
 {
-	static constexpr unsigned maxKeyActions = 4;
-	using Action = uint8_t;
-	using ActionGroup = std::array<Action, maxKeyActions>;
-	std::unique_ptr<ActionGroup*[]> inputDevActionTablePtr{};
-	IG::VMemArray<ActionGroup> inputDevActionTable{};
+	uint8_t
+	stick1:1{},
+	unused1:1{},
+	stick2:1{},
+	triggers:1{},
+	pedals:1{},
+	unused2:1{},
+	hat:1{};
 
-	KeyMapping() {}
-	void buildAll(const std::vector<InputDeviceConfig> &, const Base::InputDeviceContainer &);
-	void free();
-	explicit operator bool() const;
+	constexpr bool operator==(AxisAsDpadFlags const&) const = default;
 };
 
-namespace EmuControls
+struct InputDeviceSavedConfig
 {
+	static constexpr uint8_t ENUM_ID_MASK = 0x1F;
+	static constexpr uint8_t HANDLE_UNBOUND_EVENTS_FLAG = 0x80;
 
-using namespace Input;
+	std::string keyConfName;
+	std::string name;
+	uint8_t enumId{};
+	int8_t player{};
+	bool enabled = true;
+	AxisAsDpadFlags joystickAxisAsDpadFlags;
+	ConditionalMember<hasICadeInput, bool> iCadeMode{};
+	ConditionalMember<Config::envIsAndroid, bool> handleUnboundEvents{};
 
-static constexpr unsigned MAX_CATEGORIES = 8;
-
-// Defined in the emulation module
-extern const unsigned categories;
-extern const unsigned systemTotalKeys;
-
-extern const KeyCategory category[MAX_CATEGORIES];
-
-extern const KeyConfig defaultKeyProfile[];
-extern const unsigned defaultKeyProfiles;
-extern const KeyConfig defaultWiimoteProfile[];
-extern const unsigned defaultWiimoteProfiles;
-extern const KeyConfig defaultWiiCCProfile[];
-extern const unsigned defaultWiiCCProfiles;
-extern const KeyConfig defaultIControlPadProfile[];
-extern const unsigned defaultIControlPadProfiles;
-extern const KeyConfig defaultICadeProfile[];
-extern const unsigned defaultICadeProfiles;
-extern const KeyConfig defaultZeemoteProfile[];
-extern const unsigned defaultZeemoteProfiles;
-extern const KeyConfig defaultAppleGCProfile[];
-extern const unsigned defaultAppleGCProfiles;
-extern const KeyConfig defaultPS3Profile[];
-extern const unsigned defaultPS3Profiles;
-
-void transposeKeysForPlayer(KeyConfig::KeyArray &key, unsigned player);
-
-// common transpose behavior
-void generic2PlayerTranspose(KeyConfig::KeyArray &key, unsigned player, unsigned startCategory);
-void genericMultiplayerTranspose(KeyConfig::KeyArray &key, unsigned player, unsigned startCategory);
-
-#ifdef __ANDROID__
-static constexpr KeyConfig KEY_CONFIG_ANDROID_NAV_KEYS =
-{
-	Input::Map::SYSTEM,
-	0,
-	"Android Navigation Keys",
+	constexpr bool operator ==(InputDeviceSavedConfig const& rhs) const
 	{
-		EMU_CONTROLS_IN_GAME_ACTIONS_ANDROID_NAV_PROFILE_INIT,
-
-		Input::Keycode::UP,
-		Input::Keycode::RIGHT,
-		Input::Keycode::DOWN,
-		Input::Keycode::LEFT,
+		return enumId == rhs.enumId && name == rhs.name;
 	}
+
+	bool matchesDevice(const Input::Device& dev) const;
 };
-#endif
+
+struct InputDeviceSavedSessionConfig
+{
+	std::string keyConfName;
+	std::string name;
+	uint8_t enumId{};
+	int8_t player{};
+
+	constexpr bool operator ==(InputDeviceSavedSessionConfig const& rhs) const
+	{
+		return enumId == rhs.enumId && name == rhs.name;
+	}
+
+	bool matchesDevice(const Input::Device& dev) const;
+};
+
+struct SystemKeyInputFlags
+{
+	bool allowTurboModifier{true};
+};
+
+class InputManager
+{
+public:
+	VController vController;
+	std::vector<std::unique_ptr<KeyConfig>> customKeyConfigs;
+	std::vector<std::unique_ptr<InputDeviceSavedConfig>> savedDevConfigs;
+	std::vector<std::unique_ptr<InputDeviceSavedSessionConfig>> savedSessionDevConfigs;
+	TurboInput turboActions;
+	ToggleInput toggleInput;
+	DelegateFunc<void ()> onUpdateDevices;
+	bool turboModifierActive{};
+
+	InputManager(ApplicationContext ctx):
+		vController{ctx} {}
+	bool handleKeyInput(EmuApp&, KeyInfo, const Input::Event &srcEvent);
+	bool handleAppActionKeyInput(EmuApp&, InputAction, const Input::Event &srcEvent);
+	void handleSystemKeyInput(EmuApp&, KeyInfo, Input::Action, uint32_t metaState = 0, SystemKeyInputFlags flags = {});
+	void updateInputDevices(ApplicationContext);
+	KeyConfig *customKeyConfig(std::string_view name, const Input::Device &) const;
+	KeyConfigDesc keyConfig(std::string_view name, const Input::Device &) const;
+	void deleteKeyProfile(ApplicationContext, KeyConfig *);
+	void deleteDeviceSavedConfig(ApplicationContext, const InputDeviceSavedConfig&);
+	void deleteDeviceSavedConfig(ApplicationContext, const InputDeviceSavedSessionConfig&);
+	void resetSessionOptions(ApplicationContext);
+	bool readSessionConfig(ApplicationContext, MapIO&, uint16_t);
+	void writeSessionConfig(FileIO &io) const;
+	bool readInputDeviceSessionConfigs(ApplicationContext, MapIO&);
+	void writeInputDeviceSessionConfigs(FileIO&) const;
+	void writeCustomKeyConfigs(FileIO &) const;
+	void writeSavedInputDevices(ApplicationContext, FileIO &) const;
+	bool readCustomKeyConfig(MapIO &);
+	bool readSavedInputDevices(MapIO &);
+	KeyConfigDesc defaultConfig(const Input::Device &dev) const;
+	KeyInfo transpose(KeyInfo, int index) const;
+	std::string toString(KeyInfo) const;
+	std::string toString(KeyCode, KeyFlags) const;
+	const KeyCategory *categoryOfKeyCode(KeyInfo) const;
+	KeyInfo validateSystemKey(KeyInfo key, bool isUIKey) const;
+	void updateKeyboardMapping();
+	void toggleKeyboard();
+};
 
 }

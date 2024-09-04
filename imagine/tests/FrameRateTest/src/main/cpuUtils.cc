@@ -14,12 +14,12 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #define LOGTAG "cpu-stat"
-#include <unistd.h>
-#include <cstdio>
 #include "tests.hh"
 #include <imagine/io/FileIO.hh>
-#include <imagine/util/string.h>
 #include <imagine/logger/logger.h>
+#include <unistd.h>
+#include <cstdio>
+#include <format>
 
 struct CPUTime
 {
@@ -33,15 +33,15 @@ struct CPUTime
 };
 
 static CPUTime cpuTime;
-static FileIO cpuFreqFile{};
+static IG::FileIO cpuFreqFile{};
 static FILE *procStatFile{};
 
-void updateCPUFreq(TestFramework &test)
+void updateCPUFreq(FrameRateTest::TestFramework &test)
 {
 	if(!cpuFreqFile)
 		return;
 	std::array<char, 32> buff{};
-	cpuFreqFile.readAtPos(buff.data(), sizeof(buff)-1, 0);
+	cpuFreqFile.read(buff.data(), buff.size() - 1, 0);
 	// remove any whitespace
 	std::array<char, 32> str{};
 	sscanf(buff.data(), "%s", str.data());
@@ -56,19 +56,19 @@ void initCPUFreqStatus()
 	if(cpuFreqFile)
 		return; // already open
 	const char *cpuFreqPath = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq";
-	auto ec = cpuFreqFile.open(cpuFreqPath, IO::AccessHint::NORMAL);
-	if(ec)
+	try
+	{
+		cpuFreqFile = {cpuFreqPath};
+	}
+	catch(...)
 	{
 		logWarn("can't open %s", cpuFreqPath);
 	}
 }
 
-void deinitCPUFreqStatus()
-{
-	cpuFreqFile.close();
-}
+void deinitCPUFreqStatus() {}
 
-void updateCPULoad(TestFramework &test)
+void updateCPULoad(FrameRateTest::TestFramework &test)
 {
 	if(!procStatFile)
 		return;
@@ -104,7 +104,7 @@ void updateCPULoad(TestFramework &test)
 	newTime.steal = steal;
 	newTime.total = newTime.user + newTime.nice + newTime.systemAll
 		+ idleAllTime + newTime.steal + newTime.virt;
-	char useStr[16] = "Calculating...";
+	std::string useStr{"Calculating..."};
 	if(cpuTime.user)
 	{
 		double userDelta = newTime.user - cpuTime.user;
@@ -114,7 +114,7 @@ void updateCPULoad(TestFramework &test)
 		double virtualDelta = newTime.virt - cpuTime.virt;
 		double totalDelta = newTime.total - cpuTime.total;
 		double usagePercent = (niceDelta + userDelta + systemAllDelta + stealDelta + virtualDelta) / totalDelta * (double)100.0;
-		string_printf(useStr, "%.2f%%", usagePercent);
+		useStr = std::format("{:.2f}%", usagePercent);
 	}
 	cpuTime = newTime;
 	test.setCPUUseText(useStr);

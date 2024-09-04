@@ -15,33 +15,41 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
+#include <imagine/base/EventLoop.hh>
 #include <imagine/base/Timer.hh>
-#include <imagine/base/FrameTimer.hh>
 #include <imagine/time/Time.hh>
 
-namespace Base
+namespace IG
 {
 
 class Screen;
 
-class SimpleFrameTimer final: public FrameTimerI
+class NullFrameTimer
 {
 public:
-	constexpr SimpleFrameTimer() {}
+	void scheduleVSync() {}
+	void cancel() {}
+	void setFrameRate(FrameRate) {}
+	void setEventsOnThisThread(ApplicationContext);
+};
+
+class SimpleFrameTimer final
+{
+public:
 	SimpleFrameTimer(Screen &screen, EventLoop loop = {});
-	void scheduleVSync() final;
-	void cancel() final;
-	void setFrameTime(IG::FloatSeconds rate) final;
+	void scheduleVSync();
+	void cancel();
+	void setFrameRate(FrameRate);
+	void setEventsOnThisThread(ApplicationContext);
 
 	explicit operator bool() const
 	{
-		return (bool)eventLoop;
+		return (bool)timer;
 	}
 
 protected:
-	Timer timer{Timer::NullInit{}};
-	IG::Nanoseconds interval{};
-	EventLoop eventLoop{};
+	Timer timer;
+	Nanoseconds interval{};
 	bool requested{};
 	bool keepTimer{};
 };

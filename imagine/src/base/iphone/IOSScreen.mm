@@ -16,9 +16,11 @@
 static_assert(__has_feature(objc_arc), "This file requires ARC");
 #include <imagine/base/Screen.hh>
 #include <imagine/base/ApplicationContext.hh>
-#include <imagine/input/Input.hh>
+#include <imagine/time/Time.hh>
 #include <imagine/logger/logger.h>
 #include "ios.hh"
+
+using namespace IG;
 
 @interface UIScreen ()
 - (double)_refreshRate;
@@ -27,13 +29,13 @@ static_assert(__has_feature(objc_arc), "This file requires ARC");
 @interface DisplayLinkHelper : NSObject
 {
 @private
-	Base::Screen *screen_;
+	Screen *screen_;
 }
 @end
 
 @implementation DisplayLinkHelper
 
-- (id)initWithScreen:(Base::Screen *)screen
+- (id)initWithScreen:(Screen *)screen
 {
 	self = [super init];
 	if(self)
@@ -46,10 +48,10 @@ static_assert(__has_feature(objc_arc), "This file requires ARC");
 - (void)onFrame:(CADisplayLink *)displayLink
 {
 	auto &screen = *screen_;
-	auto timestamp = IG::FloatSeconds(displayLink.timestamp);
+	auto timestamp = fromSeconds<SteadyClockTime>(displayLink.timestamp);
 	//logMsg("screen:%p, frame time stamp:%f, duration:%f",
 	//	screen.uiScreen(), timestamp.count(), (double)screen.displayLink().duration);
-	if(!screen.frameUpdate(timestamp))
+	if(!screen.frameUpdate(SteadyClockTimePoint{timestamp}))
 	{
 		//logMsg("stopping screen updates");
 		displayLink.paused = YES;
@@ -58,7 +60,7 @@ static_assert(__has_feature(objc_arc), "This file requires ARC");
 
 @end
 
-namespace Base
+namespace IG
 {
 
 IOSScreen::IOSScreen(ApplicationContext, InitParams initParams)
@@ -81,44 +83,40 @@ IOSScreen::IOSScreen(ApplicationContext, InitParams initParams)
 	}
 	if(Config::DEBUG_BUILD)
 	{
-		#ifdef CONFIG_BASE_IOS_RETINA_SCALE
-		if(Base::hasAtLeastIOS8())
+		if(hasAtLeastIOS8())
 		{
 			logMsg("has %f point scaling (%f native)", (double)[screen scale], (double)[screen nativeScale]);
 		}
-		#endif
 		for(UIScreenMode *mode in screen.availableModes)
 		{
 			logMsg("has mode: %dx%d", (int)mode.size.width, (int)mode.size.height);
 		}
 		logMsg("current mode: %dx%d", (int)screen.currentMode.size.width, (int)screen.currentMode.size.height);
-		if(hasAtLeastIOS5())
-			logMsg("preferred mode: %dx%d", (int)screen.preferredMode.size.width, (int)screen.preferredMode.size.height);
+		logMsg("preferred mode: %dx%d", (int)screen.preferredMode.size.width, (int)screen.preferredMode.size.height);
 	}
 	uiScreen_ = (void*)CFBridgingRetain(screen);
 	displayLink_ = (void*)CFBridgingRetain([screen displayLinkWithTarget:[[DisplayLinkHelper alloc] initWithScreen:(Screen*)this]
 	                                       selector:@selector(onFrame:)]);
 	displayLink().paused = YES;
+	updateDisplayLinkRunLoop();
 
-	if(hasAtLeastIOS5())
+	// note: the _refreshRate value is actually time per frame in seconds
+	auto frameTime = [uiScreen() _refreshRate];
+	if(!frameTime || 1. / frameTime < 20. || 1. / frameTime > 200.)
 	{
-		// note: the _refreshRate value is actually time per frame in seconds
-		auto frameTime = [uiScreen() _refreshRate];
-		if(!frameTime || 1. / frameTime < 20. || 1. / frameTime > 200.)
-		{
-			logWarn("ignoring unusual refresh rate: %f", 1. / frameTime);
-			frameTime = 1. / 60.;
-		}
-		frameTime_ = IG::FloatSeconds(frameTime);
+		logWarn("ignoring unusual refresh rate: %f", 1. / frameTime);
+		frameTime = 1. / 60.;
 	}
-	else
-		frameTime_ = IG::FloatSeconds(1. / 60.);
+	frameTime_ = fromSeconds<SteadyClockTime>(frameTime);
+	frameRate_ = 1. / frameTime;
 }
 
 IOSScreen::~IOSScreen()
 {
 	logMsg("deinit screen %p", uiScreen_);
+	[displayLink() invalidate];
 	CFRelease(displayLink_);
+	CFRelease(displayLinkRunLoop_);
 	CFRelease(uiScreen_);
 }
 
@@ -149,15 +147,8 @@ int Screen::height() const
 	return uiScreen().bounds.size.height;
 }
 
-double Screen::frameRate() const
-{
-	return 1. / frameTime().count();
-}
-
-IG::FloatSeconds Screen::frameTime() const
-{
-	return frameTime_;
-}
+FrameRate Screen::frameRate() const { return frameRate_; }
+SteadyClockTime Screen::frameTime() const { return frameTime_; }
 
 bool Screen::frameRateIsReliable() const
 {
@@ -174,18 +165,43 @@ void Screen::unpostFrameTimer()
 	displayLink().paused = YES;
 }
 
-void Screen::setFrameRate(double rate)
+void Screen::setFrameRate(FrameRate)
 {
 	// unsupported
 }
 
-std::vector<double> Screen::supportedFrameRates(ApplicationContext) const
+std::span<const FrameRate> Screen::supportedFrameRates() const
 {
 	// TODO
-	std::vector<double> rateVec;
-	rateVec.reserve(1);
-	rateVec.emplace_back(frameRate());
-	return rateVec;
+	return {&frameRate_, 1};
+}
+
+void Screen::setVariableFrameTime(bool)
+{
+	// TODO
+}
+
+void Screen::setFrameEventsOnThisThread()
+{
+	unpostFrame();
+	removeFrameEvents();
+	updateDisplayLinkRunLoop();
+}
+
+void Screen::removeFrameEvents()
+{
+	unpostFrame();
+	if(!displayLinkRunLoop_)
+		return;
+	[displayLink() removeFromRunLoop:displayLinkRunLoop() forMode:NSDefaultRunLoopMode];
+	CFRelease(std::exchange(displayLinkRunLoop_, nullptr));
+}
+
+void IOSScreen::updateDisplayLinkRunLoop()
+{
+	assert(!displayLinkRunLoop_);
+	displayLinkRunLoop_ = (void*)CFBridgingRetain([NSRunLoop currentRunLoop]);
+	[displayLink() addToRunLoop:displayLinkRunLoop() forMode:NSDefaultRunLoopMode];
 }
 
 }

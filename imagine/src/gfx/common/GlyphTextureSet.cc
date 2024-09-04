@@ -15,39 +15,28 @@
 
 #define LOGTAG "GlyphTexture"
 
-#include <imagine/util/bitset.hh>
+#include <imagine/util/bit.hh>
 #include <imagine/gfx/Renderer.hh>
 #include <imagine/gfx/GlyphTextureSet.hh>
 #include <imagine/data-type/image/PixmapSource.hh>
 #include <imagine/logger/logger.h>
 #include <cstdlib>
 
-namespace Gfx
+namespace IG::Gfx
 {
-
-static constexpr char firstDrawableAsciiChar = '!';
-static constexpr char lastDrawableAsciiChar = '~';
-static constexpr uint32_t numDrawableAsciiChars = (lastDrawableAsciiChar - firstDrawableAsciiChar) + 1;
 
 // definitions for the Unicode Basic Multilingual Plane (BMP)
-static constexpr uint32_t unicodeBmpChars = 0xFFFE;
+static constexpr int unicodeBmpChars = 0xFFFE;
 
 // location & size of the surrogate/private chars
-static constexpr uint32_t unicodeBmpPrivateStart = 0xD800, unicodeBmpPrivateEnd = 0xF8FF;
-static constexpr uint32_t unicodeBmpPrivateChars = 0x2100;
+static constexpr int unicodeBmpPrivateStart = 0xD800, unicodeBmpPrivateEnd = 0xF8FF;
+static constexpr int unicodeBmpPrivateChars = 0x2100;
 
-static constexpr uint32_t unicodeBmpUsedChars = unicodeBmpChars - unicodeBmpPrivateChars;
+static constexpr int unicodeBmpUsedChars = unicodeBmpChars - unicodeBmpPrivateChars;
 
-static constexpr uint32_t glyphTableEntries = GlyphTextureSet::supportsUnicode ? unicodeBmpUsedChars : numDrawableAsciiChars;
+static constexpr int glyphTableEntries = unicodeBmpUsedChars;
 
-static std::errc mapCharToTable(uint32_t c, uint32_t &tableIdx);
-
-static int charIsDrawableAscii(int c)
-{
-	if(c >= firstDrawableAsciiChar && c <= lastDrawableAsciiChar)
-		return 1;
-	else return 0;
-}
+static int mapCharToTable(int c);
 
 static int charIsDrawableUnicode(int c)
 {
@@ -77,16 +66,15 @@ void GlyphTextureSet::freeCaches(uint32_t purgeBits)
 		return;
 	}
 	auto tableBits = usedGlyphTableBits;
-	iterateTimes(32, i)
+	for(auto i : iotaCount(32))
 	{
 		if((tableBits & 1) && (purgeBits & 1))
 		{
 			logMsg("purging glyphs from table range %d/31", i);
 			int firstChar = i << 11;
-			iterateTimesFromStart(2048, firstChar, c)
+			for(auto c : std::views::iota(firstChar, 2048))
 			{
-				uint32_t tableIdx;
-				if((bool)mapCharToTable(c, tableIdx))
+				if(mapCharToTable(c) == -1)
 				{
 					//logMsg( "%c not a known drawable character, skipping", c);
 					continue;
@@ -115,20 +103,19 @@ GlyphTextureSet::GlyphTextureSet(Renderer &r, IG::Font font, IG::FontSettings se
 	}
 }
 
-uint32_t GlyphTextureSet::nominalHeight() const
-{
-	return nominalHeight_;
-}
-
-void GlyphTextureSet::calcNominalHeight(Renderer &r)
+void GlyphTextureSet::calcMetrics(Renderer &r)
 {
 	//logMsg("calcNominalHeight");
-	GlyphEntry *mGly = glyphEntry(r, 'M');
-	GlyphEntry *gGly = glyphEntry(r, 'g');
-
-	assert(mGly && gGly);
-
-	nominalHeight_ = mGly->metrics.ySize + (gGly->metrics.ySize/2);
+	auto mGly = glyphEntry(r, 'M');
+	auto gGly = glyphEntry(r, 'g');
+	if(!mGly || !gGly) [[unlikely]]
+	{
+		logErr("error reading measurement glyphs");
+		return;
+	}
+	metrics_.nominalHeight = mGly->metrics.size.y + (gGly->metrics.size.y / 2);
+	metrics_.spaceSize = mGly->metrics.size.x / 2;
+	metrics_.yLineStart = gGly->metrics.size.y - gGly->metrics.offset.y;
 }
 
 IG::FontSettings GlyphTextureSet::fontSettings() const
@@ -146,89 +133,72 @@ bool GlyphTextureSet::setFontSettings(Renderer &r, IG::FontSettings set)
 		return false;
 	resetGlyphTable();
 	settings = set;
-	std::errc ec{};
-	faceSize = font.makeSize(settings, ec);
-	calcNominalHeight(r);
+	faceSize = font.makeSize(settings);
+	calcMetrics(r);
 	return true;
 }
 
-std::errc GlyphTextureSet::cacheChar(Renderer &r, int c, int tableIdx)
+bool GlyphTextureSet::cacheChar(Renderer &r, int c, int tableIdx)
 {
 	assert(settings);
-	if(glyphTable[tableIdx].metrics.ySize == -1)
+	auto &[glyph, metrics] = glyphTable[tableIdx];
+	if(metrics.size.y == -1)
 	{
 		// failed to previously cache char
-		return std::errc::invalid_argument;
+		return false;
 	}
 	// make sure applySize() has been called on the font object first
-	std::errc ec{};
-	auto res = font.glyph(c, faceSize, ec);
-	if((bool)ec)
+	auto res = font.glyph(c, faceSize);
+	if(!res.image)
 	{
 		// mark failed attempt
-		glyphTable[tableIdx].metrics.ySize = -1;
-		return ec;
+		metrics.size.y = -1;
+		return false;
 	}
 	//logMsg("setting up table entry %d", tableIdx);
-	glyphTable[tableIdx].metrics = res.metrics;
-	glyphTable[tableIdx].glyph_ = r.makePixmapTexture(res.image, &r.make(glyphCommonTextureSampler), false);
+	metrics = res.metrics;
+	glyph = r.makeTexture(res.image, glyphSamplerConfig, false);
 	usedGlyphTableBits |= IG::bit((c >> 11) & 0x1F); // use upper 5 BMP plane bits to map in range 0-31
 	//logMsg("used table bits 0x%X", usedGlyphTableBits);
-	return {};
+	return true;
 }
 
-static std::errc mapCharToTable(uint32_t c, uint32_t &tableIdx)
+static int mapCharToTable(int c)
 {
-	if(GlyphTextureSet::supportsUnicode)
+	//logMsg("mapping char 0x%X", c);
+	if(c < unicodeBmpChars && charIsDrawableUnicode(c))
 	{
-		//logMsg("mapping char 0x%X", c);
-		if(c < unicodeBmpChars && charIsDrawableUnicode(c))
+		if(c < unicodeBmpPrivateStart)
 		{
-			if(c < unicodeBmpPrivateStart)
-			{
-				tableIdx = c;
-				return {};
-			}
-			else if(c > unicodeBmpPrivateEnd)
-			{
-				tableIdx = c - unicodeBmpPrivateChars; // surrogate & private chars are a hole in the table
-				return {};
-			}
-			else
-			{
-				return std::errc::invalid_argument;
-			}
+			return c;
+		}
+		else if(c > unicodeBmpPrivateEnd)
+		{
+			return c - unicodeBmpPrivateChars; // surrogate & private chars are a hole in the table
 		}
 		else
-			return std::errc::invalid_argument;
+		{
+			return -1;
+		}
 	}
 	else
-	{
-		if(charIsDrawableAscii(c))
-		{
-			tableIdx = c - firstDrawableAsciiChar;
-			return {};
-		}
-		else
-			return std::errc::invalid_argument;
-	}
+		return -1;
 }
 
 // TODO: update for unicode
-unsigned GlyphTextureSet::precache(Renderer &r, const char *string)
+int GlyphTextureSet::precache(Renderer &r, std::string_view string)
 {
 	assert(settings);
-	unsigned glyphsCached = 0;
-	iterateTimes(strlen(string), i)
+	int glyphsCached = 0;
+	for(auto c : string)
 	{
-		auto c = string[i];
-		uint32_t tableIdx;
-		if((bool)mapCharToTable(c, tableIdx))
+		int tableIdx = mapCharToTable(c);
+		if(tableIdx == -1)
 		{
 			//logMsg( "%c not a known drawable character, skipping", c);
 			continue;
 		}
-		if(glyphTable[tableIdx].glyph())
+		if(glyphTable[tableIdx].glyph)
 		{
 			//logMsg( "%c already cached", c);
 			continue;
@@ -240,25 +210,26 @@ unsigned GlyphTextureSet::precache(Renderer &r, const char *string)
 	return glyphsCached;
 }
 
-GlyphEntry *GlyphTextureSet::glyphEntry(Renderer &r, int c, bool allowCache)
+const GlyphEntry *GlyphTextureSet::glyphEntry(Renderer &r, int c, bool allowCache)
 {
 	assert(settings);
-	uint32_t tableIdx;
-	if((bool)mapCharToTable(c, tableIdx))
+	int tableIdx = mapCharToTable(c);
+	if(tableIdx == -1)
 		return nullptr;
 	assert(tableIdx < glyphTableEntries);
-	if(!glyphTable[tableIdx].glyph())
+	auto &entry = glyphTable[tableIdx];
+	if(!entry.glyph)
 	{
 		if(!allowCache)
 		{
 			logErr("cannot make glyph:%c (0x%X) during draw operation", c, c);
 			return nullptr;
 		}
-		if((bool)cacheChar(r, c, tableIdx))
+		if(!cacheChar(r, c, tableIdx))
 			return nullptr;
 		//logMsg("glyph:%c (0x%X) was not in table", c, c);
 	}
-	return &glyphTable[tableIdx];
+	return &entry;
 }
 
 }

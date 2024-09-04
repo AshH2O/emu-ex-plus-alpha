@@ -16,26 +16,25 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/config/defs.hh>
-#include <imagine/util/algorithm.h>
+#include <imagine/util/ranges.hh>
+#include <concepts>
 #include <chrono>
-#include <type_traits>
 #include <array>
 
-namespace Input
+namespace IG::Input
 {
 
-template <class T, uint32_t D>
+template <std::floating_point T, size_t D>
 class IntegratingVelocityTracker
 {
 public:
-	static_assert(std::is_floating_point_v<T>, "IntegratingVelocityTracker needs floating point type");
-	using TimeType = std::chrono::nanoseconds;
+	using TimePoint = std::chrono::steady_clock::time_point;
 	using ValArray = std::array<T, D>;
 
-	constexpr IntegratingVelocityTracker() {}
-	constexpr IntegratingVelocityTracker(TimeType time, std::array<T, D> pos): updateTime{time}, pos{pos} {}
+	constexpr IntegratingVelocityTracker() = default;
+	constexpr IntegratingVelocityTracker(TimePoint time, std::array<T, D> pos): updateTime{time}, pos{pos} {}
 
-	void update(TimeType time, std::array<T, D> pos_)
+	void update(TimePoint time, std::array<T, D> pos_)
 	{
 		using namespace std::chrono_literals;
 		const auto MIN_TIME_DELTA = 2000000ns; // in nanosecs
@@ -46,13 +45,13 @@ public:
 		T dt = (time - updateTime).count() * (T)0.000000001;
 		updateTime = time;
 		ValArray vel_;
-		iterateTimes(D, i)
+		for(auto i : iotaCount(D))
 		{
 			vel_[i] = (pos_[i] - pos[i]) / dt;
 		}
 		if(degree == 0)
 		{
-			iterateTimes(D, i)
+			for(auto i : iotaCount(D))
 			{
 				vel[i] = vel_[i];
 			}
@@ -61,27 +60,27 @@ public:
 		else
 		{
 			T alpha = dt / (FILTER_TIME_CONSTANT + dt);
-			iterateTimes(D, i)
+			for(auto i : iotaCount(D))
 			{
 				vel[i] += (vel_[i] - vel[i]) * alpha;
 			}
 		}
-		iterateTimes(D, i)
+		for(auto i : iotaCount(D))
 		{
 			pos[i] = pos_[i];
 		}
 	}
 
-	T velocity(uint32_t idx) const { return vel[idx]; }
+	T velocity(size_t idx) const { return vel[idx]; }
 
 protected:
-	TimeType updateTime{};
+	TimePoint updateTime{};
 	ValArray pos{};
 	ValArray vel{};
 	uint8_t degree{};
 };
 
-template <class T, uint32_t D>
+template <class T, size_t D>
 using VelocityTracker = IntegratingVelocityTracker<T, D>;
 
 }

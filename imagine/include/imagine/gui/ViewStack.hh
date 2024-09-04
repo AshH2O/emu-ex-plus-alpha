@@ -17,50 +17,54 @@
 
 #include <imagine/config/defs.hh>
 #include <imagine/gui/View.hh>
+#include <imagine/gui/NavView.hh>
+#include <imagine/gfx/Quads.hh>
 #include <vector>
+#include <memory>
+#include <string_view>
 
-class NavView;
+namespace IG
+{
 
 class BasicViewController : public ViewController
 {
 public:
 	using RemoveViewDelegate = DelegateFunc<void ()>;
 
-	BasicViewController();
+	constexpr BasicViewController() = default;
 	RemoveViewDelegate &onRemoveView() { return removeViewDel; }
-	void push(std::unique_ptr<View> v, Input::Event e);
-	void pushAndShow(std::unique_ptr<View> v, Input::Event e, bool needsNavView, bool isModal) override;
+	void push(std::unique_ptr<View>, const Input::Event &);
+	void pushAndShow(std::unique_ptr<View>, const Input::Event &, bool needsNavView, bool isModal) override;
 	using ViewController::pushAndShow;
 	void dismissView(View &v, bool refreshLayout = true) override;
 	void dismissView(int idx, bool refreshLayout = true) override;
-	void place(const IG::WindowRect &rect, const Gfx::ProjectionPlane &projP);
+	void place(const WRect &rect);
 	void place();
 	bool hasView() { return (bool)view; }
-	bool inputEvent(Input::Event e) override;
+	bool inputEvent(const Input::Event &) override;
 	void draw(Gfx::RendererCommands &cmds);
 
 protected:
-	std::unique_ptr<View> view{};
-	RemoveViewDelegate removeViewDel{};
-	IG::WindowRect viewRect{};
-	Gfx::ProjectionPlane projP{};
+	std::unique_ptr<View> view;
+	RemoveViewDelegate removeViewDel;
+	WRect viewRect{};
 };
 
 class ViewStack : public ViewController
 {
 public:
-	ViewStack();
+	ViewStack(ViewAttachParams);
 	void setNavView(std::unique_ptr<NavView> nav);
 	NavView *navView() const;
-	void place(const IG::WindowRect &rect, const Gfx::ProjectionPlane &projP);
+	void place(WindowRect viewRect, WindowRect displayRect);
 	void place();
-	bool inputEvent(Input::Event e) override;
-	bool moveFocusToNextView(Input::Event e, _2DOrigin direction) override;
+	bool inputEvent(const Input::Event &) override;
+	bool moveFocusToNextView(const Input::Event &, _2DOrigin direction) override;
 	void prepareDraw();
 	void draw(Gfx::RendererCommands &cmds);
-	void push(std::unique_ptr<View> v, Input::Event e);
-	void push(std::unique_ptr<View> v);
-	void pushAndShow(std::unique_ptr<View> v, Input::Event e, bool needsNavView, bool isModal) override;
+	void push(std::unique_ptr<View>, const Input::Event &);
+	void push(std::unique_ptr<View>);
+	void pushAndShow(std::unique_ptr<View>, const Input::Event &, bool needsNavView, bool isModal) override;
 	using ViewController::pushAndShow;
 	void pop() override;
 	void popAndShow() override;
@@ -69,19 +73,20 @@ public:
 	void popTo(View &v) override;
 	void popTo(int idx);
 	void show();
+	View* parentView(View& v) override;
 	View &top() const;
-	View &viewAtIdx(uint32_t idx) const;
+	View &viewAtIdx(int idx) const;
 	int viewIdx(View &v) const;
-	int viewIdx(View::NameStringView name) const;
-	int viewIdx(const char *name) const;
+	int viewIdx(std::u16string_view name) const;
+	int viewIdx(std::string_view name) const;
 	bool contains(View &v) const;
-	bool contains(View::NameStringView name) const;
-	bool contains(const char *name) const;
+	bool contains(std::u16string_view name) const;
+	bool contains(std::string_view name) const;
 	void dismissView(View &v, bool refreshLayout = true) override;
 	void dismissView(int idx, bool refreshLayout = true) override;
 	void showNavView(bool show);
 	void setShowNavViewBackButton(bool show);
-	uint32_t size() const;
+	size_t size() const;
 	bool viewHasFocus() const;
 	bool hasModalView() const;
 	void popModalViews();
@@ -89,18 +94,16 @@ public:
 protected:
 	struct ViewEntry
 	{
-		ViewEntry(std::unique_ptr<View> v, bool needsNavView):
-			v{std::move(v)}, needsNavView{needsNavView}
-		{}
-		std::unique_ptr<View> v;
-		bool needsNavView;
-		bool isModal;
+		std::unique_ptr<View> ptr;
+		bool needsNavView{};
+		bool isModal{};
 	};
-	std::vector<ViewEntry> view{};
-	std::unique_ptr<NavView> nav{};
+	std::vector<ViewEntry> view;
+	std::unique_ptr<NavView> nav;
 	//ViewController *nextController{};
-	IG::WindowRect viewRect{}, customViewRect{};
-	Gfx::ProjectionPlane projP{};
+	WindowRect viewRect{}, customViewRect{};
+	WindowRect displayRect{}, customDisplayRect{};
+	Gfx::IColQuads bottomGradientQuads;
 	bool showNavBackBtn = true;
 	bool showNavView_ = true;
 	bool navViewHasFocus = false;
@@ -109,5 +112,7 @@ protected:
 	void showNavLeftBtn();
 	bool topNeedsNavView() const;
 	bool navViewIsActive() const;
-	void popViews(int num);
+	void popViews(size_t num);
 };
+
+}

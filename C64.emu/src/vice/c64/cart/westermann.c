@@ -71,7 +71,8 @@ static io_source_t westermann_device = {
     westermann_dump,           /* device state information dump function */
     CARTRIDGE_WESTERMANN,      /* cartridge ID */
     IO_PRIO_NORMAL,            /* normal priority, device read needs to be checked for collisions */
-    0                          /* insertion order, gets filled in by the registration function */
+    0,                         /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE             /* NO mirroring */
 };
 
 static io_source_list_t *westermann_list_item = NULL;
@@ -107,7 +108,7 @@ static int westermann_dump(void)
 
 void westermann_config_init(void)
 {
-    cart_config_changed_slotmain(1, 1, CMODE_READ);
+    cart_config_changed_slotmain(CMODE_16KGAME, CMODE_16KGAME, CMODE_READ);
     westermann_a000 = 1;
 }
 
@@ -115,7 +116,7 @@ void westermann_config_setup(uint8_t *rawcart)
 {
     memcpy(roml_banks, rawcart, 0x2000);
     memcpy(romh_banks, &rawcart[0x2000], 0x2000);
-    cart_config_changed_slotmain(1, 1, CMODE_READ);
+    cart_config_changed_slotmain(CMODE_16KGAME, CMODE_16KGAME, CMODE_READ);
     westermann_a000 = 1;
 }
 
@@ -174,7 +175,7 @@ void westermann_detach(void)
    ARRAY | ROMH     |   0.0+  | 8192 BYTES of ROMH data
  */
 
-static char snap_module_name[] = "CARTWEST";
+static const char snap_module_name[] = "CARTWEST";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   1
 

@@ -16,67 +16,68 @@
 	along with EmuFramework.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <emuframework/EmuAppHelper.hh>
+#include <emuframework/EmuInput.hh>
 #include <imagine/gfx/GfxText.hh>
+#include <imagine/gfx/Quads.hh>
 #include <imagine/gui/TableView.hh>
 #include <imagine/gui/MenuItem.hh>
-#include <imagine/input/config.hh>
+#include <string>
+#include <string_view>
 
+namespace EmuEx
+{
+
+using namespace IG;
 class InputManagerView;
-struct InputDeviceConfig;
+class InputDeviceConfig;
 struct KeyCategory;
 
-class ButtonConfigSetView : public View, public EmuAppHelper<ButtonConfigSetView>
+class ButtonConfigSetView : public View, public EmuAppHelper
 {
 public:
-	using SetDelegate = DelegateFunc<void (Input::Event e)>;
+	using SetDelegate = DelegateFunc<void (const MappedKeys &)>;
 
 	ButtonConfigSetView(ViewAttachParams attach, InputManagerView &rootIMView,
-		Input::Device &dev, const char *actionName, SetDelegate onSet);
+		Input::Device &dev, std::string_view actionName, SetDelegate onSet);
 	void place() final;
-	bool inputEvent(Input::Event e) final;
-	void draw(Gfx::RendererCommands &cmds) final;
-	void onAddedToController(ViewController *c, Input::Event e) final;
+	bool inputEvent(const Input::Event&, ViewInputEventParams p = {}) final;
+	void draw(Gfx::RendererCommands&__restrict__, ViewDrawParams p = {}) const final;
+	void onAddedToController(ViewController *, const Input::Event &) final;
 
 private:
-	#ifdef CONFIG_INPUT_POINTING_DEVICES
-	IG::WindowRect unbindB{}, cancelB{};
-	#endif
-	std::array<char, 24> actionStr{};
-	Gfx::Text text{};
-	#ifdef CONFIG_INPUT_POINTING_DEVICES
-	Gfx::Text unbind{}, cancel{};
-	#endif
-	SetDelegate onSetD{};
+	IG::WindowRect unbindB, cancelB;
+	Gfx::Text text;
+	Gfx::Text unbind, cancel;
+	Gfx::IQuads quads;
+	SetDelegate onSetD;
 	const Input::Device &dev;
 	const Input::Device *savedDev{};
 	InputManagerView &rootIMView;
+	std::string actionStr;
+	MappedKeys pushedKeys;
 
 	void initPointerUI();
-	bool pointerUIIsInit();
+	bool pointerUIIsInit() const;
+	void finalize();
 };
 
-class ButtonConfigView : public TableView, public EmuAppHelper<ButtonConfigView>
+class ButtonConfigView : public TableView, public EmuAppHelper
 {
-private:
-	struct BtnConfigMenuItem : public DualTextMenuItem
-	{
-		using DualTextMenuItem::DualTextMenuItem;
-		void draw(Gfx::RendererCommands &, Gfx::GC xPos, Gfx::GC yPos, Gfx::GC xSize, Gfx::GC ySize,
-			Gfx::GC xIndent, _2DOrigin align, const Gfx::ProjectionPlane &, Gfx::Color) const final;
-	};
-
-	InputManagerView &rootIMView;
-	TextMenuItem reset{};
-	using KeyNameStr = std::array<char, 20>;
-	std::unique_ptr<BtnConfigMenuItem[]> btn{};
-	const KeyCategory *cat{};
-	InputDeviceConfig *devConf{};
-	Input::Time leftKeyPushTime{};
-
-	void onSet(Input::Key mapKey, int keyToSet);
-	static KeyNameStr makeKeyNameStr(Input::Key key, const char *name);
-
 public:
-	ButtonConfigView(ViewAttachParams attach, InputManagerView &rootIMView, const KeyCategory *cat, InputDeviceConfig &devConf);
-	bool inputEvent(Input::Event e) final;
+	ButtonConfigView(ViewAttachParams attach, InputManagerView &rootIMView, const KeyCategory &cat, InputDeviceConfig &devConf);
+	bool inputEvent(const Input::Event&, ViewInputEventParams p = {}) final;
+
+private:
+	InputManagerView &rootIMView;
+	TextMenuItem reset;
+	TextMenuItem resetDefaults;
+	std::unique_ptr<DualTextMenuItem[]> btn;
+	const KeyCategory &cat;
+	InputDeviceConfig &devConf;
+	SteadyClockTimePoint leftKeyPushTime{};
+
+	void onSet(int catIdx, MappedKeys);
+	void updateKeyNames(const KeyConfig &);
 };
+
+}

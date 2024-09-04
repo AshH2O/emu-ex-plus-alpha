@@ -21,124 +21,105 @@
 #include <imagine/gui/ViewStack.hh>
 #include <imagine/gui/ToastView.hh>
 
-namespace Base
+namespace IG
 {
 class AppContext;
 class Screen;
 class Window;
+class IO;
+class Viewport;
 }
 
-namespace Input
+namespace IG::Input
 {
 class Event;
+class KeyEvent;
 }
 
-class EmuSystemTask;
-class EmuViewController;
+namespace EmuEx
+{
+
+using namespace IG;
+class EmuApp;
 class EmuAudio;
+class EmuSystem;
 struct WindowData;
+struct FrameTimeConfig;
+class MainMenuView;
 
 class EmuMenuViewStack : public ViewStack
 {
 public:
-	EmuMenuViewStack(EmuViewController &);
-	bool inputEvent(Input::Event e) final;
-	constexpr EmuViewController &viewController() { return *emuViewControllerPtr; }
+	EmuMenuViewStack(ViewAttachParams, EmuApp &);
+	bool inputEvent(const Input::Event&) final;
+	constexpr EmuApp &app() { return *emuAppPtr; }
 
 protected:
-	EmuViewController *emuViewControllerPtr;
+	EmuApp *emuAppPtr;
 };
 
-class EmuViewController final: public ViewController, public EmuAppHelper<EmuViewController>
+class EmuViewController final: public ViewController, public EmuAppHelper
 {
 public:
-	EmuViewController();
-	EmuViewController(ViewAttachParams,
-		VController &, EmuVideoLayer &, EmuSystemTask *, EmuAudio &);
-	void pushAndShow(std::unique_ptr<View> v, Input::Event e, bool needsNavView, bool isModal = false) final;
+	EmuViewController(ViewAttachParams, VController &, EmuVideoLayer &, EmuSystem &);
+	void pushAndShow(std::unique_ptr<View>, const Input::Event &, bool needsNavView, bool isModal = false) final;
 	using ViewController::pushAndShow;
-	void pushAndShowModal(std::unique_ptr<View> v, Input::Event e, bool needsNavView);
-	void pushAndShowModal(std::unique_ptr<View> v, bool needsNavView);
+	void pushAndShowModal(std::unique_ptr<View>, const Input::Event &, bool needsNavView);
+	void pushAndShowModal(std::unique_ptr<View>, bool needsNavView);
 	void pop() final;
 	void popTo(View &v) final;
 	void dismissView(View &v, bool refreshLayout) final;
 	void dismissView(int idx, bool refreshLayout) final;
-	bool inputEvent(Input::Event e) final;
-	void showEmulation();
-	void showUI(bool updateTopView = true);
-	bool showAutoStateConfirm(Input::Event e, bool addToRecent);
+	bool inputEvent(const Input::Event&) final;
+	bool extraWindowInputEvent(const Input::Event &e);
+	void showEmulationView(FrameTimeConfig);
+	void showMenuView(bool updateTopView);
 	void placeEmuViews();
 	void placeElements();
-	void setEmuViewOnExtraWindow(bool on, Base::Screen &screen);
-	void startMainViewportAnimation();
-	void updateEmuAudioStats(unsigned underruns, unsigned overruns, unsigned callbacks, double avgCallbackFrames, unsigned frames);
-	void clearEmuAudioStats();
-	void closeSystem(bool allowAutosaveState = true);
+	void updateMainWindowViewport(IG::Window &, IG::Viewport, Gfx::RendererTask &);
+	void updateExtraWindowViewport(IG::Window &, IG::Viewport, Gfx::RendererTask &);
+	bool drawMainWindow(IG::Window &win, IG::WindowDrawParams, Gfx::RendererTask &);
+	bool drawExtraWindow(IG::Window &win, IG::WindowDrawParams, Gfx::RendererTask &);
 	void popToSystemActionsMenu();
 	void postDrawToEmuWindows();
-	Base::Screen *emuWindowScreen() const;
-	Base::Window &emuWindow() const;
+	IG::Screen *emuWindowScreen() const;
+	IG::Window &emuWindow() const;
 	WindowData &emuWindowData();
-	Gfx::RendererTask &rendererTask() const;
 	bool hasModalView() const;
 	void popModalViews();
 	void prepareDraw();
 	void popToRoot();
 	void showNavView(bool show);
 	void setShowNavViewBackButton(bool show);
-	void showSystemActionsView(ViewAttachParams attach, Input::Event e);
+	void showSystemActionsView(ViewAttachParams, const Input::Event &);
 	void onInputDevicesChanged();
 	void onSystemCreated();
-	EmuInputView &inputView();
-	ToastView &popupMessageView();
-	EmuVideoLayer &videoLayer() const;
-	EmuAudio &emuAudio() const;
-	void onScreenChange(Base::ApplicationContext, Base::Screen &, Base::ScreenChange);
-	void handleOpenFileCommand(const char *path);
-	void setFastForwardActive(bool active);
-	bool isMenuDismissKey(Input::Event);
-	void setSystemTask(EmuSystemTask *);
-	Base::ApplicationContext appContext() const;
+	void onSystemClosed();
+	MainMenuView &mainMenu();
+	bool isMenuDismissKey(const Input::KeyEvent &) const;
+	IG::ApplicationContext appContext() const;
+	bool isShowingEmulation() const { return showingEmulation; }
+	void onHide();
+	void movePopupToWindow(IG::Window &win);
+	void moveEmuViewToWindow(IG::Window &win);
+	View &top() const { return viewStack.top(); }
 
+public:
+	EmuView emuView;
+	EmuInputView inputView;
+	ToastView popup;
+	ConditionalMember<Gfx::supportsPresentationTime, SteadyClockTimePoint> presentTime{};
 protected:
-	static constexpr bool HAS_USE_RENDER_TIME = Config::envIsLinux
-		|| (Config::envIsAndroid && Config::ENV_ANDROID_MINSDK < 16);
-	EmuView emuView{};
-	EmuInputView emuInputView{};
-	ToastView popup{};
-	EmuMenuViewStack viewStack{*this};
-	Base::OnFrameDelegate onFrameUpdate{};
-	Gfx::RendererTask *rendererTask_{};
-	EmuSystemTask *systemTaskPtr{};
-	EmuAudio *emuAudioPtr{};
-	EmuApp *appPtr{};
-	Base::OnExit onExit{};
+	EmuMenuViewStack viewStack;
 	bool showingEmulation{};
-	Base::WindowFrameTimeSource winFrameTimeSrc{};
-	uint8_t targetFastForwardSpeed{};
+public:
+	bool drawBlankFrame{};
 
-	void initViews(ViewAttachParams attach);
-	void onFocusChange(bool in);
-	Base::OnFrameDelegate makeOnFrameDelayed(uint8_t delay);
-	void addOnFrameDelegate(Base::OnFrameDelegate onFrame);
-	void addOnFrameDelayed();
-	void addOnFrame();
-	void removeOnFrame();
-	void moveOnFrame(Base::Window &from, Base::Window &to);
-	void startEmulation();
-	void pauseEmulation();
-	void configureAppForEmulation(bool running);
-	void configureWindowForEmulation(Base::Window &win, bool running);
-	void startViewportAnimation(Base::Window &win);
-	void updateWindowViewport(Base::Window &win, Base::WindowSurfaceChange change);
-	void drawMainWindow(Base::Window &win, Gfx::RendererCommands &cmds, bool hasEmuView, bool hasPopup);
-	void movePopupToWindow(Base::Window &win);
-	void moveEmuViewToWindow(Base::Window &win);
-	void applyFrameRates(bool updateFrameTime = true);
-	bool allWindowsAreFocused() const;
-	WindowData &mainWindowData() const;
-	Base::Window &mainWindow() const;
-	void setWindowFrameClockSource(Base::WindowFrameTimeSource);
-	bool useRendererTime() const;
-	void configureSecondaryScreens();
+	static constexpr bool HAS_USE_RENDER_TIME = Config::envIsLinux
+		|| (Config::envIsAndroid && Config::ENV_ANDROID_MIN_SDK < 16);
+
+	void configureWindowForEmulation(Window &, FrameTimeConfig, bool running);
+	EmuVideoLayer &videoLayer() const;
 };
+
+}

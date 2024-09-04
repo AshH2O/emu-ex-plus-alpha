@@ -15,8 +15,7 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/config/defs.hh>
-#include <imagine/audio/OutputStream.hh>
+#include <imagine/audio/defs.hh>
 #include <SLES/OpenSLES.h>
 #include <SLES/OpenSLES_Android.h>
 #include <memory>
@@ -26,18 +25,19 @@ namespace IG::Audio
 
 class Manager;
 
-class OpenSLESOutputStream : public OutputStream
+class OpenSLESOutputStream
 {
 public:
 	OpenSLESOutputStream(const Manager &);
 	~OpenSLESOutputStream();
-	IG::ErrorCode open(OutputStreamConfig config) final;
-	void play() final;
-	void pause() final;
-	void close() final;
-	void flush() final;
-	bool isOpen() final;
-	bool isPlaying() final;
+	OpenSLESOutputStream &operator=(OpenSLESOutputStream &&) = delete;
+	StreamError open(OutputStreamConfig config);
+	void play();
+	void pause();
+	void close();
+	void flush();
+	bool isOpen();
+	bool isPlaying();
 	explicit operator bool() const;
 
 private:
@@ -46,10 +46,10 @@ private:
 	SLObjectItf player{};
 	SLPlayItf playerI{};
 	SLAndroidSimpleBufferQueueItf slBuffQI{};
-	OnSamplesNeededDelegate onSamplesNeeded{};
-	std::unique_ptr<uint8_t[]> buffer{};
-	uint32_t bufferFrames = 0;
-	uint32_t bufferBytes = 0;
+	OnSamplesNeededDelegate onSamplesNeeded;
+	std::unique_ptr<uint8_t[]> buffer;
+	int bufferFrames{};
+	int bufferBytes{};
 	bool isPlaying_{};
 	bool bufferQueued{};
 	bool supportsFloatFormat{};

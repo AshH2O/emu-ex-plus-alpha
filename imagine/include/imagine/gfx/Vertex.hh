@@ -16,81 +16,171 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/gfx/defs.hh>
-#include <imagine/pixmap/PixelDesc.hh>
+#include <imagine/glm/ext/vector_float2.hpp>
+#include <imagine/glm/ext/vector_int2_sized.hpp>
+#include <imagine/util/bit.hh>
 
-namespace Gfx
+namespace IG::Gfx
 {
 
 class RendererCommands;
 
-static constexpr auto VertexColorPixelFormat = IG::PIXEL_DESC_RGBA8888.nativeOrder();
+template <class T> constexpr inline AttribType attribType{};
+template <> constexpr inline AttribType attribType<uint8_t> = AttribType::UByte;
+template <> constexpr inline AttribType attribType<int16_t> = AttribType::Short;
+template <> constexpr inline AttribType attribType<uint16_t> = AttribType::UShort;
+template <> constexpr inline AttribType attribType<float> = AttribType::Float;
 
-class VertexInfo
+template <class T>
+concept VertexLayout = requires
 {
-public:
-	static constexpr uint32_t posOffset = 0;
-	static constexpr bool hasColor = false;
-	static constexpr uint32_t colorOffset = 0;
-	static constexpr bool hasTexture = false;
-	static constexpr uint32_t textureOffset = 0;
-	template<class Vtx>
-	static void bindAttribs(RendererCommands &cmds, const Vtx *v);
+    T::pos;
 };
 
-class Vertex : public VertexInfo
+struct VertexLayoutFlags
 {
-public:
-	VertexPos x{}, y{};
+	using BitSetClassInt = uint8_t;
 
-	constexpr Vertex() {};
-	constexpr Vertex(VertexPos x, VertexPos y):
-		x{x}, y{y} {}
-	static constexpr uint32_t ID = 1;
+	BitSetClassInt
+	position:1{},
+	textureCoordinate:1{},
+	color:1{};
+
+	constexpr bool operator==(VertexLayoutFlags const&) const = default;
 };
 
-class ColVertex : public VertexInfo
+template <VertexLayout V>
+constexpr VertexLayoutFlags vertexLayoutEnableMask()
 {
-public:
-	VertexPos x{}, y{};
-	VertexColor color{};
+	if constexpr(requires {V::pos; V::texCoord; V::color;})
+		return {.position = true, .textureCoordinate = true, .color = true};
+	else if constexpr(requires {V::pos; V::color;})
+		return {.position = true, .color = true};
+	else if constexpr(requires {V::pos; V::texCoord;})
+		return {.position = true, .textureCoordinate = true};
+	else
+		return {.position = true};
+}
 
-	constexpr ColVertex() {};
-	constexpr ColVertex(VertexPos x, VertexPos y, uint32_t color = 0):
-		x{x}, y{y}, color(color) {}
-	static constexpr bool hasColor = true;
-	static const uint32_t colorOffset;
-	static constexpr uint32_t ID = 2;
+template <VertexLayout V>
+constexpr VertexLayoutFlags vertexLayoutIntNormalizeMask()
+{
+	if constexpr(requires {V::intNormalizeMask;})
+		return V::intNormalizeMask;
+	else
+		return {.textureCoordinate = true, .color = true};
+}
+
+template <VertexLayout V>
+constexpr bool shouldNormalize(AttribType type, VertexLayoutFlags attribMask)
+{
+	return type != AttribType::Float && asInt(vertexLayoutIntNormalizeMask<V>() & attribMask);
+}
+
+template <VertexLayout V>
+constexpr AttribDesc posAttribDesc()
+{
+	using T = decltype(V::pos.x);
+	auto type = attribType<T>;
+	return {offsetof(V, pos), sizeof(V::pos) / sizeof(T), type, shouldNormalize<V>(type, {.position = true})};
+}
+
+template <VertexLayout V>
+constexpr AttribDesc colorAttribDesc()
+{
+	if constexpr(requires {V::color;})
+	{
+		using T = decltype(V::color.r);
+		auto type = attribType<T>;
+		return {offsetof(V, color), sizeof(V::color) / sizeof(T), type, shouldNormalize<V>(type, {.color = true})};
+	}
+	else
+	{
+		return {};
+	}
+}
+
+template <VertexLayout V>
+constexpr AttribDesc texCoordAttribDesc()
+{
+	if constexpr(requires {V::texCoord;})
+	{
+		using T = decltype(V::texCoord.x);
+		auto type = attribType<T>;
+		return {offsetof(V, texCoord), sizeof(V::texCoord) / sizeof(T), type, shouldNormalize<V>(type, {.textureCoordinate = true})};
+	}
+	else
+	{
+		return {};
+	}
+}
+
+struct VertexLayoutDesc
+{
+	AttribDesc pos, color, texCoord;
+
+	constexpr bool operator==(VertexLayoutDesc const&) const = default;
 };
 
-class TexVertex : public VertexInfo
+template<VertexLayout V>
+constexpr VertexLayoutDesc vertexLayoutDesc()
 {
-public:
-	VertexPos x{}, y{};
-	TextureCoordinate u{}, v{};
+	return {posAttribDesc<V>(), colorAttribDesc<V>(), texCoordAttribDesc<V>()};
+}
 
-	constexpr TexVertex() {};
-	constexpr TexVertex(VertexPos x, VertexPos y, TextureCoordinate u = 0, TextureCoordinate v = 0):
-		x{x}, y{y}, u{u}, v{v} {}
-	static constexpr bool hasTexture = true;
-	static const uint32_t textureOffset;
-	static constexpr uint32_t ID = 3;
+struct Vertex2F
+{
+	glm::vec2 pos;
 };
 
-class ColTexVertex : public VertexInfo
+struct Vertex2FColI
 {
-public:
-	VertexPos x{}, y{};
-	TextureCoordinate u{}, v{};
-	VertexColor color{};
+	glm::vec2 pos;
+	PackedColor color;
+};
 
-	constexpr ColTexVertex() {};
-	constexpr ColTexVertex(VertexPos x, VertexPos y, uint32_t color = 0, TextureCoordinate u = 0, TextureCoordinate v = 0):
-		x{x}, y{y}, u{u}, v{v}, color(color) {}
-	static constexpr bool hasColor = true;
-	static const uint32_t colorOffset;
-	static constexpr bool hasTexture = true;
-	static const uint32_t textureOffset;
-	static constexpr uint32_t ID = 4;
+struct Vertex2FTexF
+{
+	glm::vec2 pos;
+	glm::vec2 texCoord;
+};
+
+struct Vertex2FTexFColI
+{
+	glm::vec2 pos;
+	glm::vec2 texCoord;
+	PackedColor color;
+};
+
+struct Vertex2I
+{
+	glm::i16vec2 pos;
+};
+
+struct Vertex2IColI
+{
+	glm::i16vec2 pos;
+	PackedColor color;
+};
+
+struct Vertex2ITexI
+{
+	glm::i16vec2 pos;
+	glm::i16vec2 texCoord;
+};
+
+struct Vertex2ITexIColI
+{
+	glm::i16vec2 pos;
+	glm::i16vec2 texCoord;
+	PackedColor color;
+};
+
+struct Vertex2ITexIColF
+{
+	glm::i16vec2 pos;
+	glm::i16vec2 texCoord;
+	Color color;
 };
 
 }

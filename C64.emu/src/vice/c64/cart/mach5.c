@@ -111,7 +111,8 @@ static io_source_t mach5_io1_device = {
     mach5_dump,            /* device state information dump function */
     CARTRIDGE_MACH5,       /* cartridge ID */
     IO_PRIO_NORMAL,        /* normal priority, device read needs to be checked for collisions */
-    0                      /* insertion order, gets filled in by the registration function */
+    0,                     /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE         /* NO mirroring */
 };
 
 static io_source_t mach5_io2_device = {
@@ -127,7 +128,8 @@ static io_source_t mach5_io2_device = {
     mach5_dump,            /* device state information dump function */
     CARTRIDGE_MACH5,       /* cartridge ID */
     IO_PRIO_NORMAL,        /* normal priority, device read needs to be checked for collisions */
-    0                      /* insertion order, gets filled in by the registration function */
+    0,                     /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE         /* NO mirroring */
 };
 
 static io_source_list_t *mach5_io1_list_item = NULL;
@@ -219,7 +221,7 @@ void mach5_detach(void)
    ARRAY | ROML   |   0.0+  | 8192 BYTES of ROML data
  */
 
-static char snap_module_name[] = "CARTMACH5";
+static const char snap_module_name[] = "CARTMACH5";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   1
 

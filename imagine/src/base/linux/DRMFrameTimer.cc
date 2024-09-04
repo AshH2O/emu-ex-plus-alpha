@@ -13,25 +13,25 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "DRMFrameTimer"
 #include <imagine/base/Screen.hh>
 #include <imagine/logger/logger.h>
 #include <imagine/base/linux/DRMFrameTimer.hh>
-#include <imagine/util/UniqueFileDescriptor.hh>
+#include <imagine/util/memory/UniqueFileDescriptor.hh>
 #include <xf86drm.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <system_error>
 
-namespace Base
+namespace IG
 {
+
+constexpr SystemLogger log{"DRMFrameTimer"};
 
 static UniqueFileDescriptor openDevice()
 {
 	const char *drmCardPath = getenv("KMSDEVICE");
 	if(!drmCardPath)
 		drmCardPath = "/dev/dri/card0";
-	logMsg("opening device path:%s", drmCardPath);
+	log.info("opening device path:{}", drmCardPath);
 	return open(drmCardPath, O_RDWR | O_CLOEXEC, 0);
 }
 
@@ -43,19 +43,19 @@ DRMFrameTimer::DRMFrameTimer(Screen &screen, EventLoop loop)
 		logErr("error opening device:%s", std::system_category().message(errno).c_str());
 		return;
 	}
-	fdSrc = {"DRMFrameTimer", fd.release(), loop,
-		[this, &screen](int fd, int event)
+	fdSrc = {std::move(fd), {.debugLabel = "DRMFrameTimer", .eventLoop = loop},
+		[this, &screen](int fd, int)
 		{
 			requested = false;
 			if(cancelled)
 			{
 				cancelled = false;
-				return 1; // frame request was cancelled
+				return true; // frame request was cancelled
 			}
 			drmEventContext ctx{};
 			ctx.version = DRM_EVENT_CONTEXT_VERSION;
 			ctx.vblank_handler =
-				[](int fd, unsigned int frame, unsigned int sec, unsigned int usec, void *data)
+				[]([[maybe_unused]] int fd, [[maybe_unused]] unsigned int frame, unsigned int sec, unsigned int usec, void* data)
 				{
 					auto &frameTimer = *((DRMFrameTimer*)data);
 					constexpr uint64_t USEC_PER_SEC = 1000000;
@@ -65,20 +65,16 @@ DRMFrameTimer::DRMFrameTimer(Screen &screen, EventLoop loop)
 			auto err = drmHandleEvent(fd, &ctx);
 			if(err)
 			{
-				logErr("error in drmHandleEvent");
+				log.error("error in drmHandleEvent");
 			}
 			if(screen.isPosted())
 			{
-				if(screen.frameUpdate(timestamp))
+				if(screen.frameUpdate(SteadyClockTimePoint{timestamp}))
 					scheduleVSync();
 			}
-			return 1;
-		}};
-}
-
-DRMFrameTimer::~DRMFrameTimer()
-{
-	fdSrc.closeFD();
+			return true;
+		}
+	};
 }
 
 void DRMFrameTimer::scheduleVSync()
@@ -95,7 +91,7 @@ void DRMFrameTimer::scheduleVSync()
 	if(int err = drmWaitVBlank(fdSrc.fd(), &vbl);
 		err)
 	{
-		logErr("error in drmWaitVBlank");
+		log.error("error in drmWaitVBlank");
 	}
 }
 
@@ -104,12 +100,17 @@ void DRMFrameTimer::cancel()
 	cancelled = true;
 }
 
+void DRMFrameTimer::setEventsOnThisThread(ApplicationContext)
+{
+	fdSrc.attach(EventLoop::forThread(), {});
+}
+
 bool DRMFrameTimer::testSupport()
 {
 	int fd = openDevice();
 	if(fd == -1)
 	{
-		logErr("error opening device:%s", std::system_category().message(errno).c_str());
+		log.error("error opening device:{}", std::system_category().message(errno));
 		return false;
 	}
 	// test drmWaitVBlank
@@ -120,7 +121,7 @@ bool DRMFrameTimer::testSupport()
 		if(int err = drmWaitVBlank(fd, &vbl);
 			err)
 		{
-			logErr("error in drmWaitVBlank:%s, cannot use frame timer", std::system_category().message(errno).c_str());
+			log.error("error in drmWaitVBlank:{}, cannot use frame timer", std::system_category().message(errno));
 			return false;
 		}
 	}

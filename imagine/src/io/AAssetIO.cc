@@ -14,97 +14,94 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #define LOGTAG "AAssetIO"
+#include <imagine/io/AAssetIO.hh>
+#include <imagine/base/ApplicationContext.hh>
+#include <imagine/util/format.hh>
+#include <imagine/logger/logger.h>
+#include "utils.hh"
+#include <imagine/io/IOUtils-impl.hh>
+#include <android/asset_manager.h>
 #include <unistd.h>
 #include <sys/mman.h>
-#include <imagine/io/AAssetIO.hh>
-#include "utils.hh"
-#include <imagine/base/ApplicationContext.hh>
-#include <imagine/logger/logger.h>
-#include <android/asset_manager.h>
 
-GenericIO AAssetIO::makeGeneric()
+namespace IG
 {
-	return GenericIO{*this};
-}
 
-static int accessHintToAAssetMode(IO::AccessHint advice)
+template class IOUtils<AAssetIO>;
+
+static int asAAssetMode(IOAccessHint advice)
 {
 	switch(advice)
 	{
 		default: return AASSET_MODE_UNKNOWN;
-		case IO::AccessHint::SEQUENTIAL: return AASSET_MODE_STREAMING;
-		case IO::AccessHint::RANDOM: return AASSET_MODE_RANDOM;
-		case IO::AccessHint::ALL: return AASSET_MODE_BUFFER;
+		case IOAccessHint::Sequential: return AASSET_MODE_STREAMING;
+		case IOAccessHint::Random: return AASSET_MODE_RANDOM;
+		case IOAccessHint::All: return AASSET_MODE_BUFFER;
 	}
 }
 
-std::error_code AAssetIO::open(Base::ApplicationContext ctx, const char *name, AccessHint access)
+AAssetIO::AAssetIO(ApplicationContext ctx, CStringView name, OpenFlags openFlags):
+	asset{AAssetManager_open(ctx.aAssetManager(), name, asAAssetMode(openFlags.accessHint))}
 {
-	logMsg("opening asset %s", name);
-	auto mode = accessHintToAAssetMode(access);
-	asset.reset(AAssetManager_open(ctx.aAssetManager(), name, mode));
-	if(!asset)
+	auto access = openFlags.accessHint;
+	if(!asset) [[unlikely]]
 	{
-		logErr("error in AAssetManager_open");
-		return {EINVAL, std::system_category()};
+		logErr("error in AAssetManager_open(%s, %s)", name.data(), asString(access));
+		if(openFlags.test)
+			return;
+		else
+			throw std::runtime_error{std::format("Error opening asset: {}", name)};
 	}
-	switch(access)
-	{
-		case IO::AccessHint::NORMAL: break;
-		case IO::AccessHint::SEQUENTIAL: advise(0, 0, IO::Advice::SEQUENTIAL); break;
-		case IO::AccessHint::RANDOM: advise(0, 0, IO::Advice::RANDOM); break;
-		case IO::AccessHint::ALL: advise(0, 0, IO::Advice::WILLNEED); break;
-	}
-	return {};
+	logMsg("opened asset:%p name:%s access:%s", asset.get(), name.data(), asString(access));
+	if(access == IOAccessHint::All)
+		makeMapIO();
 }
 
-ssize_t AAssetIO::read(void *buff, size_t bytes, std::error_code *ecOut)
+ssize_t AAssetIO::read(void *buff, size_t bytes, std::optional<off_t> offset)
 {
 	if(mapIO)
-		return mapIO.read(buff, bytes, ecOut);
-	auto bytesRead = AAsset_read(asset.get(), buff, bytes);
-	if(bytesRead < 0)
+		return mapIO.read(buff, bytes, offset);
+	else
 	{
-		if(ecOut)
-			*ecOut = {EIO, std::system_category()};
-		return -1;
+		if(offset)
+		{
+			return readAtPosGeneric(buff, bytes, *offset);
+		}
+		else
+		{
+			auto bytesRead = AAsset_read(asset.get(), buff, bytes);
+			if(bytesRead < 0) [[unlikely]]
+			{
+				return -1;
+			}
+			return bytesRead;
+		}
 	}
-	return bytesRead;
 }
 
-const uint8_t *AAssetIO::mmapConst()
+ssize_t AAssetIO::write(const void*, size_t, std::optional<off_t>)
 {
-	if(makeMapIO())
-		return mapIO.mmapConst();
-	else return nullptr;
-}
-
-ssize_t AAssetIO::write(const void *buff, size_t bytes, std::error_code *ecOut)
-{
-	if(ecOut)
-		*ecOut = {ENOSYS, std::system_category()};
 	return -1;
 }
 
-off_t AAssetIO::seek(off_t offset, IO::SeekMode mode, std::error_code *ecOut)
+std::span<uint8_t> AAssetIO::map()
+{
+	if(makeMapIO())
+		return mapIO.map();
+	else
+		return {};
+}
+
+off_t AAssetIO::seek(off_t offset, IOSeekMode mode)
 {
 	if(mapIO)
-		return mapIO.seek(offset, mode, ecOut);
-	assumeExpr(isSeekModeValid(mode));
-	auto newPos = AAsset_seek(asset.get(), offset, mode);
-	if(newPos < 0)
+		return mapIO.seek(offset, mode);
+	auto newPos = AAsset_seek(asset.get(), offset, (int)mode);
+	if(newPos < 0) [[unlikely]]
 	{
-		if(ecOut)
-			*ecOut = {EINVAL, std::system_category()};;
 		return -1;
 	}
 	return newPos;
-}
-
-void AAssetIO::close()
-{
-	mapIO.close();
-	asset.reset();
 }
 
 size_t AAssetIO::size()
@@ -128,9 +125,10 @@ AAssetIO::operator bool() const
 
 void AAssetIO::advise(off_t offset, size_t bytes, Advice advice)
 {
-	if(!makeMapIO() || AAsset_isAllocated(asset.get()))
-		return;
-	mapIO.advise(offset, bytes, advice);
+	if(offset == 0 && bytes == 0 && advice == IOAdvice::WillNeed)
+	makeMapIO();
+	if(mapIO)
+		mapIO.advise(offset, bytes, advice);
 }
 
 bool AAssetIO::makeMapIO()
@@ -139,11 +137,28 @@ bool AAssetIO::makeMapIO()
 		return true;
 	const void *buff = AAsset_getBuffer(asset.get());
 	if(!buff)
+	{
+		logErr("error in AAsset_getBuffer(%p)", asset.get());
 		return false;
+	}
 	auto size = AAsset_getLength(asset.get());
-	mapIO.open(buff, size);
-	logMsg("mapped into memory");
+	mapIO = {IOBuffer{{(uint8_t*)buff, (size_t)size}}};
 	return true;
+}
+
+IOBuffer AAssetIO::releaseBuffer()
+{
+	if(!makeMapIO())
+		return {};
+	auto map = mapIO.map();
+	logMsg("releasing asset:%p with buffer:%p (%zu bytes)", asset.get(), map.data(), map.size());
+	return {map, {},
+		[asset = asset.release()](const uint8_t*, size_t)
+		{
+			logMsg("closing released asset:%p", asset);
+			AAsset_close(asset);
+		}
+	};
 }
 
 void AAssetIO::closeAAsset(AAsset *asset)
@@ -152,4 +167,6 @@ void AAssetIO::closeAAsset(AAsset *asset)
 		return;
 	logMsg("closing asset:%p", asset);
 	AAsset_close(asset);
+}
+
 }

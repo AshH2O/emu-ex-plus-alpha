@@ -17,8 +17,7 @@
 
 #include <imagine/config/defs.hh>
 #include <imagine/gfx/defs.hh>
-#include <imagine/gfx/PixmapTexture.hh>
-#include <imagine/gfx/PixmapBufferTexture.hh>
+#include <imagine/gfx/TextureSamplerConfig.hh>
 #include <imagine/pixmap/PixelFormat.hh>
 
 #ifdef CONFIG_GFX_OPENGL
@@ -26,111 +25,109 @@
 #endif
 
 #include <vector>
+#include <span>
+#include <string_view>
 
 namespace IG::Data
 {
 class PixmapSource;
 }
 
-namespace Base
+namespace IG
 {
 class Window;
+class Viewport;
 }
 
-namespace Gfx
+namespace IG::Gfx
 {
 
 class RendererTask;
 class Program;
 
-static_assert((uint8_t)TextureBufferMode::DEFAULT == 0, "TextureBufferMode::DEFAULT != 0");
-
 struct TextureBufferModeDesc
 {
 	const char *name = "";
 	TextureBufferMode mode{};
-
-	constexpr TextureBufferModeDesc() {}
-	constexpr TextureBufferModeDesc(const char *name, TextureBufferMode mode):name{name}, mode{mode} {}
 	constexpr bool operator ==(TextureBufferMode mode_) const { return mode == mode_; }
 
 };
 
 struct DrawableConfig
 {
-	IG::PixelFormat pixelFormat{};
+	PixelFormat pixelFormat{};
 	ColorSpace colorSpace{};
 	constexpr bool operator ==(const DrawableConfig&) const = default;
+	explicit constexpr operator bool() const { return (bool)pixelFormat || (bool)colorSpace; }
 };
 
 struct DrawableConfigDesc
 {
-	const char *name;
-	DrawableConfig config;
-
+	const char *name{};
+	DrawableConfig config{};
 	constexpr bool operator ==(const DrawableConfig &c) const { return config == c; }
+	explicit constexpr operator bool() const { return (bool)config; }
 };
 
 class Renderer : public RendererImpl
 {
 public:
 	using RendererImpl::RendererImpl;
-	Renderer(Base::ApplicationContext, Error &errOut);
+	Renderer(ApplicationContext);
 	~Renderer();
 	void configureRenderer();
 	bool isConfigured() const;
 	const RendererTask &task() const;
 	RendererTask &task();
-	Base::ApplicationContext appContext() const;
-	Error initMainTask(Base::Window *initialWindow, DrawableConfig c = {});
-	bool attachWindow(Base::Window &, DrawableConfig c = {});
-	void detachWindow(Base::Window &);
-	bool setDrawableConfig(Base::Window &, DrawableConfig);
+	ApplicationContext appContext() const;
+	void initMainTask(Window *initialWindow, DrawableConfig c = {});
+	bool attachWindow(Window &, DrawableConfig c = {});
+	void detachWindow(Window &);
+	bool setDrawableConfig(Window &, DrawableConfig);
+	void setDefaultViewport(Window &, Viewport);
 	bool canRenderToMultiplePixelFormats() const;
-	Base::NativeWindowFormat nativeWindowFormat() const;
-	void setWindowValidOrientations(Base::Window &win, Base::Orientation validO);
-	void animateProjectionMatrixRotation(Base::Window &win, Angle srcAngle, Angle destAngle);
-	static ClipRect makeClipRect(const Base::Window &win, IG::WindowRect rect);
+	NativeWindowFormat nativeWindowFormat() const;
+	void setWindowValidOrientations(Window &, Orientations);
+	void animateWindowRotation(Window &, float srcAngle, float destAngle);
+	float projectionRollAngle(const Window &) const;
+	static ClipRect makeClipRect(const Window &win, WindowRect rect);
 	bool supportsSyncFences() const;
-	void setPresentationTime(Base::Window &, IG::FrameTime time) const;
-	unsigned maxSwapChainImages() const;
+	bool supportsPresentationTime() const;
+	PresentMode evalPresentMode(const Window &, PresentMode) const;
+	int maxSwapChainImages() const;
 	void setCorrectnessChecks(bool on);
 	std::vector<DrawableConfigDesc> supportedDrawableConfigs() const;
 	bool hasBgraFormat(TextureBufferMode) const;
 
 	// shaders
 
-	Shader makeShader(const char **src, uint32_t srcCount, ShaderType type);
-	Shader makeShader(const char *src, ShaderType type);
-	Shader makeCompatShader(const char **src, uint32_t srcCount, ShaderType type);
-	Shader makeCompatShader(const char *src, ShaderType type);
-	Shader makeDefaultVShader();
-	bool makeCommonProgram(CommonProgram);
-	bool commonProgramIsCompiled(CommonProgram program) const;
-	void deleteShader(Shader shader);
-	void uniformF(Program &program, int uniformLocation, float v1, float v2);
+	Shader makeShader(std::span<std::string_view> srcs, ShaderType type);
+	Shader makeShader(std::string_view src, ShaderType type);
+	Shader makeCompatShader(std::span<std::string_view> srcs, ShaderType type);
+	Shader makeCompatShader(std::string_view src, ShaderType type);
+	BasicEffect &basicEffect();
 	void releaseShaderCompiler();
 	void autoReleaseShaderCompiler();
 
 	// resources
 
 	Texture makeTexture(TextureConfig);
-	Texture makeTexture(IG::Data::PixmapSource, const TextureSampler *compatSampler = {}, bool makeMipmaps = true);
-	PixmapTexture makePixmapTexture(TextureConfig);
-	PixmapTexture makePixmapTexture(IG::Data::PixmapSource, const TextureSampler *compatSampler = {}, bool makeMipmaps = true);
+	Texture makeTexture(Data::PixmapSource, TextureSamplerConfig samplerConf = {}, bool makeMipmaps = true);
 	PixmapBufferTexture makePixmapBufferTexture(TextureConfig config, TextureBufferMode mode = {}, bool singleBuffer = false);
 	std::vector<TextureBufferModeDesc> textureBufferModes();
-	TextureBufferMode makeValidTextureBufferMode(TextureBufferMode mode = {});
-	TextureSampler makeTextureSampler(TextureSamplerConfig config);
-	const TextureSampler &makeCommonTextureSampler(CommonTextureSampler sampler);
-	const TextureSampler &make(CommonTextureSampler sampler) { return makeCommonTextureSampler(sampler); }
-	const TextureSampler &commonTextureSampler(CommonTextureSampler sampler) const;
-	const TextureSampler &get(CommonTextureSampler sampler) const { return commonTextureSampler(sampler); }
+	TextureBufferMode evalTextureBufferMode(TextureBufferMode mode = {});
+	TextureBufferMode validateTextureBufferMode(TextureBufferMode);
+	TextureSampler makeTextureSampler(TextureSamplerConfig);
 
 	// color space control
 
 	bool supportsColorSpace() const;
 	bool hasSrgbColorSpaceWriteControl() const;
+	static ColorSpace supportedColorSpace(PixelFormat, ColorSpace wantedColorSpace);
+
+	// optional features
+
+	static const bool enableSamplerObjects;
 };
 
 }

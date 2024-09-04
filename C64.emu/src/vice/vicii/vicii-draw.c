@@ -230,8 +230,8 @@ inline static void _draw_std_text(uint8_t *p, unsigned int xs, unsigned int xe,
         uint32_t *ptr = table_ptr + (vicii.cbuf[i] << 8);
         int d = msk_ptr[i] = char_ptr[vicii.vbuf[i] * 8];
 
-        *((uint32_t *)p + i * 2) = ptr[d >> 4];
-        *((uint32_t *)p + i * 2 + 1) = ptr[d & 0xf];
+        *((uint32align1 *)p + i * 2) = ptr[d >> 4];
+        *((uint32align1 *)p + i * 2 + 1) = ptr[d & 0xf];
     }
 }
 
@@ -379,8 +379,8 @@ inline static void _draw_hires_bitmap(uint8_t *p, unsigned int xs,
         }
 
         d = msk_ptr[i] = bmval;
-        *((uint32_t *)p + i * 2) = ptr[d >> 4];
-        *((uint32_t *)p + i * 2 + 1) = ptr[d & 0xf];
+        *((uint32align2 *)p + i * 2) = ptr[d >> 4];
+        *((uint32align2 *)p + i * 2 + 1) = ptr[d & 0xf];
     }
 }
 
@@ -501,7 +501,7 @@ inline static void _draw_mc_text(uint8_t *p, unsigned int xs, unsigned int xe,
     uint8_t c[8];
     uint32_t *table_ptr;
     uint8_t *char_ptr, *msk_ptr;
-    uint16_t *ptmp;
+    uint16align1 *ptmp;
     unsigned int i;
 
     table_ptr = hr_table + (vicii.raster.background_color << 4);
@@ -519,16 +519,16 @@ inline static void _draw_mc_text(uint8_t *p, unsigned int xs, unsigned int xe,
         uint8_t c3 = vicii.cbuf[i];
         if (c3 & 0x8) {
             c[7] = c[6] = c3 & 0x7;
-            ptmp[0] = ((uint16_t *)c)[mc_table[d]];
-            ptmp[1] = ((uint16_t *)c)[mc_table[0x100 + d]];
-            ptmp[2] = ((uint16_t *)c)[mc_table[0x200 + d]];
-            ptmp[3] = ((uint16_t *)c)[d & 3];
+            ptmp[0] = ((uint16align1 *)c)[mc_table[d]];
+            ptmp[1] = ((uint16align1 *)c)[mc_table[0x100 + d]];
+            ptmp[2] = ((uint16align1 *)c)[mc_table[0x200 + d]];
+            ptmp[3] = ((uint16align1 *)c)[d & 3];
             ptmp += 4;
             msk_ptr[i] = mcmsktable[d];
         } else {
             uint32_t *ptr = table_ptr + (c3 << 8);
-            *((uint32_t *)ptmp) = ptr[d >> 4];
-            *((uint32_t *)(ptmp + 2)) = ptr[d & 0xf];
+            *((uint32align1 *)ptmp) = ptr[d >> 4];
+            *((uint32align1 *)(ptmp + 2)) = ptr[d & 0xf];
             ptmp += 4;
             msk_ptr[i] = d;
         }
@@ -1339,8 +1339,8 @@ inline static void _draw_idle(uint8_t *p, unsigned int xs, unsigned int xe,
         c2 = hr_table[offs + (d & 0xf)];
 
         for (i = xs * 8; i <= xe * 8; i += 8) {
-            *((uint32_t *)(p + i)) = c1;
-            *((uint32_t *)(p + i + 4)) = c2;
+            *((uint32align1 *)(p + i)) = c1;
+            *((uint32align1 *)(p + i + 4)) = c2;
         }
         memset(msk_ptr + xs, d, xe + 1 - xs);
     } else {

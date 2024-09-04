@@ -13,224 +13,182 @@
 	You should have received a copy of the GNU General Public License
 	along with MSX.emu.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <emuframework/EmuApp.hh>
-#include <emuframework/OptionView.hh>
-#include <emuframework/EmuSystemActionsView.hh>
+#include <emuframework/SystemOptionView.hh>
+#include <emuframework/AudioOptionView.hh>
+#include <emuframework/FilePathOptionView.hh>
+#include <emuframework/DataPathSelectView.hh>
+#include <emuframework/SystemActionsView.hh>
 #include <emuframework/FilePicker.hh>
+#include <emuframework/viewUtils.hh>
 #include <imagine/gui/AlertView.hh>
 #include <imagine/gui/TextTableView.hh>
 #include <imagine/fs/FS.hh>
-#include "internal.hh"
+#include <imagine/fs/AssetFS.hh>
+#include <imagine/fs/ArchiveFS.hh>
+#include <imagine/util/format.hh>
+#include <imagine/util/string.h>
+#include "MainApp.hh"
+#include <imagine/logger/logger.h>
 
 extern "C"
 {
 	#include <blueMSX/IoDevice/Disk.h>
 }
 
-static std::vector<FS::FileString> machinesNames(const char *basePath)
+namespace EmuEx
 {
-	std::vector<FS::FileString> machineName{};
-	auto machinePath = FS::makePathStringPrintf("%s/Machines", basePath);
-	for(auto &entry : FS::directory_iterator{machinePath})
-	{
-		auto configPath = FS::makePathStringPrintf("%s/%s/config.ini", machinePath.data(), entry.name());
-		if(!FS::exists(configPath))
-		{
-			//logMsg("%s doesn't exist", configPath.data());
-			continue;
-		}
-		machineName.emplace_back(FS::makeFileString(entry.name()));
-		logMsg("found machine:%s", entry.name());
-	}
-	std::sort(machineName.begin(), machineName.end(),
-		[](FS::FileString n1, FS::FileString n2)
-		{
-			return FS::fileStringNoCaseLexCompare(n1, n2);
-		});
-	return machineName;
-}
 
-static int machineIndex(std::vector<FS::FileString> &name, FS::FileString searchName)
+using MainAppHelper = EmuAppHelperBase<MainApp>;
+
+constexpr SystemLogger log{"MSX.emu"};
+
+static std::vector<FS::FileString> readMachinesNames(IG::ApplicationContext ctx, std::string_view firmwarePath)
 {
-	int currentMachineIdx =
-		std::find(name.begin(), name.end(), searchName) - name.begin();
-	if(currentMachineIdx != (int)name.size())
+	std::vector<FS::FileString> machineNames;
+	try
 	{
-		//logMsg("current machine is idx %d", currentMachineIdx);
-		return(currentMachineIdx);
+		if(EmuApp::hasArchiveExtension(firmwarePath))
+		{
+			for(auto &entry : FS::ArchiveIterator{ctx.openFileUri(firmwarePath)})
+			{
+				if(entry.type() == FS::file_type::regular && entry.name().ends_with("/config.ini"))
+				{
+					auto name = FS::basename(FS::dirname(entry.name()));
+					machineNames.emplace_back(name);
+					log.info("found machine:{}", name);
+				}
+			}
+		}
+		else
+		{
+			auto machinesPath = FS::uriString(firmwarePath, "Machines");
+			ctx.forEachInDirectoryUri(machinesPath, [&machineNames, &machinesPath, ctx](auto &entry)
+			{
+				auto configPath = FS::uriString(machinesPath, entry.name(), "config.ini");
+				if(!ctx.fileUriExists(configPath))
+				{
+					//log.debug("{} doesn't exist", configPath);
+					return true;
+				}
+				machineNames.emplace_back(entry.name());
+				log.info("found machine:{}", entry.name());
+				return true;
+			});
+		}
+	}
+	catch(...)
+	{
+		log.warn("no machines in:{}", firmwarePath);
+	}
+	if constexpr(Config::envIsAndroid)
+	{
+		// asset directory implementation skips directories, manually add bundled machines
+		machineNames.emplace_back("MSX - C-BIOS");
+		machineNames.emplace_back("MSX2 - C-BIOS");
+		machineNames.emplace_back("MSX2+ - C-BIOS");
 	}
 	else
 	{
-		return -1;
+		try
+		{
+			for(auto &entry : ctx.openAssetDirectory("Machines"))
+			{
+				machineNames.emplace_back(entry.name());
+				log.info("added asset path machine:{}", entry.name());
+			}
+		}
+		catch(...)
+		{
+			log.error("error opening asset directory");
+		}
 	}
+	std::ranges::sort(machineNames, caselessLexCompare);
+	// remove any duplicates
+	const auto [firstDupe, lastDupe] = std::ranges::unique(machineNames);
+	machineNames.erase(firstDupe, lastDupe);
+	return machineNames;
 }
 
-void installFirmwareFiles(Base::ApplicationContext ctx)
+class CustomSystemOptionView : public SystemOptionView, public MainAppHelper
 {
-	auto &app = EmuApp::get(ctx);
-	std::error_code ec{};
-	FS::create_directory(machineBasePath, ec);
-	if(ec && ec.value() != (int)std::errc::file_exists)
-	{
-		app.printfMessage(4, 1, "Can't create directory:\n%s", machineBasePath.data());
-		return;
-	}
+	using MainAppHelper::system;
 
-	const char *dirsToCreate[] =
-	{
-		"Machines", "Machines/MSX - C-BIOS",
-		"Machines/MSX2 - C-BIOS", "Machines/MSX2+ - C-BIOS"
-	};
+	std::vector<FS::FileString> machineNames{};
+	std::vector<TextMenuItem> machineItems{};
 
-	for(auto e : dirsToCreate)
+	enum class MachineType {msx, coleco};
+
+	template<MachineType type>
+	MultiChoiceMenuItem::Config machineItemConfig()
 	{
-		auto pathTemp = FS::makePathStringPrintf("%s/%s", machineBasePath.data(), e);
-		std::error_code ec{};
-		FS::create_directory(pathTemp, ec);
-		if(ec && ec.value() != (int)std::errc::file_exists)
+		return
 		{
-			app.printfMessage(4, 1, "Can't create directory:\n%s", pathTemp.data());
-			return;
-		}
+			.onSetDisplayString = [](auto idx, Gfx::Text& t)
+			{
+				if(idx == -1)
+				{
+					t.resetString("None");
+					return true;
+				}
+				return false;
+			},
+			.onSelect = [this](MultiChoiceMenuItem &item, View &view, Input::Event e)
+			{
+				if(!machineItems.size())
+				{
+					log.error("no machine definitions are present");
+					return;
+				}
+				for(auto &&[idx, i] : enumerate(machineItems))
+				{
+					i.onSelect = [this, name = machineNames[idx].data()](Input::Event)
+					{
+						if(type == MachineType::coleco)
+							system().setDefaultColecoMachineName(name);
+						else
+							system().setDefaultMachineName(name);
+					};
+				}
+				item.defaultOnSelect(view, e);
+			}
+		};
 	}
-
-	const char *srcPath[] =
-	{
-		"cbios.txt", "cbios.txt", "cbios.txt",
-		"cbios_logo_msx1.rom", "cbios_main_msx1.rom", "config1.ini",
-		"cbios_logo_msx2.rom", "cbios_main_msx2.rom", "cbios_sub.rom", "config2.ini",
-		"cbios_logo_msx2+.rom", "cbios_main_msx2+.rom", "cbios_sub.rom", "cbios_music.rom", "config3.ini"
-	};
-	const char *destDir[] =
-	{
-			"MSX - C-BIOS", "MSX2 - C-BIOS", "MSX2+ - C-BIOS",
-			"MSX - C-BIOS", "MSX - C-BIOS", "MSX - C-BIOS",
-			"MSX2 - C-BIOS", "MSX2 - C-BIOS", "MSX2 - C-BIOS", "MSX2 - C-BIOS",
-			"MSX2+ - C-BIOS", "MSX2+ - C-BIOS", "MSX2+ - C-BIOS", "MSX2+ - C-BIOS", "MSX2+ - C-BIOS"
-	};
-
-	for(auto &e : srcPath)
-	{
-		auto src = ctx.openAsset(e, IO::AccessHint::ALL);
-		if(!src)
-		{
-			app.printfMessage(4, 1, "Can't open source file:\n %s", e);
-			return;
-		}
-		auto e_i = &e - srcPath;
-		auto pathTemp = FS::makePathStringPrintf("%s/Machines/%s/%s",
-				machineBasePath.data(), destDir[e_i], strstr(e, "config") ? "config.ini" : e);
-		if(FileUtils::writeToPath(pathTemp.data(), src) == -1)
-		{
-			app.printfMessage(4, 1, "Can't write file:\n%s", e);
-			return;
-		}
-	}
-
-	setDefaultMachineName("MSX2 - C-BIOS");
-	app.postMessage("Installation OK");
-}
-
-class CustomSystemOptionView : public SystemOptionView
-{
-private:
-	std::vector<FS::FileString> msxMachineName{};
-	std::vector<TextMenuItem> msxMachineItem{};
 
 	MultiChoiceMenuItem msxMachine
 	{
-		"Default Machine Type", &defaultFace(),
-		[](int idx, Gfx::Text &t)
-		{
-			if(idx == -1)
-			{
-				t.setString("None");
-				return true;
-			}
-			return false;
-		},
-		0,
-		msxMachineItem,
-		[this](MultiChoiceMenuItem &item, View &view, Input::Event e)
-		{
-			if(!msxMachineItem.size())
-			{
-				app().printfMessage(4, 1, "Place machine directory in:\n%s", machineBasePath.data());
-				return;
-			}
-			item.defaultOnSelect(view, e);
-		}
+		"Default MSX Machine", attachParams(), 0,
+		machineItems,
+		machineItemConfig<MachineType::msx>()
+	};
+
+	MultiChoiceMenuItem colecoMachine
+	{
+		"Default Coleco Machine", attachParams(), 0,
+		machineItems,
+		machineItemConfig<MachineType::coleco>()
 	};
 
 	void reloadMachineItem()
 	{
-		msxMachineItem.clear();
-		msxMachineName = machinesNames(machineBasePath.data());
-		for(const auto &name : msxMachineName)
+		machineItems.clear();
+		machineNames = readMachinesNames(appContext(), system().firmwarePath());
+		for(const auto &name : machineNames)
 		{
-			msxMachineItem.emplace_back(name.data(), &defaultFace(),
-			[name = name.data()](Input::Event)
-			{
-				setDefaultMachineName(name);
-				logMsg("set machine type: %s", name);
-			});
+			machineItems.emplace_back(name, attachParams(), nullptr);
 		}
-		msxMachine.setSelected(machineIndex(msxMachineName, FS::makeFileString(optionDefaultMachineName)));
+		msxMachine.setSelected(findIndex(machineNames, std::string_view{system().optionDefaultMachineNameStr}));
+		colecoMachine.setSelected(findIndex(machineNames, std::string_view{system().optionDefaultColecoMachineNameStr}));
 	}
-
-	TextMenuItem installCBIOS
-	{
-		"Install MSX C-BIOS", &defaultFace(),
-		[this](Input::Event e)
-		{
-			auto ynAlertView = makeView<YesNoAlertView>(
-				string_makePrintf<512>("Install the C-BIOS BlueMSX machine files to: %s", machineBasePath.data()).data());
-			ynAlertView->setOnYes(
-				[this]()
-				{
-					installFirmwareFiles(appContext());
-				});
-			app().pushAndShowModalView(std::move(ynAlertView), e);
-		}
-	};
 
 	BoolMenuItem skipFdcAccess
 	{
-		"Fast-forward Disk IO", &defaultFace(),
-		(bool)optionSkipFdcAccess,
+		"Fast-forward Disk IO", attachParams(),
+		system().optionSkipFdcAccess,
 		[this](BoolMenuItem &item, View &, Input::Event e)
 		{
-			optionSkipFdcAccess = item.flipBoolValue(*this);
+			system().optionSkipFdcAccess = item.flipBoolValue(*this);
 		}
 	};
-
-	static std::array<char, 256> makeMachinePathMenuEntryStr()
-	{
-		return string_makePrintf<256>("System/BIOS Path: %s", strlen(machineCustomPath.data()) ? FS::basename(machineCustomPath).data() : "Default");
-	}
-
-	TextMenuItem machineFilePath
-	{
-		nullptr, &defaultFace(),
-		[this](Input::Event e)
-		{
-			pushAndShowFirmwarePathMenu("System/BIOS Path", e);
-			postDraw();
-		}
-	};
-
-	void onFirmwarePathChange(const char *path, Input::Event e) final
-	{
-		machineFilePath.compile(makeMachinePathMenuEntryStr().data(), renderer(), projP);
-		machineBasePath = makeMachineBasePath(appContext(), machineCustomPath);
-		reloadMachineItem();
-		msxMachine.compile(renderer(), projP);
-		if(!strlen(path))
-		{
-			app().printfMessage(4, false, "Using default path:\n%s/MSX.emu",
-				(Config::envIsLinux && !Config::MACHINE_IS_PANDORA) ? appContext().assetPath().data() : appContext().sharedStoragePath().data());
-		}
-	}
 
 public:
 	CustomSystemOptionView(ViewAttachParams attach): SystemOptionView{attach, true}
@@ -239,12 +197,58 @@ public:
 		reloadMachineItem();
 		item.emplace_back(&skipFdcAccess);
 		item.emplace_back(&msxMachine);
-		machineFilePath.setName(makeMachinePathMenuEntryStr().data());
-		item.emplace_back(&machineFilePath);
-		if(canInstallCBIOS)
+		item.emplace_back(&colecoMachine);
+	}
+};
+
+class CustomFilePathOptionView : public FilePathOptionView, public MainAppHelper
+{
+	using MainAppHelper::app;
+	using MainAppHelper::system;
+	friend class FilePathOptionView;
+
+	std::string machinePathMenuEntryStr(IG::CStringView path) const
+	{
+		return std::format("BIOS: {}", appContext().fileUriDisplayName(path));
+	}
+
+	TextMenuItem machineFilePath
+	{
+		machinePathMenuEntryStr(system().firmwarePath_), attachParams(),
+		[this](Input::Event e)
 		{
-			item.emplace_back(&installCBIOS);
+			pushAndShow(makeViewWithName<DataFolderSelectView>("BIOS",
+				app().validSearchPath(system().firmwarePath_),
+				[this](CStringView path, FS::file_type type)
+				{
+					if(type == FS::file_type::none)
+					{
+						system().setFirmwarePath(path, type);
+					}
+					else
+					{
+						try
+						{
+							system().setFirmwarePath(path, type);
+						}
+						catch(std::exception &err)
+						{
+							app().postErrorMessage(err.what());
+							return false;
+						}
+					}
+					machineFilePath.compile(machinePathMenuEntryStr(path));
+					return true;
+				}), e);
+			postDraw();
 		}
+	};
+
+public:
+	CustomFilePathOptionView(ViewAttachParams attach): FilePathOptionView{attach, true}
+	{
+		loadStockItems();
+		item.emplace_back(&machineFilePath);
 	}
 };
 
@@ -266,14 +270,14 @@ public:
 
 static const char *insertEjectDiskMenuStr[] {"Insert File", "Eject"};
 
-class MsxIOControlView : public TableView, public EmuAppHelper<MsxIOControlView>
+class MsxIOControlView : public TableView, public MainAppHelper
 {
 public:
 	static const char *hdSlotPrefix[4];
 
 	void updateHDText(int slot)
 	{
-		hdSlot[slot].setName(string_makePrintf<1024>("%s %s", hdSlotPrefix[slot], hdName[slot].data()).data());
+		hdSlot[slot].setName(std::format("{} {}", hdSlotPrefix[slot], hdName[slot]));
 	}
 
 	void updateHDStatusFromCartSlot(int cartSlot)
@@ -286,24 +290,24 @@ public:
 		updateHDText(hdSlotStart+1);
 	}
 
-	void onHDMediaChange(const char *name, int slot)
+	void onHDMediaChange(std::string_view name, int slot)
 	{
-		string_copy(hdName[slot], name);
+		hdName[slot] = name;
 		updateHDText(slot);
-		hdSlot[slot].compile(renderer(), projP);
+		hdSlot[slot].place();
 	}
 
 	void addHDFilePickerView(Input::Event e, uint8_t slot, bool dismissPreviousView)
 	{
-		auto fPicker = EmuFilePicker::makeForMediaChange(attachParams(), e, EmuSystem::gamePath(),
+		auto fPicker = FilePicker::forMediaChange(attachParams(), e,
 			MsxMediaFilePicker::fsFilter(MsxMediaFilePicker::DISK),
-			[this, slot, dismissPreviousView](FSPicker &picker, const char* name, Input::Event e)
+			[this, slot, dismissPreviousView](FSPicker &picker, std::string_view path, std::string_view name, Input::Event e)
 			{
 				auto id = diskGetHdDriveId(slot / 2, slot % 2);
-				logMsg("inserting hard drive id %d", id);
-				if(insertDisk(app(), name, id))
+				log.info("inserting hard drive id:{}", id);
+				if(insertDisk(app(), name.data(), id))
 				{
-					onHDMediaChange(name, slot);
+					onHDMediaChange(name.data(), slot);
 					if(dismissPreviousView)
 						dismissPrevious();
 				}
@@ -316,7 +320,7 @@ public:
 	{
 		if(!item.active())
 			return;
-		if(strlen(hdName[slot].data()))
+		if(hdName[slot].size())
 		{
 			auto multiChoiceView = makeViewWithName<TextTableView>("Hard Drive", std::size(insertEjectDiskMenuStr));
 			multiChoiceView->appendItem(insertEjectDiskMenuStr[0],
@@ -341,36 +345,36 @@ public:
 
 	TextMenuItem hdSlot[4]
 	{
-		{nullptr, &defaultFace(), [this](TextMenuItem &item, Input::Event e) { onSelectHD(item, e, 0); }},
-		{nullptr, &defaultFace(), [this](TextMenuItem &item, Input::Event e) { onSelectHD(item, e, 1); }},
-		{nullptr, &defaultFace(), [this](TextMenuItem &item, Input::Event e) { onSelectHD(item, e, 2); }},
-		{nullptr, &defaultFace(), [this](TextMenuItem &item, Input::Event e) { onSelectHD(item, e, 3); }}
+		{u"", attachParams(), [this](TextMenuItem &item, Input::Event e) { onSelectHD(item, e, 0); }},
+		{u"", attachParams(), [this](TextMenuItem &item, Input::Event e) { onSelectHD(item, e, 1); }},
+		{u"", attachParams(), [this](TextMenuItem &item, Input::Event e) { onSelectHD(item, e, 2); }},
+		{u"", attachParams(), [this](TextMenuItem &item, Input::Event e) { onSelectHD(item, e, 3); }}
 	};
 
 	static const char *romSlotPrefix[2];
 
 	void updateROMText(int slot)
 	{
-		romSlot[slot].setName(string_makePrintf<1024>("%s %s", romSlotPrefix[slot], cartName[slot].data()).data());
+		romSlot[slot].setName(std::format("{} {}", romSlotPrefix[slot], system().cartName[slot]));
 	}
 
-	void onROMMediaChange(const char *name, int slot)
+	void onROMMediaChange(std::string_view name, int slot)
 	{
-		string_copy(cartName[slot], name);
+		system().cartName[slot] = name;
 		updateROMText(slot);
-		romSlot[slot].compile(renderer(), projP);
+		romSlot[slot].place();
 		updateHDStatusFromCartSlot(slot);
 	}
 
 	void addROMFilePickerView(Input::Event e, uint8_t slot, bool dismissPreviousView)
 	{
-		auto fPicker = EmuFilePicker::makeForMediaChange(attachParams(), e, EmuSystem::gamePath(),
+		auto fPicker = FilePicker::forMediaChange(attachParams(), e,
 			MsxMediaFilePicker::fsFilter(MsxMediaFilePicker::ROM),
-			[this, slot, dismissPreviousView](FSPicker &picker, const char* name, Input::Event e)
+			[this, slot, dismissPreviousView](FSPicker &picker, std::string_view path, std::string_view name, Input::Event e)
 			{
-				if(insertROM(app(), name, slot))
+				if(insertROM(app(), name.data(), slot))
 				{
-					onROMMediaChange(name, slot);
+					onROMMediaChange(name.data(), slot);
 					if(dismissPreviousView)
 						dismissPrevious();
 				}
@@ -425,34 +429,34 @@ public:
 
 	TextMenuItem romSlot[2]
 	{
-		{nullptr, &defaultFace(), [this](Input::Event e) { onSelectROM(e, 0); }},
-		{nullptr, &defaultFace(), [this](Input::Event e) { onSelectROM(e, 1); }}
+		{u"", attachParams(), [this](Input::Event e) { onSelectROM(e, 0); }},
+		{u"", attachParams(), [this](Input::Event e) { onSelectROM(e, 1); }}
 	};
 
 	static const char *diskSlotPrefix[2];
 
 	void updateDiskText(int slot)
 	{
-		diskSlot[slot].setName(string_makePrintf<1024>("%s %s", diskSlotPrefix[slot], diskName[slot].data()).data());
+		diskSlot[slot].setName(std::format("{} {}", diskSlotPrefix[slot], system().diskName[slot]));
 	}
 
-	void onDiskMediaChange(const char *name, int slot)
+	void onDiskMediaChange(std::string_view name, int slot)
 	{
-		string_copy(diskName[slot], name);
+		system().diskName[slot] = name;
 		updateDiskText(slot);
-		diskSlot[slot].compile(renderer(), projP);
+		diskSlot[slot].place();
 	}
 
 	void addDiskFilePickerView(Input::Event e, uint8_t slot, bool dismissPreviousView)
 	{
-		auto fPicker = EmuFilePicker::makeForMediaChange(attachParams(), e, EmuSystem::gamePath(),
+		auto fPicker = FilePicker::forMediaChange(attachParams(), e,
 			MsxMediaFilePicker::fsFilter(MsxMediaFilePicker::DISK),
-			[this, slot, dismissPreviousView](FSPicker &picker, const char* name, Input::Event e)
+			[this, slot, dismissPreviousView](FSPicker &picker, std::string_view path, std::string_view name, Input::Event e)
 			{
-				logMsg("inserting disk in slot %d", slot);
-				if(insertDisk(app(), name, slot))
+				log.info("inserting disk in slot:{}", slot);
+				if(insertDisk(app(), name.data(), slot))
 				{
-					onDiskMediaChange(name, slot);
+					onDiskMediaChange(name.data(), slot);
 					if(dismissPreviousView)
 						dismissPrevious();
 				}
@@ -463,7 +467,7 @@ public:
 
 	void onSelectDisk(Input::Event e, uint8_t slot)
 	{
-		if(strlen(diskName[slot].data()))
+		if(system().diskName[slot].size())
 		{
 			auto multiChoiceView = makeViewWithName<TextTableView>("Disk Drive", std::size(insertEjectDiskMenuStr));
 			multiChoiceView->appendItem(insertEjectDiskMenuStr[0],
@@ -489,11 +493,11 @@ public:
 
 	TextMenuItem diskSlot[2]
 	{
-		{nullptr, &defaultFace(), [this](Input::Event e) { onSelectDisk(e, 0); }},
-		{nullptr, &defaultFace(), [this](Input::Event e) { onSelectDisk(e, 1); }}
+		{u"", attachParams(), [this](Input::Event e) { onSelectDisk(e, 0); }},
+		{u"", attachParams(), [this](Input::Event e) { onSelectDisk(e, 1); }}
 	};
 
-	StaticArrayList<MenuItem*, 9> item{};
+	StaticArrayList<MenuItem*, 9> item;
 
 public:
 	MsxIOControlView(ViewAttachParams attach):
@@ -501,29 +505,22 @@ public:
 		{
 			"IO Control",
 			attach,
-			[this](const TableView &)
-			{
-				return item.size();
-			},
-			[this](const TableView &, unsigned idx) -> MenuItem&
-			{
-				return *item[idx];
-			}
+			item
 		}
 	{
-		iterateTimes(2, slot)
+		for(auto slot : iotaCount(2))
 		{
 			updateROMText(slot);
 			romSlot[slot].setActive((int)slot < boardInfo.cartridgeCount);
 			item.emplace_back(&romSlot[slot]);
 		}
-		iterateTimes(2, slot)
+		for(auto slot : iotaCount(2))
 		{
 			updateDiskText(slot);
 			diskSlot[slot].setActive((int)slot < boardInfo.diskdriveCount);
 			item.emplace_back(&diskSlot[slot]);
 		}
-		iterateTimes(4, slot)
+		for(auto slot : iotaCount(4))
 		{
 			updateHDText(slot);
 			hdSlot[slot].setActive(boardGetHdType(slot/2) == HD_SUNRISEIDE);
@@ -536,82 +533,91 @@ const char *MsxIOControlView::romSlotPrefix[2] {"ROM1:", "ROM2:"};
 const char *MsxIOControlView::diskSlotPrefix[2] {"Disk1:", "Disk2:"};
 const char *MsxIOControlView::hdSlotPrefix[4] {"IDE1-M:", "IDE1-S:", "IDE2-M:", "IDE2-S:"};
 
-class CustomSystemActionsView : public EmuSystemActionsView
+class CustomSystemActionsView : public SystemActionsView, public MainAppHelper
 {
+	using MainAppHelper::system;
+	using MainAppHelper::app;
+
 private:
 	TextMenuItem msxIOControl
 	{
-		"ROM/Disk Control", &defaultFace(),
+		"ROM/Disk Control", attachParams(),
 		[this](TextMenuItem &item, View &, Input::Event e)
 		{
 			if(item.active())
 			{
 				pushAndShow(makeView<MsxIOControlView>(), e);
 			}
-			else if(EmuSystem::gameIsRunning() && activeBoardType != BOARD_MSX)
+			else if(system().hasContent() && system().activeBoardType != BOARD_MSX)
 			{
 				app().postMessage(2, false, "Only used in MSX mode");
 			}
 		}
 	};
 
-	std::vector<FS::FileString> msxMachineName{};
-	std::vector<TextMenuItem> msxMachineItem{};
+	std::vector<FS::FileString> machineNames{};
+	std::vector<TextMenuItem> machineItems{};
 
 	MultiChoiceMenuItem msxMachine
 	{
-		"Machine Type", &defaultFace(),
-		[this](int idx, Gfx::Text &t)
-		{
-			if(idx == -1)
-			{
-				t.setString("None");
-				return true;
-			}
-			return false;
-		},
+		"Machine Type", attachParams(),
 		0,
-		msxMachineItem,
-		[this](MultiChoiceMenuItem &item, View &view, Input::Event e)
+		machineItems,
 		{
-			if(!msxMachineItem.size())
+			.onSetDisplayString = [](auto idx, Gfx::Text& t)
 			{
-				return;
+				if(idx == -1)
+				{
+					t.resetString("None");
+					return true;
+				}
+				return false;
+			},
+			.onSelect = [this](MultiChoiceMenuItem &item, View &view, Input::Event e)
+			{
+				if(!machineItems.size())
+				{
+					return;
+				}
+				item.defaultOnSelect(view, e);
 			}
-			item.defaultOnSelect(view, e);
-		}
+		},
 	};
 
 	void reloadMachineItem()
 	{
-		msxMachineItem.clear();
-		msxMachineName = machinesNames(machineBasePath.data());
-		for(const auto &name : msxMachineName)
+		machineItems.clear();
+		machineNames = readMachinesNames(appContext(), system().firmwarePath());
+		for(const auto &name : machineNames)
 		{
-			msxMachineItem.emplace_back(name.data(), &defaultFace(),
+			machineItems.emplace_back(name, attachParams(),
 			[this, name = name.data()](Input::Event e)
 			{
-				auto ynAlertView = makeView<YesNoAlertView>("Change machine type and reset emulation?");
-				ynAlertView->setOnYes(
-					[this, name]()
+				app().pushAndShowModalView(makeView<YesNoAlertView>("Change machine type and reset emulation?",
+					YesNoAlertView::Delegates
 					{
-						if(auto err = setCurrentMachineName(app(), name);
-							err)
+						.onYes = [this, name]
 						{
-							app().printfMessage(3, true, "%s", err->what());
-							return;
+							try
+							{
+								system().setCurrentMachineName(app(), name);
+							}
+							catch(std::exception &err)
+							{
+								app().postMessage(3, true, err.what());
+								return;
+							}
+							auto machineName = currentMachineName();
+							system().optionSessionMachineNameStr = machineName;
+							msxMachine.setSelected(findIndex(machineNames, machineName));
+							system().sessionOptionSet();
+							dismissPrevious();
 						}
-						auto machineName = currentMachineName();
-						strcpy(optionMachineName.val, machineName);
-						msxMachine.setSelected(machineIndex(msxMachineName, FS::makeFileString(machineName)));
-						EmuSystem::sessionOptionSet();
-						dismissPrevious();
-					});
-				app().pushAndShowModalView(std::move(ynAlertView), e);
+					}), e);
 				return false;
 			});
 		}
-		msxMachine.setSelected(machineIndex(msxMachineName, FS::makeFileString(currentMachineName())));
+		msxMachine.setSelected(findIndex(machineNames, currentMachineName()));
 	}
 
 	void reloadItems()
@@ -624,16 +630,16 @@ private:
 	}
 
 public:
-	CustomSystemActionsView(ViewAttachParams attach): EmuSystemActionsView{attach, true}
+	CustomSystemActionsView(ViewAttachParams attach): SystemActionsView{attach, true}
 	{
 		reloadItems();
 	}
 
 	void onShow()
 	{
-		EmuSystemActionsView::onShow();
-		msxIOControl.setActive(EmuSystem::gameIsRunning() && activeBoardType == BOARD_MSX);
-		msxMachine.setSelected(machineIndex(msxMachineName, FS::makeFileString(currentMachineName())));
+		SystemActionsView::onShow();
+		msxIOControl.setActive(system().hasContent() && system().activeBoardType == BOARD_MSX);
+		msxMachine.setSelected(findIndex(machineNames, currentMachineName()), *this);
 	}
 };
 
@@ -648,7 +654,7 @@ static const MixerAudioType channelType[]
 	MIXER_CHANNEL_PCM,
 };
 
-class SoundMixerView : public TableView, public EmuAppHelper<SoundMixerView>
+class SoundMixerView : public TableView, public MainAppHelper
 {
 public:
 	SoundMixerView(ViewAttachParams attach):
@@ -665,24 +671,24 @@ protected:
 
 	std::array<TextHeadingMenuItem, CHANNEL_TYPES> heading
 	{
-		TextHeadingMenuItem{"PSG", &defaultBoldFace()},
-		TextHeadingMenuItem{"SCC", &defaultBoldFace()},
-		TextHeadingMenuItem{"MSX-MUSIC", &defaultBoldFace()},
-		TextHeadingMenuItem{"MSX-AUDIO", &defaultBoldFace()},
-		TextHeadingMenuItem{"MoonSound", &defaultBoldFace()},
-		TextHeadingMenuItem{"Yamaha SFG", &defaultBoldFace()},
-		TextHeadingMenuItem{"PCM", &defaultBoldFace()}
+		TextHeadingMenuItem{"PSG", attachParams(),},
+		TextHeadingMenuItem{"SCC", attachParams(),},
+		TextHeadingMenuItem{"MSX-MUSIC", attachParams(),},
+		TextHeadingMenuItem{"MSX-AUDIO", attachParams(),},
+		TextHeadingMenuItem{"MoonSound", attachParams(),},
+		TextHeadingMenuItem{"Yamaha SFG", attachParams(),},
+		TextHeadingMenuItem{"PCM", attachParams(),}
 	};
 
 	BoolMenuItem makeEnableChannel(MixerAudioType type)
 	{
 		return
 		{
-			"Output", &defaultFace(),
-			(bool)mixerEnableOption(type),
+			"Output", attachParams(),
+			system().mixerEnableOption(type),
 			[this, type](BoolMenuItem &item, View &, Input::Event)
 			{
-				setMixerEnableOption(type, item.flipBoolValue(*this));
+				system().setMixerEnableOption(type, item.flipBoolValue(*this));
 			}
 		};
 	}
@@ -704,27 +710,27 @@ protected:
 	{
 		return
 		{
-			TextMenuItem{"Default Value", &defaultFace(),
+			TextMenuItem{"Default Value", attachParams(),
 				[this, type]()
 				{
-					setMixerVolumeOption(type, -1);
+					system().setMixerVolumeOption(type, -1);
 				}},
-			TextMenuItem{"Custom Value", &defaultFace(),
+			TextMenuItem{"Custom Value", attachParams(),
 				[this, type = (uint8_t)type, idx](Input::Event e)
 				{
-					app().pushAndShowNewCollectValueInputView<int>(attachParams(), e, "Input 0 to 100", "",
-						[this, type, idx](EmuApp &app, auto val)
+					pushAndShowNewCollectValueInputView<int>(attachParams(), e, "Input 0 to 100", "",
+						[this, type, idx](CollectTextInputView&, auto val)
 						{
 							if(val >= 0 && val <= 100)
 							{
-								setMixerVolumeOption((MixerAudioType)type, val);
+								system().setMixerVolumeOption((MixerAudioType)type, val);
 								volumeLevel[idx].setSelected(std::size(volumeLevelItem[idx]) - 1, *this);
 								dismissPrevious();
 								return true;
 							}
 							else
 							{
-								app.postErrorMessage("Value not in range");
+								app().postErrorMessage("Value not in range");
 								return false;
 							}
 						});
@@ -749,14 +755,16 @@ protected:
 	{
 		return
 		{
-			"Volume", &defaultFace(),
-			[this, type](uint32_t idx, Gfx::Text &t)
-			{
-				t.setString(string_makePrintf<5>("%u%%", mixerVolumeOption(type)).data());
-				return true;
-			},
+			"Volume", attachParams(),
 			1,
-			volumeLevelItem[idx]
+			volumeLevelItem[idx],
+			{
+				.onSetDisplayString = [this, type](auto idx, Gfx::Text &t)
+				{
+					t.resetString(std::format("{}%", system().mixerVolumeOption(type)));
+					return true;
+				}
+			},
 		};
 	}
 
@@ -775,27 +783,27 @@ protected:
 	{
 		return
 		{
-			TextMenuItem{"Default Value", &defaultFace(),
+			TextMenuItem{"Default Value", attachParams(),
 				[this, type]()
 				{
-					setMixerPanOption(type, -1);
+					system().setMixerPanOption(type, -1);
 				}},
-			TextMenuItem{"Custom Value", &defaultFace(),
+			TextMenuItem{"Custom Value", attachParams(),
 				[this, type = (uint8_t)type, idx](Input::Event e)
 				{
-					app().pushAndShowNewCollectValueInputView<int>(attachParams(), e, "Input 0 to 100", "",
-						[this, type, idx](EmuApp &app, auto val)
+					pushAndShowNewCollectValueInputView<int>(attachParams(), e, "Input 0 to 100", "",
+						[this, type, idx](CollectTextInputView&, auto val)
 						{
 							if(val >= 0 && val <= 100)
 							{
-								setMixerPanOption((MixerAudioType)type, val);
+								system().setMixerPanOption((MixerAudioType)type, val);
 								panLevel[idx].setSelected(std::size(panLevelItem[idx]) - 1, *this);
 								dismissPrevious();
 								return true;
 							}
 							else
 							{
-								app.postErrorMessage("Value not in range");
+								app().postErrorMessage("Value not in range");
 								return false;
 							}
 						});
@@ -820,14 +828,16 @@ protected:
 	{
 		return
 		{
-			"Pan", &defaultFace(),
-			[this, type](uint32_t idx, Gfx::Text &t)
-			{
-				t.setString(string_makePrintf<5>("%u%%", mixerPanOption(type)).data());
-				return true;
-			},
+			"Pan", attachParams(),
 			1,
-			panLevelItem[idx]
+			panLevelItem[idx],
+			{
+				.onSetDisplayString = [this, type](auto idx, Gfx::Text &t)
+				{
+					t.resetString(std::format("{}%", system().mixerPanOption(type)));
+					return true;
+				}
+			},
 		};
 	}
 
@@ -878,7 +888,7 @@ protected:
 class CustomAudioOptionView : public AudioOptionView
 {
 public:
-	CustomAudioOptionView(ViewAttachParams attach): AudioOptionView{attach, true}
+	CustomAudioOptionView(ViewAttachParams attach, EmuAudio& audio): AudioOptionView{attach, audio, true}
 	{
 		loadStockItems();
 		item.emplace_back(&mixer);
@@ -887,7 +897,7 @@ public:
 protected:
 	TextMenuItem mixer
 	{
-		"Sound Mixer", &defaultFace(),
+		"Sound Mixer", attachParams(),
 		[this](Input::Event e)
 		{
 			pushAndShow(makeView<SoundMixerView>(), e);
@@ -901,7 +911,10 @@ std::unique_ptr<View> EmuApp::makeCustomView(ViewAttachParams attach, ViewID id)
 	{
 		case ViewID::SYSTEM_ACTIONS: return std::make_unique<CustomSystemActionsView>(attach);
 		case ViewID::SYSTEM_OPTIONS: return std::make_unique<CustomSystemOptionView>(attach);
-		case ViewID::AUDIO_OPTIONS: return std::make_unique<CustomAudioOptionView>(attach);
+		case ViewID::AUDIO_OPTIONS: return std::make_unique<CustomAudioOptionView>(attach, audio);
+		case ViewID::FILE_PATH_OPTIONS: return std::make_unique<CustomFilePathOptionView>(attach);
 		default: return nullptr;
 	}
+}
+
 }

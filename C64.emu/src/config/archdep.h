@@ -31,6 +31,11 @@
 #include "archapi.h"
 #undef VICE_ARCHAPI_PRIVATE_API
 
+/* Filesystem-dependent constants */
+#define ARCHDEP_FSDEVICE_DEFAULT_DIR "."    /**< CWD */
+#define ARCHDEP_DIR_SEP_STR "/"     /**< directory separator as a string */
+#define ARCHDEP_DIR_SEP_CHR '/'     /**< directory separator as an integer */
+
 /* Filesystem dependant operators.  */
 #define FSDEVICE_DEFAULT_DIR "."
 #define FSDEV_DIR_SEP_STR    "/"
@@ -106,3 +111,10 @@
 
 /* Keyword to use for a static prototype */
 #define STATIC_PROTOTYPE static
+
+#define ARCHDEP_MOUSE_ENABLE_DEFAULT    0
+
+#include "zfile.h"
+
+// redirect all fopen() calls
+#define fopen(name, mode) zfile_fopen(name, mode)

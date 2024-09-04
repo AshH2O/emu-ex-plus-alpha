@@ -16,11 +16,10 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/config/defs.hh>
-#include "glIncludes.h"
 #include "defs.hh"
 #include <chrono>
 
-namespace Gfx
+namespace IG::Gfx
 {
 
 class GLSyncFence
@@ -29,8 +28,9 @@ public:
 	static constexpr std::chrono::nanoseconds IGNORE_TIMEOUT{0xFFFFFFFFFFFFFFFFull};
 	GLsync sync{};
 
-	constexpr GLSyncFence() {}
+	constexpr GLSyncFence() = default;
 	constexpr GLSyncFence(GLsync sync): sync{sync} {}
+	explicit operator bool() const { return sync; };
 };
 
 using SyncFenceImpl = GLSyncFence;

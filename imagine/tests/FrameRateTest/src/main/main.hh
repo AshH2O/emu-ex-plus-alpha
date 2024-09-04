@@ -19,32 +19,37 @@
 #include <imagine/base/Application.hh>
 #include <imagine/base/ApplicationContext.hh>
 #include <imagine/gui/View.hh>
+#include <imagine/gui/ViewManager.hh>
+#include <imagine/font/Font.hh>
 #ifdef __ANDROID__
 #include <imagine/base/android/RootCpufreqParamSetter.hh>
 #endif
 #include <optional>
 
-class FrameRateTestApplication final: public Base::Application
+namespace FrameRateTest
+{
+
+using namespace IG;
+
+class FrameRateTestApplication final: public IG::Application
 {
 public:
-	FrameRateTestApplication(Base::ApplicationInitParams, Base::ApplicationContext &, Gfx::Error &);
-	TestFramework *startTest(Base::Window &, const TestParams &t);
+	FrameRateTestApplication(IG::ApplicationInitParams, IG::ApplicationContext &);
+	TestFramework *startTest(IG::Window &, const TestParams &t);
 
 private:
 	IG::FontManager fontManager;
 	Gfx::Renderer renderer;
-	ViewManager viewManager{};
+	IG::ViewManager viewManager;
 	#ifdef __ANDROID__
-	std::optional<Base::RootCpufreqParamSetter> cpuFreq{};
+	std::optional<IG::RootCpufreqParamSetter> cpuFreq{};
 	#endif
 
-	void setActiveTestHandlers(Base::Window &win);
-	void setPickerHandlers(Base::Window &);
-	void placeElements(const Base::Window &);
-	void finishTest(Base::Window &, IG::FrameTime);
+	void setActiveTestHandlers(IG::Window &win);
+	void setPickerHandlers(IG::Window &);
+	void placeElements(const IG::Window &);
+	void finishTest(Window &, SteadyClockTimePoint);
+	void updateWindowSurface(Window &, Window::SurfaceChange);
 };
 
-static FrameRateTestApplication &mainApp(Base::ApplicationContext ctx)
-{
-	return static_cast<FrameRateTestApplication &>(ctx.application());
 }

@@ -15,36 +15,29 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/base/timerDefs.hh>
+#include <imagine/base/baseDefs.hh>
 #include <imagine/base/EventLoop.hh>
 #include <imagine/time/Time.hh>
-#include <imagine/util/typeTraits.hh>
+#include <imagine/util/used.hh>
 #include <time.h>
 #include <memory>
 
-namespace Base
+namespace IG
 {
 
 class TimerFD
 {
 public:
-	using Time = IG::Nanoseconds;
+	using TimePoint = SteadyClockTimePoint;
 
-	constexpr TimerFD() {}
-	TimerFD(CallbackDelegate c) : TimerFD{nullptr, c} {}
-	TimerFD(const char *debugLabel, CallbackDelegate c);
-	TimerFD(TimerFD &&o);
-	TimerFD &operator=(TimerFD &&o);
-	~TimerFD();
+	TimerFD(TimerDesc, CallbackDelegate);
+	const char* debugLabel() const { return fdSrc.debugLabel(); }
 
 protected:
-	IG_enableMemberIf(Config::DEBUG_BUILD, const char *, debugLabel){};
-	std::unique_ptr<CallbackDelegate> callback_{};
-	FDEventSource fdSrc{};
+	std::unique_ptr<CallbackDelegate> callback_;
+	FDEventSource fdSrc;
 
-	void deinit();
-	bool arm(timespec ms, timespec repeatInterval, int flags, EventLoop loop);
-	const char *label();
+	bool arm(timespec ms, timespec repeatInterval, int flags);
 };
 
 using TimerImpl = TimerFD;

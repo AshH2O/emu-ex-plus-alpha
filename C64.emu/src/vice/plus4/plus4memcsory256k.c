@@ -75,7 +75,8 @@ static io_source_t cs256k_device = {
     cs256k_dump,          /* chip state information dump function */
     IO_CART_ID_NONE,      /* not a cartridge */
     IO_PRIO_NORMAL,       /* normal priority, device read needs to be checked for collisions */
-    0                     /* insertion order, gets filled in by the registration function */
+    0,                    /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE        /* NO mirroring */
 };
 
 static io_source_list_t *cs256k_list_item = NULL;
@@ -128,7 +129,7 @@ static int cs256k_activate(void)
 {
     cs256k_ram = lib_realloc((void *)cs256k_ram, (size_t)0x40000);
 
-    log_message(cs256k_log, "CSORY 256K expansion installed.");
+    log_message(cs256k_log, "CSORY 256KiB expansion installed.");
 
     cs256k_reset();
     return 0;

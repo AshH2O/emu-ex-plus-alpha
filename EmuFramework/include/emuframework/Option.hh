@@ -15,289 +15,219 @@
 	You should have received a copy of the GNU General Public License
 	along with EmuFramework.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/io/IO.hh>
-#include <imagine/util/2DOrigin.h>
-#include <imagine/util/string.h>
+#include <imagine/io/MapIO.hh>
+#include <imagine/io/FileIO.hh>
+#include <imagine/util/concepts.hh>
+#include <imagine/util/optional.hh>
+#include <imagine/util/used.hh>
+#include <imagine/util/Property.hh>
 #include <imagine/logger/logger.h>
 #include <array>
-#include <optional>
 #include <cstring>
+#include <string_view>
 
-template<class T> struct isOptional : public std::false_type {};
-
-template<class T>
-struct isOptional<std::optional<T>> : public std::true_type {};
-
-template <class T, class Validator = std::nullptr_t>
-static std::optional<T> readOptionValue(IO &io, unsigned bytesToRead, Validator &&isValid = nullptr)
+namespace EmuEx
 {
+
+using namespace IG;
+
+// Stateless option API
+
+template <class T>
+constexpr bool isAlwaysValid(const T &) { return true; }
+
+template <class T>
+concept PropertyOption =
+	requires(T &&p)
+	{
+		T::uid;
+		p.defaultValue();
+	};
+
+template <class T>
+inline std::optional<T> readOptionValue(Readable auto &io, std::predicate<T> auto &&isValid)
+{
+	size_t bytesToRead = io.size();
 	if(bytesToRead != sizeof(T))
 	{
-		logMsg("skipping %u byte option value, expected %u bytes", bytesToRead, (unsigned)sizeof(T));
+		logMsg("skipping %zu byte option value, expected %zu bytes", bytesToRead, sizeof(T));
 		return {};
 	}
-	auto [val, size] = io.read<T>();
-	if(size == -1) [[unlikely]]
-	{
-		logErr("error reading %u byte option", bytesToRead);
+	auto val = io.template get<T>();
+	if(!isValid(val))
 		return {};
-	}
-	if constexpr(!std::is_null_pointer_v<Validator>)
-	{
-		if(!isValid(val))
-			return {};
-	}
 	return val;
 }
 
 template <class T>
-static std::optional<T> readStringOptionValue(IO &io, unsigned bytesToRead)
+inline std::optional<T> readOptionValue(Readable auto &io)
 {
-	static_assert(sizeof(T) != 0, "Destination type cannot have 0 size");
-	constexpr auto destStringSize = sizeof(T) - 1;
+	return readOptionValue<T>(io, isAlwaysValid<T>);
+}
+
+template <class T>
+inline bool readOptionValue(Readable auto &io, Callable<void, T> auto &&func, std::predicate<T> auto &&isValid)
+{
+	return doOptionally(readOptionValue<T>(io, IG_forward(isValid)), IG_forward(func));
+}
+
+template <class T>
+inline bool readOptionValue(Readable auto &io, Callable<void, T> auto &&func)
+{
+	return readOptionValue<T>(io, IG_forward(func), isAlwaysValid<T>);
+}
+
+template <class T>
+inline bool readOptionValue(Readable auto &io, T &output, std::predicate<T> auto &&isValid)
+{
+	if(!used(output))
+		return false;
+	return readOptionValue<T>(io,
+		[&](auto &&val){ output = IG_forward(val); }, IG_forward(isValid));
+}
+
+template <class T>
+inline bool readOptionValue(Readable auto &io, T &output)
+{
+	if(!used(output))
+		return false;
+	return readOptionValue<T>(io, output, isAlwaysValid<T>);
+}
+
+template<PropertyOption Prop>
+inline bool readOptionValue(Readable auto &io, Prop &output)
+{
+	using T = Prop::SerializedType;
+	auto bytesToRead = io.size();
+	if(bytesToRead != sizeof(T))
+	{
+		logMsg("skipping %zu byte option value, expected %zu bytes", bytesToRead, sizeof(T));
+		return false;
+	}
+	return output.unserialize(io.template get<T>());
+}
+
+template <Container T>
+inline std::optional<T> readStringOptionValue(Readable auto &io)
+{
+	T val{};
+	size_t bytesToRead = io.size();
+	const auto destStringSize = val.max_size() - 1;
 	if(bytesToRead > destStringSize)
 	{
-		logMsg("skipping %u byte string option value, too large for %u bytes", bytesToRead, (unsigned)destStringSize);
+		logMsg("skipping %zu byte string option value, too large for %zu bytes", bytesToRead, destStringSize);
 		return {};
 	}
-	T val{};
-	auto size = io.read(val.data(), bytesToRead);
+	auto size = io.readSized(val, bytesToRead);
 	if(size == -1) [[unlikely]]
 	{
-		logErr("error reading %u byte string option", bytesToRead);
+		logErr("error reading %zu byte string option", bytesToRead);
 		return {};
 	}
 	return val;
 }
 
-static void writeOptionValueHeader(IO &io, uint16_t key, uint16_t optSize)
+template <Container T>
+inline bool readStringOptionValue(Readable auto &io, Callable<void, T> auto &&func)
+{
+	return doOptionally(readStringOptionValue<T>(io), IG_forward(func));
+}
+
+template <Container T>
+inline bool readStringOptionValue(Readable auto &io, T &output)
+{
+	return readStringOptionValue<T>(io, [&](auto &&val){ output = IG_forward(val); });
+}
+
+inline void writeOptionValueHeader(Writable auto &io, uint16_t key, uint16_t optSize)
 {
 	optSize += sizeof key;
 	logMsg("writing option key:%u with size:%u", key, optSize);
-	io.write(optSize);
-	io.write(key);
+	io.put(optSize);
+	io.put(key);
+}
+
+inline void writeOptionValue(Writable auto &io, uint16_t key, const auto &val)
+{
+	if(!used(val))
+		return;
+	writeOptionValueHeader(io, key, sizeof(decltype(val)));
+	io.put(val);
 }
 
 template <class T>
-static void writeOptionValue(IO &io, uint16_t key, T &&val)
+inline void writeOptionValue(Writable auto &io, uint16_t key, const std::optional<T> &val)
 {
-	if constexpr(isOptional<T>::value)
-	{
-		if(!val)
-			return;
-		writeOptionValue(io, key, *val);
-	}
-	else
-	{
-		writeOptionValueHeader(io, key, sizeof(T));
-		io.write(val);
-	}
+	if(!val)
+		return;
+	writeOptionValue(io, key, *val);
 }
 
-template <class T>
-static void writeStringOptionValue(IO &io, uint16_t key, T &&val)
+inline void writeOptionValueIfNotDefault(Writable auto &io, uint16_t key, const auto &val, const auto &defaultVal)
 {
-	if constexpr(isOptional<T>::value)
-	{
-		if(!val)
-			return;
-		writeStringOptionValue(io, key, *val);
-	}
-	else
-	{
-		uint16_t stringLen = strlen(val.data());
-		writeOptionValueHeader(io, key, stringLen);
-		io.write(val.data(), stringLen);
-	}
+	if(val == defaultVal)
+		return;
+	writeOptionValue(io, key, val);
 }
 
-struct OptionBase
-{
-	bool isConst = false;
+inline void writeOptionValueIfNotDefault(Writable auto&, Unused auto const&) {}
 
-	constexpr OptionBase() {}
-	constexpr OptionBase(bool isConst): isConst(isConst) {}
-	virtual bool isDefault() const = 0;
-	virtual unsigned ioSize() const = 0;
-	virtual bool writeToIO(IO &io) = 0;
-};
-
-template <class T>
-bool OptionMethodIsAlwaysValid(T)
+inline void writeOptionValueIfNotDefault(Writable auto &io, PropertyOption auto const &p)
 {
-	return 1;
+	if(p.isDefault())
+		return;
+	writeOptionValue(io, p.uid, p.serialize());
 }
 
-template <class T>
-struct OptionMethodBase
+inline void writeStringOptionValueAllowEmpty(Writable auto &io, uint16_t key, std::string_view s)
 {
-	constexpr OptionMethodBase(bool (&validator)(T v)): validator(validator) {}
-	bool (&validator)(T v);
-	bool isValidVal(T v) const
-	{
-		return validator(v);
-	}
-};
-
-template <class T, T (&GET)(), void (&SET)(T)>
-struct OptionMethodFunc : public OptionMethodBase<T>
-{
-	constexpr OptionMethodFunc(bool (&validator)(T v) = OptionMethodIsAlwaysValid): OptionMethodBase<T>(validator) {}
-	constexpr OptionMethodFunc(T init, bool (&validator)(T v) = OptionMethodIsAlwaysValid): OptionMethodBase<T>(validator) {}
-	T get() const { return GET(); }
-	void set(T v) { SET(v); }
-};
-
-template <class T, T &val>
-struct OptionMethodRef : public OptionMethodBase<T>
-{
-	constexpr OptionMethodRef(bool (&validator)(T v) = OptionMethodIsAlwaysValid): OptionMethodBase<T>(validator) {}
-	constexpr OptionMethodRef(T init, bool (&validator)(T v) = OptionMethodIsAlwaysValid): OptionMethodBase<T>(validator) {}
-	T get() const { return val; }
-	void set(T v) { val = v; }
-};
-
-template <class T>
-struct OptionMethodVar : public OptionMethodBase<T>
-{
-	constexpr OptionMethodVar(bool (&validator)(T v) = OptionMethodIsAlwaysValid): OptionMethodBase<T>(validator) {}
-	constexpr OptionMethodVar(T init, bool (&validator)(T v) = OptionMethodIsAlwaysValid): OptionMethodBase<T>(validator), val(init) {}
-	T val{};
-	T get() const { return val; }
-	void set(T v) { val = v; }
-};
-
-template <class V, class SERIALIZED_T = typeof(V().get())>
-struct Option : public OptionBase, public V
-{
-private:
-	const uint16_t KEY;
-public:
-	typedef typeof(V().get()) T;
-	T defaultVal;
-
-	constexpr Option(uint16_t key, T defaultVal = 0, bool isConst = 0, bool (&validator)(T v) = OptionMethodIsAlwaysValid):
-		OptionBase(isConst), V(defaultVal, validator), KEY(key), defaultVal(defaultVal)
-	{}
-
-	Option & operator = (T other)
-	{
-		if(!isConst)
-			V::set(other);
-		return *this;
-	}
-
-	bool operator ==(T const& rhs) const { return V::get() == rhs; }
-	bool operator !=(T const& rhs) const { return V::get() != rhs; }
-
-	bool isDefault() const override { return V::get() == defaultVal; }
-	void initDefault(T val) { defaultVal = val; V::set(val); }
-	T reset()
-	{
-		V::set(defaultVal);
-		return defaultVal;
-	}
-
-	void resetToConst()
-	{
-		reset();
-		isConst = true;
-	}
-
-	operator T() const
-	{
-		return V::get();
-	}
-
-	bool writeToIO(IO &io) override
-	{
-		logMsg("writing option key %u after size %u", KEY, ioSize());
-		io.write(KEY);
-		io.write((SERIALIZED_T)V::get());
-		return true;
-	}
-
-	bool writeWithKeyIfNotDefault(IO &io)
-	{
-		if(!isDefault())
-		{
-			io.write((uint16_t)ioSize());
-			writeToIO(io);
-		}
-		return true;
-	}
-
-	bool readFromIO(IO &io, unsigned readSize)
-	{
-		if(isConst || readSize != sizeof(SERIALIZED_T))
-		{
-			if(isConst)
-				logMsg("skipping const option value");
-			else
-				logMsg("skipping %d byte option value, expected %d", readSize, (int)sizeof(SERIALIZED_T));
-			return false;
-		}
-
-		auto [x, size] = io.read<SERIALIZED_T>();
-		if(size == -1)
-		{
-			logErr("error reading option from io");
-			return false;
-		}
-		if(V::isValidVal(x))
-			V::set(x);
-		else
-			logMsg("skipped invalid option value");
-		return true;
-	}
-
-	unsigned ioSize() const override
-	{
-		return sizeof(typeof(KEY)) + sizeof(SERIALIZED_T);
-	}
-};
-
-struct PathOption : public OptionBase
-{
-	char *val;
-	unsigned strSize;
-	const char *defaultVal;
-	const uint16_t KEY;
-
-	constexpr PathOption(uint16_t key, char *val, unsigned size, const char *defaultVal): val(val), strSize(size), defaultVal(defaultVal), KEY(key) {}
-	template <size_t S>
-	constexpr PathOption(uint16_t key, char (&val)[S], const char *defaultVal): PathOption(key, val, S, defaultVal) {}
-	template <size_t S>
-	constexpr PathOption(uint16_t key, std::array<char, S> &val, const char *defaultVal): PathOption(key, val.data(), S, defaultVal) {}
-
-	bool isDefault() const override { return string_equal(val, defaultVal); }
-
-	operator char *() const
-	{
-		return val;
-	}
-
-	bool writeToIO(IO &io) override;
-	bool readFromIO(IO &io, unsigned readSize);
-	unsigned ioSize() const override;
-};
-
-using SByte1Option = Option<OptionMethodVar<int8_t>, int8_t>;
-using Byte1Option = Option<OptionMethodVar<uint8_t>, uint8_t>;
-using Byte2Option = Option<OptionMethodVar<uint16_t>, uint16_t>;
-using Byte4s2Option = Option<OptionMethodVar<uint32_t>, uint16_t>;
-using Byte4Option = Option<OptionMethodVar<uint32_t>, uint32_t>;
-using Byte4s1Option = Option<OptionMethodVar<uint32_t>, uint8_t>;
-using DoubleOption = Option<OptionMethodVar<double>, double>;
-
-template<int MAX, class T>
-static bool optionIsValidWithMax(T val)
-{
-	return val <= MAX;
+	writeOptionValueHeader(io, key, s.size());
+	io.write(s.data(), s.size());
 }
 
-template<int MIN, int MAX, class T>
-static bool optionIsValidWithMinMax(T val)
+inline void writeStringOptionValue(Writable auto &io, uint16_t key, std::string_view s)
 {
-	return val >= MIN && val <= MAX;
+	if(s.empty())
+		return;
+	writeStringOptionValueAllowEmpty(io, key, s);
+}
+
+inline void writeStringOptionValue(Writable auto &io, uint16_t key, const Container auto &c)
+{
+	writeStringOptionValue(io, key, std::string_view(c.data()));
+}
+
+inline void writeStringOptionValueIfNotDefault(Writable auto &io, uint16_t key, std::string_view s, std::string_view defaultStr)
+{
+	if(s == defaultStr)
+		return;
+	writeStringOptionValueAllowEmpty(io, key, s);
+}
+
+template<class Size>
+inline size_t sizedDataBytes(const ResizableContainer auto& c)
+{
+	size_t bytes = sizeof(Size); // store array length
+	Size size = std::min(c.size(), size_t(std::numeric_limits<Size>::max()));
+	bytes += size * sizeof(c[0]);
+	return bytes;
+}
+
+template<class Size>
+inline void writeSizedData(Writable auto& io, const ResizableContainer auto& c)
+{
+	Size size = std::min(c.size(), size_t(std::numeric_limits<Size>::max()));
+	io.put(size);
+	if(size)
+		io.write(c.data(), size);
+}
+
+template<class Size>
+inline ssize_t readSizedData(Readable auto& io, ResizableContainer auto& c)
+{
+	auto size = io.template get<Size>();
+	return io.readSized(c, size);
+}
+
+
 }

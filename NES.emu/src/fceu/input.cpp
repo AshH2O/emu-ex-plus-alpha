@@ -65,6 +65,7 @@ extern INPUTC *FCEU_InitArkanoid(int w);
 extern INPUTC *FCEU_InitMouse(int w);
 extern INPUTC *FCEU_InitSNESMouse(int w);
 extern INPUTC *FCEU_InitVirtualBoy(int w);
+extern INPUTC *FCEU_InitLCDCompZapper(int w);
 
 extern INPUTCFC *FCEU_InitArkanoidFC(void);
 extern INPUTCFC *FCEU_InitSpaceShadow(void);
@@ -105,6 +106,8 @@ uint8 FCEU_GetJoyJoy(void)
 }
 
 extern uint8 coinon;
+extern uint8 coinon2;
+extern uint8 service;
 
 //set to true if the fourscore is attached
 static bool FSAttached = false;
@@ -231,6 +234,10 @@ static uint8 ReadGPVS(int w)
 	return ret;
 }
 
+#ifdef __FCEU_QSCRIPT_ENABLE__
+extern uint8_t FCEU_JSReadJoypad(int which, uint8_t phyState);
+#endif
+
 static void UpdateGP(int w, void *data, int arg)
 {
 	if(w==0)	//adelikat, 3/14/09: Changing the joypads to inclusive OR the user's joypad + the Lua joypad, this way lua only takes over the buttons it explicity says to
@@ -244,6 +251,11 @@ static void UpdateGP(int w, void *data, int arg)
 		joy[0] = *(uint32 *)joyports[0].ptr;;
 		joy[2] = *(uint32 *)joyports[0].ptr >> 16;
 		#endif
+
+		#ifdef __FCEU_QSCRIPT_ENABLE__
+		joy[0]= FCEU_JSReadJoypad(0,joy[0]);
+		joy[2]= FCEU_JSReadJoypad(2,joy[2]);
+		#endif
 	}
 	else
 	{
@@ -256,8 +268,12 @@ static void UpdateGP(int w, void *data, int arg)
 		joy[1] = *(uint32 *)joyports[1].ptr >> 8;
 		joy[3] = *(uint32 *)joyports[1].ptr >> 24;
 		#endif
-	}
 
+		#ifdef __FCEU_QSCRIPT_ENABLE__
+		joy[1]= FCEU_JSReadJoypad(1,joy[1]);
+		joy[3]= FCEU_JSReadJoypad(3,joy[3]);
+		#endif
+	}
 }
 
 static void LogGP(int w, MovieRecord* mr)
@@ -372,7 +388,39 @@ static void StrobeSNES(int w)
 
 //^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+//--------Hori 4 player driver for expansion port--------
+static uint8 Hori4ReadBit[2];
+static void StrobeHori4(void)
+{
+	Hori4ReadBit[0] = Hori4ReadBit[1] = 0;
+}
 
+static uint8 ReadHori4(int w, uint8 ret)
+{
+	ret &= 1;
+
+	if (Hori4ReadBit[w] < 8)
+	{
+		ret |= ((joy[w] >> (Hori4ReadBit[w])) & 1) << 1;
+	}
+	else if (Hori4ReadBit[w] < 16)
+	{
+		ret |= ((joy[2 + w] >> (Hori4ReadBit[w] - 8)) & 1) << 1;
+	}
+	else if (Hori4ReadBit[w] < 24)
+	{
+		ret |= (((w ? 0x10 : 0x20) >> (7 - (Hori4ReadBit[w] - 16))) & 1) << 1;
+	}
+	if (Hori4ReadBit[w] >= 24) ret |= 2;
+	else Hori4ReadBit[w]++;
+
+	return(ret);
+}
+
+static INPUTCFC HORI4C = { ReadHori4,0,StrobeHori4,0,0,0 };
+//------------------
+
+//^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 static INPUTC GPC={ReadGP,0,StrobeGP,UpdateGP,0,0,LogGP,LoadGP};
 static INPUTC GPCVS={ReadGPVS,0,StrobeGP,UpdateGP,0,0,LogGP,LoadGP};
@@ -386,6 +434,10 @@ void FCEU_DrawInput(uint8 *buf)
 		portFC.driver->Draw(buf,portFC.attrib);
 }
 
+#ifdef __FCEU_QNETWORK_ENABLE__
+extern bool NetPlayActive(void);
+void NetPlayReadInputFrame(uint8_t* joy);
+#endif
 
 void FCEU_UpdateInput(void)
 {
@@ -398,8 +450,17 @@ void FCEU_UpdateInput(void)
 		portFC.driver->Update(portFC.ptr,portFC.attrib);
 	}
 
-	if(GameInfo->type==GIT_VSUNI)
-		if(coinon) coinon--;
+	if (GameInfo->type == GIT_VSUNI) {
+		if (coinon) coinon--;
+		if (coinon2) coinon2--;
+		if (service) service--;
+	}
+	#ifdef __FCEU_QNETWORK_ENABLE__
+	if (NetPlayActive())
+	{
+		NetPlayReadInputFrame(joy);
+	}
+	#endif
 
 	if(FCEUnetplay)
 		NetplayUpdate(joy);
@@ -421,7 +482,11 @@ static DECLFR(VSUNIRead0)
 
 	ret|=(vsdip&3)<<3;
 	if(coinon)
-		ret|=0x4;
+		ret |= 0x20;
+	if (coinon2)
+		ret |= 0x40;
+	if (service)
+		ret |= 0x04;
 	return ret;
 }
 
@@ -453,9 +518,16 @@ static void SetInputStuff(int port)
 	switch(joyports[port].type)
 	{
 	case SI_GAMEPAD:
-		if(GameInfo->type==GIT_VSUNI){
-			joyports[port].driver = &GPCVS;
-		} else {
+		if (GameInfo)
+		{
+			if (GameInfo->type==GIT_VSUNI){
+				joyports[port].driver = &GPCVS;
+			} else {
+				joyports[port].driver= &GPC;
+			}
+		}
+		else
+		{
 			joyports[port].driver= &GPC;
 		}
 		break;
@@ -483,7 +555,11 @@ static void SetInputStuff(int port)
 	case SI_VIRTUALBOY:
 		joyports[port].driver=FCEU_InitVirtualBoy(port);
 		break;
+	case SI_LCDCOMP_ZAPPER:
+		joyports[port].driver = FCEU_InitLCDCompZapper(port);
+		break;
 	case SI_NONE:
+	case SI_UNSET:
 		joyports[port].driver=&DummyJPort;
 		break;
 	}
@@ -494,6 +570,7 @@ static void SetInputStuffFC()
 	switch(portFC.type)
 	{
 	case SIFC_NONE:
+	case SIFC_UNSET:
 		portFC.driver=&DummyPortFC;
 		break;
 	case SIFC_ARKANOID:
@@ -541,6 +618,10 @@ static void SetInputStuffFC()
 		break;
 	case SIFC_FAMINETSYS:
 		portFC.driver = FCEU_InitFamiNetSys();
+		break;
+	case SIFC_HORI4PLAYER:
+		portFC.driver = &HORI4C;
+		memset(&Hori4ReadBit, 0, sizeof(Hori4ReadBit));
 		break;
 	}
 }
@@ -619,7 +700,9 @@ void FCEU_DoSimpleCommand(int cmd)
 	{
 	case FCEUNPCMD_FDSINSERT: FCEU_FDSInsert();break;
 	case FCEUNPCMD_FDSSELECT: FCEU_FDSSelect();break;
-	case FCEUNPCMD_VSUNICOIN: FCEU_VSUniCoin(); break;
+	case FCEUNPCMD_VSUNICOIN: FCEU_VSUniCoin(0); break;
+	case FCEUNPCMD_VSUNICOIN2: FCEU_VSUniCoin(1); break;
+	case FCEUNPCMD_VSUNISERVICE: FCEU_VSUniService(); break;
 	case FCEUNPCMD_VSUNIDIP0:
 	case FCEUNPCMD_VSUNIDIP0+1:
 	case FCEUNPCMD_VSUNIDIP0+2:
@@ -677,6 +760,22 @@ void FCEUI_VSUniCoin(void)
 	FCEU_QSimpleCommand(FCEUNPCMD_VSUNICOIN);
 }
 
+void FCEUI_VSUniCoin2(void)
+{
+	if (!FCEU_IsValidUI(FCEUI_INSERT_COIN))
+		return;
+
+	FCEU_QSimpleCommand(FCEUNPCMD_VSUNICOIN2);
+}
+
+void FCEUI_VSUniService(void)
+{
+	if (!FCEU_IsValidUI(FCEUI_INSERT_COIN))
+		return;
+
+	FCEU_QSimpleCommand(FCEUNPCMD_VSUNISERVICE);
+}
+
 //Resets the frame counter if movie inactive and rom is reset or power-cycle
 void ResetFrameCounter()
 {
@@ -721,7 +820,7 @@ const char* FCEUI_CommandTypeNames[]=
 	"TAS Editor",
 };
 
-static void CommandUnImpl(void);
+//static void CommandUnImpl(void);
 static void CommandToggleDip(void);
 static void CommandStateLoad(void);
 static void CommandStateSave(void);
@@ -749,6 +848,7 @@ static void RamSearchOpLTE(void);
 static void RamSearchOpGTE(void);
 static void RamSearchOpEQ(void);
 static void RamSearchOpNE(void);
+static void ToggleCheats(void);
 static void DebuggerStepInto(void);
 static void FA_SkipLag(void);
 static void OpenRom(void);
@@ -851,17 +951,17 @@ struct EMUCMDTABLE FCEUI_CommandTable[]=
 	{ EMUCMD_FDS_EJECT_INSERT,				EMUCMDTYPE_FDS,		FCEUI_FDSInsert,				0, 0, "Eject or Insert FDS Disk", EMUCMDFLAG_TASEDITOR },
 	{ EMUCMD_FDS_SIDE_SELECT,				EMUCMDTYPE_FDS,		FCEUI_FDSSelect,				0, 0, "Switch FDS Disk Side", EMUCMDFLAG_TASEDITOR },
 
-	{ EMUCMD_VSUNI_COIN,					EMUCMDTYPE_VSUNI,	FCEUI_VSUniCoin,				0, 0, "Insert Coin", EMUCMDFLAG_TASEDITOR },
-	{ EMUCMD_VSUNI_TOGGLE_DIP_0,			EMUCMDTYPE_VSUNI,	CommandToggleDip,				0, 0, "Toggle Dipswitch 0", 0 },
-	{ EMUCMD_VSUNI_TOGGLE_DIP_1,			EMUCMDTYPE_VSUNI,	CommandToggleDip,				0, 0, "Toggle Dipswitch 1", 0 },
-	{ EMUCMD_VSUNI_TOGGLE_DIP_2,			EMUCMDTYPE_VSUNI,	CommandToggleDip,				0, 0, "Toggle Dipswitch 2", 0 },
-	{ EMUCMD_VSUNI_TOGGLE_DIP_3,			EMUCMDTYPE_VSUNI,	CommandToggleDip,				0, 0, "Toggle Dipswitch 3", 0 },
-	{ EMUCMD_VSUNI_TOGGLE_DIP_4,			EMUCMDTYPE_VSUNI,	CommandToggleDip,				0, 0, "Toggle Dipswitch 4", 0 },
-	{ EMUCMD_VSUNI_TOGGLE_DIP_5,			EMUCMDTYPE_VSUNI,	CommandToggleDip,				0, 0, "Toggle Dipswitch 5", 0 },
-	{ EMUCMD_VSUNI_TOGGLE_DIP_6,			EMUCMDTYPE_VSUNI,	CommandToggleDip,				0, 0, "Toggle Dipswitch 6", 0 },
-	{ EMUCMD_VSUNI_TOGGLE_DIP_7,			EMUCMDTYPE_VSUNI,	CommandToggleDip,				0, 0, "Toggle Dipswitch 7", 0 },
-	{ EMUCMD_VSUNI_TOGGLE_DIP_8,			EMUCMDTYPE_VSUNI,	CommandToggleDip,				0, 0, "Toggle Dipswitch 8", 0 },
-	{ EMUCMD_VSUNI_TOGGLE_DIP_9,			EMUCMDTYPE_VSUNI,	CommandToggleDip,				0, 0, "Toggle Dipswitch 9", 0 },
+	{ EMUCMD_VSUNI_COIN,					EMUCMDTYPE_VSUNI,	FCEUI_VSUniCoin,				0, 0, "Insert Coin #1", EMUCMDFLAG_TASEDITOR },
+	{ EMUCMD_VSUNI_COIN_2,					EMUCMDTYPE_VSUNI,	FCEUI_VSUniCoin2,				0, 0, "Insert Coin #2", EMUCMDFLAG_TASEDITOR },
+	{ EMUCMD_VSUNI_SERVICE_BUTTON,			EMUCMDTYPE_VSUNI,	FCEUI_VSUniService,				0, 0, "Service Button", EMUCMDFLAG_TASEDITOR },
+	{ EMUCMD_VSUNI_TOGGLE_DIP_0,			EMUCMDTYPE_VSUNI,	CommandToggleDip,				0, 0, "Toggle Dip Switch 0", 0 },
+	{ EMUCMD_VSUNI_TOGGLE_DIP_1,			EMUCMDTYPE_VSUNI,	CommandToggleDip,				0, 0, "Toggle Dip Switch 1", 0 },
+	{ EMUCMD_VSUNI_TOGGLE_DIP_2,			EMUCMDTYPE_VSUNI,	CommandToggleDip,				0, 0, "Toggle Dip Switch 2", 0 },
+	{ EMUCMD_VSUNI_TOGGLE_DIP_3,			EMUCMDTYPE_VSUNI,	CommandToggleDip,				0, 0, "Toggle Dip Switch 3", 0 },
+	{ EMUCMD_VSUNI_TOGGLE_DIP_4,			EMUCMDTYPE_VSUNI,	CommandToggleDip,				0, 0, "Toggle Dip Switch 4", 0 },
+	{ EMUCMD_VSUNI_TOGGLE_DIP_5,			EMUCMDTYPE_VSUNI,	CommandToggleDip,				0, 0, "Toggle Dip Switch 5", 0 },
+	{ EMUCMD_VSUNI_TOGGLE_DIP_6,			EMUCMDTYPE_VSUNI,	CommandToggleDip,				0, 0, "Toggle Dip Switch 6", 0 },
+	{ EMUCMD_VSUNI_TOGGLE_DIP_7,			EMUCMDTYPE_VSUNI,	CommandToggleDip,				0, 0, "Toggle Dip Switch 7", 0 },
 
 	{ EMUCMD_MISC_AUTOSAVE,					EMUCMDTYPE_MISC,	FCEUI_RewindToLastAutosave,		0, 0, "Load Last Auto-save", 0},
 	{ EMUCMD_MISC_SHOWSTATES,				EMUCMDTYPE_MISC,	ViewSlots,						0, 0, "View save slots", 0 },
@@ -896,6 +996,7 @@ struct EMUCMDTABLE FCEUI_CommandTable[]=
 	{ EMUCMD_TOOL_RAMSEARCHGTE,				EMUCMDTYPE_TOOL,	RamSearchOpGTE,					0, 0, "Ram Search - Greater Than or Equal", 0},
 	{ EMUCMD_TOOL_RAMSEARCHEQ,				EMUCMDTYPE_TOOL,	RamSearchOpEQ,					0, 0, "Ram Search - Equal",	  0},
 	{ EMUCMD_TOOL_RAMSEARCHNE,				EMUCMDTYPE_TOOL,	RamSearchOpNE,					0, 0, "Ram Search - Not Equal", 0},
+	{ EMUCMD_TOOL_TOGGLECHEATS,				EMUCMDTYPE_TOOL,	ToggleCheats,					0, 0, "Toggle Cheats", 0},
 	{ EMUCMD_RERECORD_DISPLAY_TOGGLE,		EMUCMDTYPE_MISC,   FCEUI_MovieToggleRerecordDisplay,0, 0, "Toggle Rerecord Display", EMUCMDFLAG_TASEDITOR },
 
 	{ EMUCMD_TASEDITOR_REWIND,				EMUCMDTYPE_TASEDITOR,	TaseditorRewindOn,			TaseditorRewindOff, 0, "Frame Rewind", EMUCMDFLAG_TASEDITOR },
@@ -911,12 +1012,12 @@ struct EMUCMDTABLE FCEUI_CommandTable[]=
 
 #define NUM_EMU_CMDS		(sizeof(FCEUI_CommandTable)/sizeof(FCEUI_CommandTable[0]))
 
-static int execcmd, i;
+static int execcmd;
 
 void FCEUI_HandleEmuCommands(TestCommandState* testfn)
 {
 	bool taseditor = FCEUMOV_Mode(MOVIEMODE_TASEDITOR);
-	for(i=0; i<NUM_EMU_CMDS; ++i)
+	for(size_t i=0; i<NUM_EMU_CMDS; ++i)
 	{
 		int new_state;
 		int old_state = FCEUI_CommandTable[i].state;
@@ -938,10 +1039,11 @@ void FCEUI_HandleEmuCommands(TestCommandState* testfn)
 	}
 }
 
-static void CommandUnImpl(void)
-{
-	FCEU_DispMessage("command '%s' unimplemented.",0, FCEUI_CommandTable[i].name);
-}
+// Function not currently used
+//static void CommandUnImpl(void)
+//{
+//	FCEU_DispMessage("command '%s' unimplemented.",0, FCEUI_CommandTable[i].name);
+//}
 
 static void CommandToggleDip(void)
 {
@@ -965,7 +1067,7 @@ static void CommandSelectSaveSlot(void)
 {
 	if (FCEUMOV_Mode(MOVIEMODE_TASEDITOR))
 	{
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 		handleEmuCmdByTaseditor(execcmd);
 #endif
 	} else
@@ -983,7 +1085,7 @@ static void CommandStateSave(void)
 {
 	if (FCEUMOV_Mode(MOVIEMODE_TASEDITOR))
 	{
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 		handleEmuCmdByTaseditor(execcmd);
 #endif
 	} else
@@ -1004,7 +1106,7 @@ static void CommandStateLoad(void)
 {
 	if (FCEUMOV_Mode(MOVIEMODE_TASEDITOR))
 	{
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 		handleEmuCmdByTaseditor(execcmd);
 #endif
 	} else
@@ -1067,7 +1169,7 @@ void LagCounterToggle(void)
 
 static void LaunchTasEditor(void)
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	extern bool enterTASEditor();
 	enterTASEditor();
 #endif
@@ -1075,56 +1177,56 @@ static void LaunchTasEditor(void)
 
 static void LaunchMemoryWatch(void)
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	CreateMemWatch();
 #endif
 }
 
 static void LaunchDebugger(void)
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	DoDebug(0);
 #endif
 }
 
 static void LaunchNTView(void)
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	DoNTView();
 #endif
 }
 
 static void LaunchPPU(void)
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	DoPPUView();
 #endif
 }
 
 static void LaunchHex(void)
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	DoMemView();
 #endif
 }
 
 static void LaunchTraceLogger(void)
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	DoTracer();
 #endif
 }
 
 static void LaunchCodeDataLogger(void)
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	DoCDLogger();
 #endif
 }
 
 static void LaunchCheats(void)
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	extern HWND hCheat;
 	ConfigCheats(hCheat);
 #endif
@@ -1132,7 +1234,7 @@ static void LaunchCheats(void)
 
 static void LaunchRamWatch(void)
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	extern void OpenRamWatch();	//adelikat: Blah blah hacky, I know
 	OpenRamWatch();
 #endif
@@ -1140,14 +1242,14 @@ static void LaunchRamWatch(void)
 
 static void LaunchRamSearch(void)
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	extern void OpenRamSearch();
 	OpenRamSearch();
 #endif
 }
 
 static void RamSearchOpLT(void) {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	if (GameInfo)
 	{
 		extern void SetSearchType(int SearchType);
@@ -1159,7 +1261,7 @@ static void RamSearchOpLT(void) {
 }
 
 static void RamSearchOpGT(void) {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	if (GameInfo)
 	{
 		extern void SetSearchType(int SearchType);
@@ -1171,7 +1273,7 @@ static void RamSearchOpGT(void) {
 }
 
 static void RamSearchOpLTE(void) {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	if (GameInfo)
 	{
 		extern void SetSearchType(int SearchType);
@@ -1183,7 +1285,7 @@ static void RamSearchOpLTE(void) {
 }
 
 static void RamSearchOpGTE(void) {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	if (GameInfo)
 	{
 		extern void SetSearchType(int SearchType);
@@ -1195,7 +1297,7 @@ static void RamSearchOpGTE(void) {
 }
 
 static void RamSearchOpEQ(void) {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	if (GameInfo)
 	{
 		extern void SetSearchType(int SearchType);
@@ -1207,7 +1309,7 @@ static void RamSearchOpEQ(void) {
 }
 
 static void RamSearchOpNE(void) {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	if (GameInfo)
 	{
 		extern void SetSearchType(int SearchType);
@@ -1218,9 +1320,21 @@ static void RamSearchOpNE(void) {
 #endif
 }
 
+extern int globalCheatDisabled;
+extern unsigned int FrozenAddressCount;
+static void ToggleCheats()
+{
+	FCEUI_GlobalToggleCheat(globalCheatDisabled);
+	FCEU_DispMessage("%d cheats active", 0, FrozenAddressCount);
+	#ifdef __WIN_DRIVER__
+	UpdateCheatRelatedWindow();
+	UpdateCheatListGroupBoxUI();
+	#endif
+}
+
 static void DebuggerStepInto()
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	if (GameInfo)
 	{
 		extern void DoDebuggerStepInto();
@@ -1236,7 +1350,7 @@ static void FA_SkipLag(void)
 
 static void OpenRom(void)
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	extern HWND hAppWnd;
 	LoadNewGamey(hAppWnd, 0);
 #endif
@@ -1244,14 +1358,14 @@ static void OpenRom(void)
 
 static void CloseRom(void)
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	CloseGame();
 #endif
 }
 
 void ReloadRom(void)
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	if (FCEUMOV_Mode(MOVIEMODE_TASEDITOR))
 	{
 		// load most recent project
@@ -1274,23 +1388,20 @@ static void MovieSubtitleToggle(void)
 
 static void UndoRedoSavestate(void)
 {
-	// FIXME this will always evaluate to true, should this be
-	// if (*lastSavestateMade...) to check if it holds a string or just
-	// a '\0'?
-	if (lastSavestateMade && (undoSS || redoSS))
+	if ( !lastSavestateMade.empty() && (undoSS || redoSS))
 		SwapSaveState();
 }
 
 static void FCEUI_DoExit(void)
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	DoFCEUExit();
 #endif
 }
 
 void ToggleFullscreen()
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	extern int SetVideoMode(int fs);		//adelikat: Yeah, I know, hacky
 	extern void UpdateCheckedMenuItems();
 
@@ -1306,21 +1417,34 @@ void ToggleFullscreen()
 
 static void TaseditorRewindOn(void)
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	mustRewindNow = true;
 #endif
 }
 static void TaseditorRewindOff(void)
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	mustRewindNow = false;
 #endif
 }
 
 static void TaseditorCommand(void)
 {
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 	if (FCEUMOV_Mode(MOVIEMODE_TASEDITOR))
 		handleEmuCmdByTaseditor(execcmd);
 #endif
+}
+
+/**
+* Function to get command info entry by command number
+**/
+EMUCMDTABLE* GetEmuCommandById(int cmd)
+{
+	for (size_t i = 0; i<NUM_EMU_CMDS; ++i)
+	{
+		if (FCEUI_CommandTable[i].cmd == cmd)
+			return &FCEUI_CommandTable[i];
+	}
+	return NULL;
 }

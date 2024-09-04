@@ -19,85 +19,81 @@
 #include <imagine/base/Application.hh>
 #include <imagine/base/ApplicationContext.hh>
 #include <imagine/logger/logger.h>
+#include <imagine/util/ranges.hh>
 #include <imagine/util/algorithm.h>
-#include "input.hh"
+#include <imagine/base/android/AndroidInputDevice.hh>
 #include <android/input.h>
 
-namespace Base
+namespace IG
 {
 
-static constexpr int AINPUT_SOURCE_JOYSTICK = 0x01000010;
-static constexpr int AINPUT_SOURCE_CLASS_JOYSTICK = 0x00000010;
+extern int32_t (*AMotionEvent_getActionButton_)(const AInputEvent* motion_event);
+
 static const char* aInputSourceToStr(uint32_t source);
 
-static Input::AndroidInputDevice *deviceForInputId(Base::ApplicationContext ctx, Base::AndroidInputDeviceContainer &sysInputDev, int id)
+Input::Device* AndroidApplication::inputDeviceForId(int id) const
 {
-	if(ctx.androidSDK() < 12)
+	return findPtr(inputDev, [=](const auto &e) { return e->map() == Input::Map::SYSTEM && e->id() == id; });
+}
+
+std::pair<Input::Device*, int> AndroidApplication::inputDeviceForEvent(AInputEvent *event)
+{
+	if(hasMultipleInputDeviceSupport())
 	{
-		// no multi-input device support
-		assumeExpr(sysInputDev.size());
-		return sysInputDev.front().get();
+		int id = AInputEvent_getDeviceId(event);
+		return {inputDeviceForId(id), id};
 	}
-	auto existingIt = std::find_if(sysInputDev.cbegin(), sysInputDev.cend(),
-		[=](const auto &e) { return e->systemId() == id; });
-	if(existingIt == sysInputDev.end())
+	else
 	{
-		return nullptr;
+		return {builtinKeyboardDev, -1};
 	}
-	return existingIt->get();
 }
 
-static Time makeTimeFromMotionEvent(AInputEvent *event)
+static auto makeTimeFromMotionEvent(AInputEvent *event)
 {
-	return IG::Nanoseconds(AMotionEvent_getEventTime(event));
+	return SteadyClockTimePoint{Nanoseconds{AMotionEvent_getEventTime(event)}};
 }
 
-static Time makeTimeFromKeyEvent(AInputEvent *event)
+static auto makeTimeFromKeyEvent(AInputEvent *event)
 {
-	return IG::Nanoseconds(AKeyEvent_getEventTime(event));
+	return SteadyClockTimePoint{Nanoseconds{AKeyEvent_getEventTime(event)}};
 }
 
-static void mapKeycodesForSpecialDevices(const Input::Device &dev, int32_t &keyCode, int32_t &metaState,
-	Input::Source &src, AInputEvent *event)
+static std::pair<int32_t, Input::Source> mapKeycodesForSpecialDevices(const Input::Device &dev,
+	int32_t keyCode, int32_t metaState, Input::Source src)
 {
-	using namespace Input;
+	using namespace IG::Input;
 	switch(dev.subtype())
 	{
-		bcase Device::SUBTYPE_XPERIA_PLAY:
+		case DeviceSubtype::XPERIA_PLAY:
 		{
 			if(!Config::MACHINE_IS_GENERIC_ARMV7)
 				break;
 			switch(keyCode)
 			{
-				bcase Keycode::BACK:
+				case Keycode::BACK:
 					if(metaState & AMETA_ALT_ON)
-					{
-						keyCode = Keycode::GAME_B;
-						src = Source::GAMEPAD;
-					}
-				bcase Keycode::GAME_A ... Keycode::GAME_SELECT:
-					src = Source::GAMEPAD;
+						return {Keycode::GAME_B, Source::GAMEPAD};
+					else
+						break;
+				case Keycode::GAME_A ... Keycode::GAME_SELECT:
+					return {keyCode, Source::GAMEPAD};
 			}
+			break;
 		}
-		bcase Device::SUBTYPE_XBOX_360_CONTROLLER:
-		{
-			if(keyCode)
-				break;
-			// map d-pad on wireless controller adapter
-			auto scanCode = AKeyEvent_getScanCode(event);
-			switch(scanCode)
+		default:
+			switch(keyCode) // map volume/media keys to keyboard source
 			{
-				bcase 704: keyCode = Keycode::LEFT;
-				bcase 705: keyCode = Keycode::RIGHT;
-				bcase 706: keyCode = Keycode::UP;
-				bcase 707: keyCode = Keycode::DOWN;
+				case Keycode::VOL_UP ... Keycode::VOL_DOWN:
+				case Keycode::MEDIA_PLAY_PAUSE ... Keycode::MUTE:
+					return {keyCode, Source::KEYBOARD};
 			}
-		}
-		bdefault: break;
+			break;
 	}
+	return {keyCode, src};
 }
 
-static const char *keyEventActionStr(uint32_t action)
+constexpr const char *keyEventActionStr(uint32_t action)
 {
 	switch(action)
 	{
@@ -108,71 +104,136 @@ static const char *keyEventActionStr(uint32_t action)
 	}
 }
 
+// Implementation of missing NDK function equivalent of MotionEvent.getActionButton()
+// by accessing mActionButton data directly using known offsets,
+// or by calling user-set function pointer when SDK >= 33
+static int32_t AMotionEvent_getActionButtonCompat(const AInputEvent* event, int32_t sdkVersion)
+{
+	if(sdkVersion >= 33)
+	{
+		return AMotionEvent_getActionButton_(event);
+	}
+	static const bool ptrIs64Bits = sizeof(void*) == 8;
+	auto asIntPtr = (const int32_t *)event;
+	switch(sdkVersion)
+	{
+		case 23 ... 28: return asIntPtr[ptrIs64Bits ? 5  : 4];
+		case 29:        return asIntPtr[ptrIs64Bits ? 6  : 5];
+		case 30 ... 32: return asIntPtr[ptrIs64Bits ? 15 : 14];
+	}
+	return AMOTION_EVENT_BUTTON_PRIMARY; // can't determine button, fall back to primary
+}
+
 static bool isFromSource(int src, int srcTest)
 {
 	return (src & srcTest) == srcTest;
 }
 
-static Input::Action motionEventAction(uint32_t e)
+static Input::Action touchEventAction(uint32_t e)
 {
+	using namespace IG::Input;
 	switch(e)
 	{
 		case AMOTION_EVENT_ACTION_POINTER_DOWN:
-		case AMOTION_EVENT_ACTION_DOWN: return Input::Action::PUSHED;
+		case AMOTION_EVENT_ACTION_DOWN:   return Action::PUSHED;
 		case AMOTION_EVENT_ACTION_POINTER_UP:
-		case AMOTION_EVENT_ACTION_UP: return Input::Action::RELEASED;
-		case AMOTION_EVENT_ACTION_CANCEL: return Input::Action::CANCELED;
-		case AMOTION_EVENT_ACTION_MOVE:
-		default: return Input::Action::MOVED;
+		case AMOTION_EVENT_ACTION_UP:     return Action::RELEASED;
+		case AMOTION_EVENT_ACTION_CANCEL: return Action::CANCELED;
+		case AMOTION_EVENT_ACTION_MOVE:   return Action::MOVED;
+		default:
+			logWarn("unknown touch motion event action:%u", e);
+			return Action::MOVED;
 	}
 }
 
-bool AndroidApplication::processInputEvent(AInputEvent* event, Base::Window &win)
+static std::pair<Input::Action, Input::Key> mouseEventAction(uint32_t e, AInputEvent* event, int sdk)
 {
-	using namespace Input;
+	using namespace IG::Input;
+	switch(e)
+	{
+		case AMOTION_EVENT_ACTION_BUTTON_PRESS:
+			if(auto actionBtn = AMotionEvent_getActionButtonCompat(event, sdk);
+				actionBtn == AMotionEvent_getButtonState(event)) // first button press already processed in ACTION_DOWN
+				return {Action::MOVED, 0};
+			else
+				return {Action::PUSHED, actionBtn};
+		case AMOTION_EVENT_ACTION_DOWN:           return {Action::PUSHED, AMotionEvent_getButtonState(event)};
+		case AMOTION_EVENT_ACTION_BUTTON_RELEASE: return {Action::RELEASED, AMotionEvent_getActionButtonCompat(event, sdk)};
+		case AMOTION_EVENT_ACTION_UP:             return {Action::RELEASED, Pointer::ALL_BUTTONS};
+		case AMOTION_EVENT_ACTION_CANCEL:         return {Action::CANCELED, 0};
+		case AMOTION_EVENT_ACTION_HOVER_ENTER:    return {Action::ENTER_VIEW, 0};
+		case AMOTION_EVENT_ACTION_HOVER_EXIT:     return {Action::EXIT_VIEW, 0};
+		case AMOTION_EVENT_ACTION_HOVER_MOVE:
+		case AMOTION_EVENT_ACTION_MOVE:           return {Action::MOVED, 0};
+		case AMOTION_EVENT_ACTION_SCROLL:
+			if(auto vScroll = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_VSCROLL, 0);
+				vScroll > 0.f)
+				return {Action::SCROLL_UP, 0};
+			else if(vScroll < 0.f)
+				return {Action::SCROLL_DOWN, 0};
+			return {Action::MOVED, 0};
+		default:
+			logWarn("unknown mouse motion event action:%u", e);
+			return {Action::MOVED, 0};
+	}
+}
+
+bool AndroidApplication::processInputEvent(AInputEvent* event, Input::Device *devPtr, int devId, Window &win)
+{
+	using namespace IG::Input;
 	auto type = AInputEvent_getType(event);
 	switch(type)
 	{
 		case AINPUT_EVENT_TYPE_MOTION:
 		{
 			auto source = AInputEvent_getSource(event);
-			int eventAction = AMotionEvent_getAction(event);
-			//logMsg("motion event action:%d source:%d", eventAction, source);
+			auto actionBits = AMotionEvent_getAction(event);
+			auto actionCode = actionBits & AMOTION_EVENT_ACTION_MASK;
 			switch(source & AINPUT_SOURCE_CLASS_MASK)
 			{
 				case AINPUT_SOURCE_CLASS_POINTER:
 				{
-					auto devId = AInputEvent_getDeviceId(event);
-					auto dev = deviceForInputId(win.appContext(), sysInputDev, devId);
-					if(!dev) [[unlikely]]
+					if(!devPtr) [[unlikely]]
 					{
-						if(Config::DEBUG_BUILD)
-							logWarn("discarding pointer input from unknown device ID: %d", devId);
+						logWarn("pointer motion event from unknown device ID: %d", devId);
 						return false;
 					}
 					auto src = isFromSource(source, AINPUT_SOURCE_MOUSE) ? Input::Source::MOUSE : Input::Source::TOUCHSCREEN;
-					auto action = motionEventAction(eventAction & AMOTION_EVENT_ACTION_MASK);
-					uint32_t actionPIdx = eventAction >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
+					size_t actionPIdx = actionBits >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
 					auto pointers = AMotionEvent_getPointerCount(event);
+					uint32_t metaState = AMotionEvent_getMetaState(event);
 					assumeExpr(pointers >= 1);
-					//logMsg("motion event action:%s source:%d pointers:%d:%d",
-					//	Input::actionStr(action), source, (int)pointers, actionPIdx);
-					iterateTimes(pointers, i)
+					if(src == Input::Source::TOUCHSCREEN)
 					{
-						auto pAction = action;
-						// a pointer not performing the action just needs its position updated
-						if(actionPIdx != i)
+						bool handled = false;
+						auto action = touchEventAction(actionCode);
+						//logMsg("touch motion event: id:%d (%s) action:%s pointers:%d:%d",
+						//	devId, devPtr->name().data(), actionStr(action), (int)pointers, actionPIdx);
+						for(auto i : iotaCount(pointers))
 						{
-							//logMsg("non-action pointer idx %d", i);
-							pAction = Input::Action::MOVED;
+							auto pAction = action;
+							// a pointer not performing the action just needs its position updated
+							if(actionPIdx != i)
+							{
+								//logMsg("non-action pointer idx %d", i);
+								pAction = Input::Action::MOVED;
+							}
+							auto pos = win.transformInputPos({AMotionEvent_getX(event, i), AMotionEvent_getY(event, i)});
+							auto pId = AMotionEvent_getPointerId(event, i);
+							handled |= win.dispatchInputEvent(MotionEvent{Input::Map::POINTER, Input::Pointer::LBUTTON,
+								metaState, pAction, pos.x, pos.y, pId, src, makeTimeFromMotionEvent(event), devPtr});
 						}
-						auto pos = win.transformInputPos({(int)AMotionEvent_getX(event, i), (int)AMotionEvent_getY(event, i)});
-						auto pId = AMotionEvent_getPointerId(event, i);
-						uint32_t metaState = pAction == Input::Action::RELEASED ? 0 : IG::bit(Input::Pointer::LBUTTON);
-						win.dispatchInputEvent(Input::Event{(uint32_t)devId, Input::Map::POINTER, Input::Pointer::LBUTTON,
-							metaState, pAction, pos.x, pos.y, pId, src, makeTimeFromMotionEvent(event), dev});
+						return handled;
 					}
-					return true;
+					else // mouse
+					{
+						auto [action, btnState] = mouseEventAction(actionCode, event, win.appContext().androidSDK());
+						//logMsg("mouse motion event: id:%d (%s) action:%s buttons:%d", devId, devPtr->name().data(), actionStr(action), btnState);
+						auto pos = win.transformInputPos({AMotionEvent_getX(event, 0), AMotionEvent_getY(event, 0)});
+						auto pId = AMotionEvent_getPointerId(event, 0);
+						return win.dispatchInputEvent(MotionEvent{Input::Map::POINTER, btnState,
+							metaState, action, pos.x, pos.y, pId, src, makeTimeFromMotionEvent(event), devPtr});
+					}
 				}
 				case AINPUT_SOURCE_CLASS_NAVIGATION:
 				{
@@ -180,70 +241,62 @@ bool AndroidApplication::processInputEvent(AInputEvent* event, Base::Window &win
 					auto x = AMotionEvent_getX(event, 0);
 					auto y = AMotionEvent_getY(event, 0);
 					auto time = makeTimeFromMotionEvent(event);
-					int iX = x * 1000., iY = y * 1000.;
+					float iX = x * 1000.f, iY = y * 1000.f;
 					auto pos = win.transformInputPos({iX, iY});
 					//logMsg("trackball ev %s %f %f", androidEventEnumToStr(action), x, y);
-					auto src = Source::KEYBOARD;
-					if(eventAction == AMOTION_EVENT_ACTION_MOVE)
-						win.dispatchInputEvent({0, Map::REL_POINTER, 0, 0, Action::MOVED_RELATIVE, pos.x, pos.y, 0, Source::NAVIGATION, time, nullptr});
+					if(actionCode == AMOTION_EVENT_ACTION_MOVE)
+						win.dispatchInputEvent(MotionEvent{Map::REL_POINTER, 0, 0, Action::MOVED_RELATIVE, pos.x, pos.y, 0, Source::NAVIGATION, time, nullptr});
 					else
 					{
 						Key key = Keycode::ENTER;
-						win.dispatchInputEvent({0, Map::REL_POINTER, key, key, eventAction == AMOTION_EVENT_ACTION_DOWN ? Action::PUSHED : Action::RELEASED, 0, 0, Source::KEYBOARD, time, nullptr});
+						win.dispatchInputEvent(KeyEvent{Map::REL_POINTER, key, actionCode == AMOTION_EVENT_ACTION_DOWN ? Action::PUSHED : Action::RELEASED, 0, 0, Source::KEYBOARD, time, nullptr});
 					}
 					return true;
 				}
 				case AINPUT_SOURCE_CLASS_JOYSTICK:
 				{
-					auto dev = deviceForInputId(win.appContext(), sysInputDev, AInputEvent_getDeviceId(event));
-					if(!dev) [[unlikely]]
+					if(!devPtr) [[unlikely]]
 					{
-						if(Config::DEBUG_BUILD)
-							logWarn("discarding joystick input from unknown device ID: %d", AInputEvent_getDeviceId(event));
+						logWarn("joystick motion event from unknown device ID:%d", devId);
 						return false;
 					}
-					auto enumID = dev->enumId();
-					//logMsg("Joystick input from %s", dev->name());
+					//logMsg("joystick motion event: id:%d (%s)", devId, devPtr->name().data());
 					auto time = makeTimeFromMotionEvent(event);
+					auto &axes = getAs<AndroidInputDevice>(*devPtr).jsAxes();
 					if(hasGetAxisValue())
 					{
-						for(auto &axis : dev->jsAxes())
+						for(auto &axis : axes)
 						{
-							auto pos = AMotionEvent_getAxisValue(event, axis.id, 0);
+							auto pos = AMotionEvent_getAxisValue(event, (int32_t)axis.id(), 0);
 							//logMsg("axis %d with value: %f", axis.id, (double)pos);
-							axis.keyEmu.dispatch(pos, enumID, Map::SYSTEM, time, *dev, win);
+							axis.dispatchInputEvent(pos, Input::Map::SYSTEM, time, *devPtr, win);
 						}
 					}
 					else
 					{
 						// no getAxisValue, can only use 2 axis values (X and Y)
-						iterateTimes(std::min((uint32_t)dev->jsAxes().size(), 2u), i)
+						for(auto i : iotaCount(std::min(axes.size(), 2uz)))
 						{
 							auto pos = i ? AMotionEvent_getY(event, 0) : AMotionEvent_getX(event, 0);
-							dev->jsAxes()[i].keyEmu.dispatch(pos, enumID, Map::SYSTEM, time, *dev, win);
+							axes[i].dispatchInputEvent(pos, Input::Map::SYSTEM, time, *devPtr, win);
 						}
 					}
 					return true;
 				}
 				default:
 				{
-					//logWarn("from other source:%s, %dx%d", aInputSourceToStr(source), (int)AMotionEvent_getX(event, 0), (int)AMotionEvent_getY(event, 0));
+					if(Config::DEBUG_BUILD)
+						logWarn("motion event from other source:%s, %dx%d", aInputSourceToStr(source), (int)AMotionEvent_getX(event, 0), (int)AMotionEvent_getY(event, 0));
 					return false;
 				}
 			}
 		}
-		bcase AINPUT_EVENT_TYPE_KEY:
+		case AINPUT_EVENT_TYPE_KEY:
 		{
 			auto keyCode = AKeyEvent_getKeyCode(event);
-			auto devID = AInputEvent_getDeviceId(event);
 			auto repeatCount = AKeyEvent_getRepeatCount(event);
 			auto source = AInputEvent_getSource(event);
 			auto eventSource = isFromSource(source, AINPUT_SOURCE_GAMEPAD) ? Source::GAMEPAD : Source::KEYBOARD;
-			if(Config::DEBUG_BUILD)
-			{
-				//logMsg("key event, code:%d id:%d repeat:%d action:%s source:%s", keyCode, devID, repeatCount,
-				//	keyEventActionStr(AKeyEvent_getAction(event)), sourceStr(eventSource));
-			}
 			auto keyWasReallyRepeated =
 				[](int devID, int mostRecentKeyEventDevID, int repeatCount)
 				{
@@ -254,7 +307,7 @@ bool AndroidApplication::processInputEvent(AInputEvent* event, Base::Window &win
 					// a repeat count.
 					return repeatCount != 0 && devID == mostRecentKeyEventDevID;
 				};
-			if(!keyWasReallyRepeated(devID, mostRecentKeyEventDevID, repeatCount))
+			if(!keyWasReallyRepeated(devId, mostRecentKeyEventDevID, repeatCount))
 			{
 				if(repeatCount)
 				{
@@ -262,41 +315,43 @@ bool AndroidApplication::processInputEvent(AInputEvent* event, Base::Window &win
 				}
 				repeatCount = 0;
 			}
-			mostRecentKeyEventDevID = devID;
-			const AndroidInputDevice *dev = deviceForInputId(win.appContext(), sysInputDev, devID);
-			if(!dev) [[unlikely]]
+			mostRecentKeyEventDevID = devId;
+			if(!devPtr) [[unlikely]]
 			{
 				if(virtualDev)
 				{
 					//logWarn("re-mapping key event unknown device ID %d to Virtual", devID);
-					dev = virtualDev;
+					devPtr = virtualDev;
 				}
 				else
 				{
-					logWarn("key event from unknown device ID:%d", devID);
+					logWarn("key event from unknown device ID:%d", devId);
 					return false;
 				}
 			}
+			if(Config::DEBUG_BUILD)
+			{
+				//logMsg("key event: code:%d id:%d (%s) repeat:%d action:%s source:%s", keyCode, devId, devPtr->name().data(),
+				//	repeatCount, keyEventActionStr(AKeyEvent_getAction(event)), sourceStr(eventSource));
+			}
 			auto metaState = AKeyEvent_getMetaState(event);
-			mapKeycodesForSpecialDevices(*dev, keyCode, metaState, eventSource, event);
+			auto [mappedKeyCode, mappedSource] = mapKeycodesForSpecialDevices(*devPtr, keyCode, metaState, eventSource);
+			keyCode = mappedKeyCode;
+			eventSource = mappedSource;
 			if(!keyCode) [[unlikely]] // ignore "unknown" key codes
 			{
 				return false;
 			}
-			uint32_t shiftState = metaState & AMETA_SHIFT_ON;
 			auto time = makeTimeFromKeyEvent(event);
 			assert((uint32_t)keyCode < Keycode::COUNT);
 			auto action = AKeyEvent_getAction(event) == AKEY_EVENT_ACTION_UP ? Action::RELEASED : Action::PUSHED;
-			if(!dev->iCadeMode() || (dev->iCadeMode() && !processICadeKey(keyCode, action, time, *dev, win)))
-			{
-				cancelKeyRepeatTimer();
-				Key key = keyCode & 0x1ff;
-				return dispatchKeyInputEvent({dev->enumId(), Map::SYSTEM, key, key, action, shiftState, repeatCount, eventSource, time, dev}, win);
-			}
-			return true;
+			cancelKeyRepeatTimer();
+			Key key = keyCode & 0x1ff;
+			return dispatchKeyInputEvent({Map::SYSTEM, key, action, (uint32_t)metaState,
+				repeatCount, eventSource, time, devPtr}, win);
 		}
 	}
-	logWarn("unhandled input event type %d", type);
+	logWarn("unknown input event type:%d", type);
 	return false;
 }
 
@@ -309,19 +364,29 @@ void AndroidApplication::processInputCommon(AInputQueue *inputQueue, AInputEvent
 		AInputQueue_finishEvent(inputQueue, event, 0);
 		return;
 	}
-	if(eventsUseOSInputMethod() && AInputQueue_preDispatchEvent(inputQueue, event))
+	auto [devPtr, devId] = inputDeviceForEvent(event);
+	// Don't pre-dispatch physical device events since IMEs like SwiftKey
+	// can intercept and replace them with virtual events
+	if(devId == -1 && AInputQueue_preDispatchEvent(inputQueue, event))
 	{
-		//logMsg("input event used by pre-dispatch");
+		//logMsg("event used by pre-dispatch");
 		return;
 	}
-	auto handled = processInputEvent(event, *deviceWindow());
+	auto handled = processInputEvent(event, devPtr, devId, *deviceWindow());
 	AInputQueue_finishEvent(inputQueue, event, handled);
 	//logMsg("input event end: %s", handled ? "handled" : "not handled");
 }
 
 void AndroidApplication::processInput(AInputQueue *queue)
 {
-	(this->*processInput_)(queue);
+	if constexpr(Config::ENV_ANDROID_MIN_SDK >= 12)
+	{
+		processInputWithGetEvent(queue);
+	}
+	else
+	{
+		(this->*processInput_)(queue);
+	}
 }
 
 // Use on Android 4.1+ to fix a possible ANR where the OS
@@ -334,8 +399,8 @@ void AndroidApplication::processInput(AInputQueue *queue)
 // Android versions
 void AndroidApplication::processInputWithGetEvent(AInputQueue *inputQueue)
 {
-	int events = 0;
-	AInputEvent* event = nullptr;
+	int events{};
+	AInputEvent* event{};
 	while(AInputQueue_getEvent(inputQueue, &event) >= 0)
 	{
 		processInputCommon(inputQueue, event);
@@ -349,13 +414,13 @@ void AndroidApplication::processInputWithGetEvent(AInputQueue *inputQueue)
 
 void AndroidApplication::processInputWithHasEvents(AInputQueue *inputQueue)
 {
-	int events = 0;
-	int32_t hasEventsRet = 0;
+	int events{};
+	int32_t hasEventsRet{};
 	// Note: never call AInputQueue_hasEvents on first iteration since it may return 0 even if
 	// events are present if they were pre-dispatched, leading to an endless stream of callbacks
 	do
 	{
-		AInputEvent* event = nullptr;
+		AInputEvent* event{};
 		if(AInputQueue_getEvent(inputQueue, &event) < 0)
 		{
 			//logWarn("error getting input event from queue");
@@ -389,11 +454,6 @@ static const char* aInputSourceToStr(uint32_t source)
 		case AINPUT_SOURCE_ANY: return "Any";
 		default:  return "Unhandled value";
 	}
-}
-
-void ApplicationContext::flushSystemInputEvents()
-{
-	application().flushSystemInputEvents();
 }
 
 void AndroidApplication::flushSystemInputEvents()

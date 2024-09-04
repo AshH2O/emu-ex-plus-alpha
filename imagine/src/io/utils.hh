@@ -1,33 +1,34 @@
 #pragma once
 
-#include <imagine/io/IO.hh>
+#include <imagine/io/ioDefs.hh>
 #include <imagine/util/utility.h>
 #include <imagine/logger/logger.h>
 
-static bool isSeekModeValid(IO::SeekMode mode)
+namespace IG
 {
-	switch(mode)
+
+inline auto asString(IOAccessHint access)
+{
+	switch(access)
 	{
-		case SEEK_SET:
-		case SEEK_END:
-		case SEEK_CUR:
-			return true;
-		default:
-			return false;
+		case IOAccessHint::Normal: return "Normal";
+		case IOAccessHint::Sequential: return "Sequential";
+		case IOAccessHint::Random: return "Random";
+		case IOAccessHint::All: return "All";
 	}
+	bug_unreachable("IOAccessHint == %d", (int)access);
 }
 
-static off_t transformOffsetToAbsolute(IO::SeekMode mode, off_t offset, off_t startPos, off_t endPos, off_t currentPos)
+inline auto asString(IOAdvice advice)
 {
-	switch(mode)
+	switch(advice)
 	{
-		case SEEK_SET:
-			return offset + startPos;
-		case SEEK_END:
-			return offset + endPos;
-		case SEEK_CUR:
-			return offset + currentPos;
+		case IOAdvice::Normal: return "Normal";
+		case IOAdvice::Sequential: return "Sequential";
+		case IOAdvice::Random: return "Random";
+		case IOAdvice::WillNeed: return "Will Need";
 	}
-	logErr("bad offset mode: %d", (int)mode);
-	return 0;
+	bug_unreachable("IOAdvice == %d", (int)advice);
+}
+
 }

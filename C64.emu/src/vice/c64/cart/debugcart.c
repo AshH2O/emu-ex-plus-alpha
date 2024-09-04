@@ -59,7 +59,8 @@ static io_source_t debugcart_device = {
     NULL,                     /* nothing to dump */
     CARTRIDGE_DEBUGCART,      /* cartridge ID */
     IO_PRIO_NORMAL,           /* normal priority, device read needs to be checked for collisions */
-    0                         /* insertion order, gets filled in by the registration function */
+    0,                        /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE            /* NO mirroring */
 };
 
 static io_source_list_t *debugcart_list_item = NULL;
@@ -73,7 +74,7 @@ static const export_resource_t export_res = {
 static void debugcart_store(uint16_t addr, uint8_t value)
 {
     int n = (int)value;
-    fprintf(stdout, "DBGCART: exit(%d) cycles elapsed: %u\n", n, maincpu_clk);
+    fprintf(stdout, "DBGCART: exit(%d) cycles elapsed: %"PRIu64"\n", n, maincpu_clk);
     archdep_vice_exit(n);
 }
 
@@ -109,6 +110,11 @@ static int set_debugcart_enabled(int value, void *param)
         debugcart_enabled = 0;
     }
     return 0;
+}
+
+void debugcart_detach(void)
+{
+    set_debugcart_enabled(0, NULL);
 }
 
 /* ------------------------------------------------------------------------- */

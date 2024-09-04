@@ -13,56 +13,65 @@
 	You should have received a copy of the GNU General Public License
 	along with EmuFramework.  If not, see <http://www.gnu.org/licenses/> */
 
-#include "EmuTiming.hh"
+#include <emuframework/EmuTiming.hh>
 #include <imagine/util/utility.h>
+#include <imagine/util/math.hh>
 #include <imagine/logger/logger.h>
 #include <cmath>
 
-EmuFrameTimeInfo EmuTiming::advanceFramesWithTime(IG::FrameTime time)
+namespace EmuEx
 {
-	if(!startFrameTime.count()) [[unlikely]]
+
+constexpr SystemLogger log{"EmuTiming"};
+
+EmuFrameTimeInfo EmuTiming::advanceFrames(FrameParams params)
+{
+	auto frameTimeDiff = params.timestamp - lastFrameTimestamp_;
+	auto framesDiff  = params.elapsedFrames(lastFrameTimestamp_);
+	std::exchange(lastFrameTimestamp_, params.timestamp);
+	if(exactFrameDivisor > 0)
 	{
-		// first frame
-		startFrameTime = time;
-		lastFrame = 0;
-		return {1, std::chrono::duration_cast<IG::FrameTime>(timePerVideoFrameScaled) + startFrameTime};
+		savedAdvancedFrames += framesDiff;
+		int elapsedFrames{};
+		if(savedAdvancedFrames >= exactFrameDivisor)
+		{
+			auto [quot, rem] = std::div(savedAdvancedFrames, exactFrameDivisor);
+			elapsedFrames = quot;
+			savedAdvancedFrames = rem;
+		}
+		return {elapsedFrames, frameTimeDiff};
 	}
-	assumeExpr(timePerVideoFrame.count() > 0);
-	assumeExpr(startFrameTime.count() > 0);
-	assumeExpr(time > startFrameTime);
-	auto timeTotal = time - startFrameTime;
-	uint32_t now = std::round(IG::FloatSeconds(timeTotal) / timePerVideoFrameScaled);
-	auto elapsedFrames = now - lastFrame;
-	lastFrame = now;
-	return {elapsedFrames, std::chrono::duration_cast<IG::FrameTime>(now * timePerVideoFrameScaled) + startFrameTime};
+	else
+	{
+		if(!hasTime(startFrameTime)) [[unlikely]]
+		{
+			// first frame
+			startFrameTime = params.timestamp;
+			lastFrame = 0;
+			return {};
+		}
+		assumeExpr(timePerVideoFrame.count() > 0);
+		assumeExpr(startFrameTime.time_since_epoch().count() > 0);
+		assumeExpr(params.timestamp >= startFrameTime);
+		auto timeTotal = params.timestamp - startFrameTime;
+		auto now = divRoundClosestPositive(timeTotal.count(), timePerVideoFrame.count());
+		int elapsedFrames = now - lastFrame;
+		lastFrame = now;
+		return {elapsedFrames, frameTimeDiff};
+	}
 }
 
-void EmuTiming::setFrameTime(IG::FloatSeconds time)
+void EmuTiming::setFrameTime(SteadyClockTime time)
 {
 	timePerVideoFrame = time;
-	updateScaledFrameTime();
-	logMsg("configured frame time:%.6f (%.2f fps)", time.count(), 1. / time.count());
+	log.info("configured frame time:{} ({:g} fps)", timePerVideoFrame, toHz(time));
 	reset();
 }
 
 void EmuTiming::reset()
 {
 	startFrameTime = {};
+	savedAdvancedFrames = {};
 }
 
-void EmuTiming::setSpeedMultiplier(uint8_t newSpeed)
-{
-	if(speed == newSpeed)
-		return;
-	speed = newSpeed ? newSpeed : 1;
-	updateScaledFrameTime();
-	reset();
-}
-
-void EmuTiming::updateScaledFrameTime()
-{
-	if(speed > 1)
-		timePerVideoFrameScaled = timePerVideoFrame / speed;
-	else
-		timePerVideoFrameScaled = timePerVideoFrame;
 }

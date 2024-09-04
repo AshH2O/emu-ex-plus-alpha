@@ -23,17 +23,17 @@
 #include <imagine/fs/FS.hh>
 #include <CoreGraphics/CGBitmapContext.h>
 #include <CoreGraphics/CGContext.h>
-#include <assert.h>
+#include <cassert>
 
 namespace IG::Data
 {
 
-uint32_t Quartz2dImage::width()
+int Quartz2dImage::width()
 {
 	return CGImageGetWidth(img.get());
 }
 
-uint32_t Quartz2dImage::height()
+int Quartz2dImage::height()
 {
 	return CGImageGetHeight(img.get());
 }
@@ -46,24 +46,24 @@ bool Quartz2dImage::isGrayscale()
 const IG::PixelFormat Quartz2dImage::pixelFormat()
 {
 	if(isGrayscale())
-		return IG::PIXEL_FMT_I8;
+		return IG::PixelFmtI8;
 	else
-		return IG::PIXEL_FMT_RGBA8888;
+		return IG::PixelFmtRGBA8888;
 }
 
-Quartz2dImage::Quartz2dImage(const char *name)
+Quartz2dImage::Quartz2dImage(CStringView name)
 {
 	CGDataProviderRef dataProvider = CGDataProviderCreateWithFilename(name);
 	if(!dataProvider)
 	{
-		logErr("error opening file: %s", name);
+		logErr("error opening file: %s", name.data());
 		return;
 	}
 	auto imgRef = CGImageCreateWithPNGDataProvider(dataProvider, nullptr, 0, kCGRenderingIntentDefault);
 	CGDataProviderRelease(dataProvider);
 	if(!imgRef)
 	{
-		logErr("error creating CGImage from file: %s", name);
+		logErr("error creating CGImage from file: %s", name.data());
 		return;
 	}
 	img.reset(imgRef);
@@ -76,7 +76,7 @@ bool Quartz2dImage::hasAlphaChannel()
 		|| info == kCGImageAlphaLast || info == kCGImageAlphaFirst;
 }
 
-std::errc Quartz2dImage::readImage(IG::Pixmap dest)
+void Quartz2dImage::readImage(MutablePixmapView dest)
 {
 	assert(dest.format() == pixelFormat());
 	int height = this->height();
@@ -88,7 +88,6 @@ std::errc Quartz2dImage::readImage(IG::Pixmap dest)
 	CGContextSetBlendMode(context, kCGBlendModeCopy);
 	CGContextDrawImage(context, CGRectMake(0.0, 0.0, (CGFloat)width, (CGFloat)height), img.get());
 	CGContextRelease(context);
-	return {};
 }
 
 void Quartz2dImage::releaseCGImage(CGImageRef ref)
@@ -101,24 +100,26 @@ PixmapImage::operator bool() const
 	return (bool)img;
 }
 
-std::errc PixmapImage::write(IG::Pixmap dest)
+void PixmapImage::write(MutablePixmapView dest)
 {
-	return(readImage(dest));
+	readImage(dest);
 }
 
-IG::Pixmap PixmapImage::pixmapView()
+PixmapView PixmapImage::pixmapView()
 {
-	return {{{(int)width(), (int)height()}, pixelFormat()}, {}};
+	return PixmapView{{{(int)width(), (int)height()}, pixelFormat()}};
 }
 
 PixmapImage::operator PixmapSource()
 {
-	return {[this](IG::Pixmap dest){ return write(dest); }, pixmapView()};
+	return {[this](MutablePixmapView dest){ return write(dest); }, pixmapView()};
 }
 
-PixmapImage PixmapReader::loadAsset(const char *name, const char *appName) const
+bool PixmapImage::isPremultipled() const { return true; }
+
+PixmapImage PixmapReader::loadAsset(const char *name, PixmapReaderParams, const char *appName) const
 {
-	return PixmapImage(FS::makePathStringPrintf("%s/%s", appContext().assetPath(appName).data(), name).data());
+	return PixmapImage(FS::pathString(appContext().assetPath(appName), name));
 }
 
 }

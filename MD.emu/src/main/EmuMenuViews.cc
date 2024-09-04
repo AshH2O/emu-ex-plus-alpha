@@ -13,147 +13,169 @@
 	You should have received a copy of the GNU General Public License
 	along with MD.emu.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <emuframework/EmuApp.hh>
-#include <emuframework/EmuAppHelper.hh>
-#include <emuframework/OptionView.hh>
-#include <emuframework/EmuSystemActionsView.hh>
-#include "EmuCheatViews.hh"
-#include "internal.hh"
+#include <emuframework/SystemOptionView.hh>
+#include <emuframework/AudioOptionView.hh>
+#include <emuframework/FilePathOptionView.hh>
+#include <emuframework/DataPathSelectView.hh>
+#include <emuframework/UserPathSelectView.hh>
+#include <emuframework/SystemActionsView.hh>
+#include "MainApp.hh"
 #include <imagine/gui/AlertView.hh>
 #include <imagine/fs/FS.hh>
+#include <imagine/util/format.hh>
+#include <imagine/util/string.h>
 #include "input.h"
 #include "io_ctrl.h"
 #include "vdp_ctrl.h"
 
-class ConsoleOptionView : public TableView, public EmuAppHelper<ConsoleOptionView>
+namespace EmuEx
+{
+
+using MainAppHelper = EmuAppHelperBase<MainApp>;
+
+class ConsoleOptionView : public TableView, public MainAppHelper
 {
 	BoolMenuItem sixButtonPad
 	{
-		"6-button Gamepad", &defaultFace(),
-		(bool)option6BtnPad,
+		"6-button Gamepad", attachParams(),
+		(bool)system().option6BtnPad,
 		[this](BoolMenuItem &item, View &, Input::Event e)
 		{
-			EmuSystem::sessionOptionSet();
-			option6BtnPad = item.flipBoolValue(*this);
-			setupMDInput(app());
+			system().sessionOptionSet();
+			system().option6BtnPad = item.flipBoolValue(*this);
+			system().setupInput(app());
 		}
 	};
 
 	BoolMenuItem multitap
 	{
-		"4-Player Adapter", &defaultFace(),
-		(bool)optionMultiTap,
+		"4-Player Adapter", attachParams(),
+		(bool)system().optionMultiTap,
 		[this](BoolMenuItem &item, View &, Input::Event e)
 		{
-			optionMultiTap = item.flipBoolValue(*this);
-			setupMDInput(app());
+			system().optionMultiTap = item.flipBoolValue(*this);
+			system().setupInput(app());
 		}
 	};
 
+	constexpr const char *inputSystemName(int system)
+	{
+		switch(system)
+		{
+			case SYSTEM_MENACER: return "Menacer";
+			case SYSTEM_JUSTIFIER: return "Justifier";
+		}
+		return "Gamepad";
+	}
+
 	TextMenuItem inputPortsItem[4]
 	{
-		{"Auto", &defaultFace(), [this](){ setInputPorts(-1, -1); }},
-		{"Gamepads", &defaultFace(), [this]() { setInputPorts(SYSTEM_MD_GAMEPAD, SYSTEM_MD_GAMEPAD); }},
-		{"Menacer", &defaultFace(), [this]() { setInputPorts(SYSTEM_MD_GAMEPAD, SYSTEM_MENACER); }},
-		{"Justifier", &defaultFace(), [this]() { setInputPorts(SYSTEM_MD_GAMEPAD, SYSTEM_JUSTIFIER); }},
+		{"Auto",      attachParams(), setInputPortsDel(-1, -1), {.id = -1}},
+		{"Gamepads",  attachParams(), setInputPortsDel(SYSTEM_MD_GAMEPAD, SYSTEM_MD_GAMEPAD), {.id = SYSTEM_MD_GAMEPAD}},
+		{"Menacer",   attachParams(), setInputPortsDel(SYSTEM_MD_GAMEPAD, SYSTEM_MENACER),    {.id = SYSTEM_MENACER}},
+		{"Justifier", attachParams(), setInputPortsDel(SYSTEM_MD_GAMEPAD, SYSTEM_JUSTIFIER),  {.id = SYSTEM_JUSTIFIER}},
 	};
 
 	MultiChoiceMenuItem inputPorts
 	{
-		"Input Ports", &defaultFace(),
-		[]()
+		"Input Ports", attachParams(),
+		MenuId{system().mdInputPortDev[1]},
+		inputPortsItem,
 		{
-			if(mdInputPortDev[0] == SYSTEM_MD_GAMEPAD && mdInputPortDev[1] == SYSTEM_MD_GAMEPAD)
-				return 1;
-			else if(mdInputPortDev[0] == SYSTEM_MD_GAMEPAD && mdInputPortDev[1] == SYSTEM_MENACER)
-				return 2;
-			else if(mdInputPortDev[0] == SYSTEM_MD_GAMEPAD && mdInputPortDev[1] == SYSTEM_JUSTIFIER)
-				return 3;
-			else
-				return 0;
-		}(),
-		inputPortsItem
+			.onSetDisplayString = [this](auto idx, Gfx::Text &t)
+			{
+				t.resetString(inputSystemName(input.system[1]));
+				return true;
+			}
+		},
 	};
 
-	void setInputPorts(int port1, int port2)
+	TextMenuItem::SelectDelegate setInputPortsDel(int8_t port1, int8_t port2)
 	{
-		EmuSystem::sessionOptionSet();
-		optionInputPort1 = mdInputPortDev[0] = port1;
-		optionInputPort2 = mdInputPortDev[1] = port2;
-		setupMDInput(app());
+		return [this, port1, port2]()
+		{
+			system().sessionOptionSet();
+			system().optionInputPort1 = system().mdInputPortDev[0] = port1;
+			system().optionInputPort2 = system().mdInputPortDev[1] = port2;
+			system().setupInput(app());
+		};
 	}
 
 	TextMenuItem videoSystemItem[3]
 	{
-		{"Auto", &defaultFace(), [this](TextMenuItem &, View &, Input::Event e){ setVideoSystem(0, e); }},
-		{"NTSC", &defaultFace(), [this](TextMenuItem &, View &, Input::Event e){ setVideoSystem(1, e); }},
-		{"PAL", &defaultFace(), [this](TextMenuItem &, View &, Input::Event e){ setVideoSystem(2, e); }},
+		{"Auto", attachParams(), [this](Input::Event e){ setVideoSystem(0, e); }},
+		{"NTSC", attachParams(), [this](Input::Event e){ setVideoSystem(1, e); }},
+		{"PAL", attachParams(),  [this](Input::Event e){ setVideoSystem(2, e); }},
 	};
 
 	MultiChoiceMenuItem videoSystem
 	{
-		"Video System", &defaultFace(),
-		[this](int idx, Gfx::Text &t)
+		"Video System", attachParams(),
+		system().optionVideoSystem.value(),
+		videoSystemItem,
 		{
-			if(idx == 0)
+			.onSetDisplayString = [](auto idx, Gfx::Text& t)
 			{
-				t.setString(vdp_pal ? "PAL" : "NTSC");
-				return true;
+				if(idx == 0)
+				{
+					t.resetString(vdp_pal ? "PAL" : "NTSC");
+					return true;
+				}
+				return false;
 			}
-			return false;
 		},
-		optionVideoSystem,
-		videoSystemItem
 	};
 
 	void setVideoSystem(int val, Input::Event e)
 	{
-		EmuSystem::sessionOptionSet();
-		optionVideoSystem = val;
+		system().sessionOptionSet();
+		system().optionVideoSystem = val;
 		app().promptSystemReloadDueToSetOption(attachParams(), e);
 	}
 
 	TextMenuItem regionItem[4]
 	{
-		{"Auto", &defaultFace(), [this](TextMenuItem &, View &, Input::Event e){ setRegion(0, e); }},
-		{"USA", &defaultFace(), [this](TextMenuItem &, View &, Input::Event e){ setRegion(1, e); }},
-		{"Europe", &defaultFace(), [this](TextMenuItem &, View &, Input::Event e){ setRegion(2, e); }},
-		{"Japan", &defaultFace(), [this](TextMenuItem &, View &, Input::Event e){ setRegion(3, e); }},
+		{"Auto",   attachParams(), [this](Input::Event e){ setRegion(0, e); }},
+		{"USA",    attachParams(), [this](Input::Event e){ setRegion(1, e); }},
+		{"Europe", attachParams(), [this](Input::Event e){ setRegion(2, e); }},
+		{"Japan",  attachParams(), [this](Input::Event e){ setRegion(3, e); }},
 	};
 
 	MultiChoiceMenuItem region
 	{
-		"Game Region", &defaultFace(),
-		[this](int idx, Gfx::Text &t)
-		{
-			if(idx == 0)
-			{
-				auto regionStr = [](unsigned region)
-				{
-					switch(region)
-					{
-						case REGION_USA: return "USA";
-						case REGION_EUROPE: return "Europe";
-						default: return "Japan";
-					}
-				};
-				t.setString(regionStr(region_code));
-				return true;
-			}
-			return false;
-		},
+		"Game Region", attachParams(),
 		std::min((int)config.region_detect, 4),
-		regionItem
+		regionItem,
+		{
+			.onSetDisplayString = [](auto idx, Gfx::Text& t)
+			{
+				if(idx == 0)
+				{
+					auto regionStr = [](unsigned region)
+					{
+						switch(region)
+						{
+							case REGION_USA: return "USA";
+							case REGION_EUROPE: return "Europe";
+							default: return "Japan";
+						}
+					};
+					t.resetString(regionStr(region_code));
+					return true;
+				}
+				return false;
+			}
+		}
 	};
 
 	void setRegion(int val, Input::Event e)
 	{
-		EmuSystem::sessionOptionSet();
-		optionRegion = val;
+		system().sessionOptionSet();
+		system().optionRegion = val;
 		app().promptSystemReloadDueToSetOption(attachParams(), e);
 	}
 
-	StaticArrayList<MenuItem*, 5> item{};
+	StaticArrayList<MenuItem*, 5> item;
 
 public:
 	ConsoleOptionView(ViewAttachParams attach):
@@ -175,15 +197,15 @@ public:
 	}
 };
 
-class CustomSystemActionsView : public EmuSystemActionsView
+class CustomSystemActionsView : public SystemActionsView
 {
 private:
 	TextMenuItem options
 	{
-		"Console Options", &defaultFace(),
+		"Console Options", attachParams(),
 		[this](TextMenuItem &, View &, Input::Event e)
 		{
-			if(EmuSystem::gameIsRunning())
+			if(system().hasContent())
 			{
 				pushAndShow(makeView<ConsoleOptionView>(), e);
 			}
@@ -191,64 +213,92 @@ private:
 	};
 
 public:
-	CustomSystemActionsView(ViewAttachParams attach): EmuSystemActionsView{attach, true}
+	CustomSystemActionsView(ViewAttachParams attach): SystemActionsView{attach, true}
 	{
 		item.emplace_back(&options);
 		loadStandardItems();
 	}
 };
 
-class CustomAudioOptionView : public AudioOptionView
+class CustomAudioOptionView : public AudioOptionView, public MainAppHelper
 {
+	using MainAppHelper::system;
+
 	BoolMenuItem smsFM
 	{
-		"MarkIII FM Sound Unit", &defaultFace(),
-		(bool)optionSmsFM,
+		"MarkIII FM Sound Unit", attachParams(),
+		(bool)system().optionSmsFM,
 		[this](BoolMenuItem &item, View &, Input::Event e)
 		{
-			optionSmsFM = item.flipBoolValue(*this);
-			config_ym2413_enabled = optionSmsFM;
+			system().optionSmsFM = item.flipBoolValue(*this);
+			config_ym2413_enabled = system().optionSmsFM;
 		}
 	};
 
 public:
-	CustomAudioOptionView(ViewAttachParams attach): AudioOptionView{attach, true}
+	CustomAudioOptionView(ViewAttachParams attach, EmuAudio& audio): AudioOptionView{attach, audio, true}
 	{
 		loadStockItems();
 		item.emplace_back(&smsFM);
 	}
 };
 
-class CustomSystemOptionView : public SystemOptionView
+class CustomSystemOptionView : public SystemOptionView, public MainAppHelper
 {
+	using MainAppHelper::app;
+	using MainAppHelper::system;
+
 	BoolMenuItem bigEndianSram
 	{
-		"Use Big-Endian SRAM", &defaultFace(),
-		(bool)optionBigEndianSram,
-		[this](BoolMenuItem &item, View &, Input::Event e)
+		"Use Big-Endian SRAM", attachParams(),
+		(bool)system().optionBigEndianSram,
+		[this](BoolMenuItem &item, Input::Event e)
 		{
-			auto ynAlertView = makeView<YesNoAlertView>(
+			app().pushAndShowModalView(makeView<YesNoAlertView>(
 				"Warning, this changes the format of SRAM saves files. "
 				"Turn on to make them compatible with other emulators like Gens. "
-				"Any SRAM loaded with the incorrect setting will be corrupted.");
-			ynAlertView->setOnYes(
-				[this, &item]()
+				"Any SRAM loaded with the incorrect setting will be corrupted.",
+				YesNoAlertView::Delegates{.onYes = [this]{ system().optionBigEndianSram = bigEndianSram.flipBoolValue(*this); }}), e);
+		}
+	};
+
+public:
+	CustomSystemOptionView(ViewAttachParams attach): SystemOptionView{attach, true}
+	{
+		loadStockItems();
+		item.emplace_back(&bigEndianSram);
+	}
+};
+
+class CustomFilePathOptionView : public FilePathOptionView, public MainAppHelper
+{
+	using MainAppHelper::app;
+	using MainAppHelper::system;
+
+	TextMenuItem cheatsPath
+	{
+		cheatsMenuName(appContext(), system().cheatsDir), attachParams(),
+		[this](const Input::Event &e)
+		{
+			pushAndShow(makeViewWithName<UserPathSelectView>("Cheats", system().userPath(system().cheatsDir),
+				[this](CStringView path)
 				{
-					optionBigEndianSram = item.flipBoolValue(*this);
-				});
-			app().pushAndShowModalView(std::move(ynAlertView), e);
+					logMsg("set cheats path:%s", path.data());
+					system().cheatsDir = path;
+					cheatsPath.compile(cheatsMenuName(appContext(), path));
+				}), e);
 		}
 	};
 
 	#ifndef NO_SCD
-	static constexpr const char *biosHeadingStr[3]
+	static constexpr std::string_view biosHeadingStr[3]
 	{
 		"USA CD BIOS",
 		"Japan CD BIOS",
 		"Europe CD BIOS"
 	};
 
-	static int regionCodeToIdx(int region)
+	static int8_t regionCodeToIdx(uint8_t region)
 	{
 		switch(region)
 		{
@@ -258,85 +308,71 @@ class CustomSystemOptionView : public SystemOptionView
 		}
 	}
 
-	static FS::PathString &regionCodeToStrBuffer(int region)
+	FS::PathString &pathFromRegion(uint8_t region)
 	{
 		switch(region)
 		{
-			default: return cdBiosUSAPath;
-			case REGION_JAPAN_NTSC: return cdBiosJpnPath;
-			case REGION_EUROPE: return cdBiosEurPath;
+			default: return system().cdBiosUSAPath;
+			case REGION_JAPAN_NTSC: return system().cdBiosJpnPath;
+			case REGION_EUROPE: return system().cdBiosEurPath;
 		}
 	}
 
 	TextMenuItem cdBiosPath[3]
 	{
-		{{}, &defaultFace(), [this](Input::Event e){ cdBiosPathHandler(e, REGION_USA); }},
-		{{}, &defaultFace(), [this](Input::Event e){ cdBiosPathHandler(e, REGION_JAPAN_NTSC); }},
-		{{}, &defaultFace(), [this](Input::Event e){ cdBiosPathHandler(e, REGION_EUROPE); }}
+		{biosMenuEntryStr(REGION_USA, pathFromRegion(REGION_USA)),               attachParams(), setCDBiosPathDel(REGION_USA)},
+		{biosMenuEntryStr(REGION_JAPAN_NTSC, pathFromRegion(REGION_JAPAN_NTSC)), attachParams(), setCDBiosPathDel(REGION_JAPAN_NTSC)},
+		{biosMenuEntryStr(REGION_EUROPE, pathFromRegion(REGION_EUROPE)),         attachParams(), setCDBiosPathDel(REGION_EUROPE)}
 	};
 
-	static std::array<char, 256> makeBiosMenuEntryStr(int region)
+	std::string biosMenuEntryStr(uint8_t region, IG::CStringView path) const
 	{
-		const char *path = "";
-		switch(region)
-		{
-			bdefault: path = cdBiosUSAPath.data();
-			bcase REGION_JAPAN_NTSC: path = cdBiosJpnPath.data();
-			bcase REGION_EUROPE: path = cdBiosEurPath.data();
-		}
-		const char *regionStr = biosHeadingStr[regionCodeToIdx(region)];
-		return string_makePrintf<256>("%s: %s", regionStr, strlen(path) ? FS::basename(path).data() : "None set");
+		auto regionStr = biosHeadingStr[regionCodeToIdx(region)];
+		return std::format("{}: {}", regionStr, appContext().fileUriDisplayName(path));
 	}
 
-	void cdBiosPathHandler(Input::Event e, int region)
+	TextMenuItem::SelectDelegate setCDBiosPathDel(uint8_t region)
 	{
-		auto biosSelectMenu = makeViewWithName<BiosSelectMenu>(biosHeadingStr[regionCodeToIdx(region)], &regionCodeToStrBuffer(region),
-			[this, region]()
-			{
-				auto idx = regionCodeToIdx(region);
-				logMsg("set bios at idx %d to %s", idx, regionCodeToStrBuffer(region).data());
-				cdBiosPath[idx].setName(makeBiosMenuEntryStr(region).data());
-				cdBiosPath[idx].compile(renderer(), projP);
-			},
-			hasMDExtension);
-		pushAndShow(std::move(biosSelectMenu), e);
-	}
-
-	void cdBiosPathInit()
-	{
-		const int region[3]{REGION_USA, REGION_JAPAN_NTSC, REGION_EUROPE};
-		iterateTimes(3, i)
+		return [this, region](const Input::Event &e)
 		{
-			cdBiosPath[i].setName(makeBiosMenuEntryStr(region[i]).data());
-			item.emplace_back(&cdBiosPath[i]);
-		}
+			pushAndShow(makeViewWithName<DataFileSelectView<>>(biosHeadingStr[regionCodeToIdx(region)],
+				app().validSearchPath(pathFromRegion(region)),
+				[this, region](CStringView path, FS::file_type type)
+				{
+					auto idx = regionCodeToIdx(region);
+					pathFromRegion(region) = path;
+					logMsg("set bios:%d to path:%s", idx, pathFromRegion(region).data());
+					cdBiosPath[idx].compile(biosMenuEntryStr(region, path));
+					return true;
+				}, hasMDExtension), e);
+		};
 	}
 	#endif
 
-public:
-	CustomSystemOptionView(ViewAttachParams attach): SystemOptionView{attach, true}
+	public:
+	CustomFilePathOptionView(ViewAttachParams attach): FilePathOptionView{attach, true}
 	{
 		loadStockItems();
-		item.emplace_back(&bigEndianSram);
+		item.emplace_back(&cheatsPath);
 		#ifndef NO_SCD
-		cdBiosPathInit();
+		for(auto i : iotaCount(3))
+		{
+			item.emplace_back(&cdBiosPath[i]);
+		}
 		#endif
 	}
 };
-
-#ifndef NO_SCD
-constexpr const char *CustomSystemOptionView::biosHeadingStr[3];
-#endif
 
 std::unique_ptr<View> EmuApp::makeCustomView(ViewAttachParams attach, ViewID id)
 {
 	switch(id)
 	{
-		case ViewID::AUDIO_OPTIONS: return std::make_unique<CustomAudioOptionView>(attach);
+		case ViewID::AUDIO_OPTIONS: return std::make_unique<CustomAudioOptionView>(attach, audio);
 		case ViewID::SYSTEM_ACTIONS: return std::make_unique<CustomSystemActionsView>(attach);
 		case ViewID::SYSTEM_OPTIONS: return std::make_unique<CustomSystemOptionView>(attach);
-		case ViewID::EDIT_CHEATS: return std::make_unique<EmuEditCheatListView>(attach);
-		case ViewID::LIST_CHEATS: return std::make_unique<EmuCheatsView>(attach);
+		case ViewID::FILE_PATH_OPTIONS: return std::make_unique<CustomFilePathOptionView>(attach);
 		default: return nullptr;
 	}
+}
+
 }

@@ -23,12 +23,11 @@
 static bool isPirate;
 static uint8 is22, reg1mask, reg2mask;
 static uint16 IRQCount;
-static uint8 IRQLatch, IRQa;
+static uint8 IRQLatch, IRQa, IRQMode;
 static uint8 prgreg[2], chrreg[8];
 static uint16 chrhi[8];
 static uint8 regcmd, irqcmd, mirr, big_bank;
 static uint16 acount = 0;
-static uint16 weirdo = 0;
 
 static uint8 *WRAM = NULL;
 static uint32 WRAMSIZE;
@@ -38,6 +37,7 @@ static SFORMAT StateRegs[] =
 	{ prgreg, 2, "PREG" },
 	{ chrreg, 8, "CREG" },
 	{ chrhi, 16, "CRGH" },
+	{ &acount, 2, "ACNT" },
 	{ &regcmd, 1, "CMDR" },
 	{ &irqcmd, 1, "CMDI" },
 	{ &mirr, 1, "MIRR" },
@@ -45,6 +45,7 @@ static SFORMAT StateRegs[] =
 	{ &IRQCount, 2, "IRQC" },
 	{ &IRQLatch, 1, "IRQL" },
 	{ &IRQa, 1, "IRQA" },
+	{ &IRQMode, 1, "IRQM" },
 	{ 0 }
 };
 
@@ -62,15 +63,8 @@ static void Sync(void) {
 		setchr8(0);
 	else{
 		uint8 i;
-		//if(!weirdo)
-			for (i = 0; i < 8; i++)
-				setchr1(i << 10, (chrhi[i] | chrreg[i]) >> is22);
-		//else {
-		//	setchr1(0x0000, 0xFC);
-		//	setchr1(0x0400, 0xFD);
-		//	setchr1(0x0800, 0xFF);
-		//	weirdo--;
-		//}
+		for (i = 0; i < 8; i++)
+			setchr1(i << 10, (chrhi[i] | chrreg[i]) >> is22);
 	}
 	switch (mirr & 0x3) {
 	case 0: setmirror(MI_V); break;
@@ -122,7 +116,7 @@ static DECLFW(VRC24Write) {
 		case 0x9003: regcmd = V; Sync(); break;
 		case 0xF000: X6502_IRQEnd(FCEU_IQEXT); IRQLatch &= 0xF0; IRQLatch |= V & 0xF; break;
 		case 0xF001: X6502_IRQEnd(FCEU_IQEXT); IRQLatch &= 0x0F; IRQLatch |= V << 4; break;
-		case 0xF002: X6502_IRQEnd(FCEU_IQEXT); acount = 0; IRQCount = IRQLatch; IRQa = V & 2; irqcmd = V & 1; break;
+		case 0xF002: X6502_IRQEnd(FCEU_IQEXT); acount = 0; IRQCount = IRQLatch; IRQMode = V & 4; IRQa = V & 2; irqcmd = V & 1; break;
 		case 0xF003: X6502_IRQEnd(FCEU_IQEXT); IRQa = irqcmd; break;
 		}
 }
@@ -143,14 +137,26 @@ static void VRC24Power(void) {
 void VRC24IRQHook(int a) {
 	#define LCYCS 341
 	if (IRQa) {
-		acount += a * 3;
-		if (acount >= LCYCS) {
-			while (acount >= LCYCS) {
-				acount -= LCYCS;
+		if (IRQMode) {
+			acount += a;
+			while (acount > 0) {
+				acount--;
 				IRQCount++;
 				if (IRQCount & 0x100) {
 					X6502_IRQBegin(FCEU_IQEXT);
 					IRQCount = IRQLatch;
+				}
+			}
+		} else {
+			acount += a * 3;
+			if (acount >= LCYCS) {
+				while (acount >= LCYCS) {
+					acount -= LCYCS;
+					IRQCount++;
+					if (IRQCount & 0x100) {
+						X6502_IRQBegin(FCEU_IQEXT);
+						IRQCount = IRQLatch;
+					}
 				}
 			}
 		}
@@ -179,8 +185,7 @@ static void VRC24_Init(CartInfo *info) {
 	AddExState(WRAM, WRAMSIZE, 0, "WRAM");
 
 	if(info->battery) {
-		info->SaveGame[0]=WRAM;
-		info->SaveGameLen[0]=WRAMSIZE;
+		info->addSaveGameBuf( WRAM, WRAMSIZE );
 	}
 
 	AddExState(&StateRegs, ~0, 0, 0);

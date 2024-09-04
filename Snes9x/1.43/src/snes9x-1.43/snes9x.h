@@ -132,6 +132,8 @@
 #define CLOSE_STREAM(s) fclose (s)
 #endif
 
+FILE *fopenHelper(const char *filename, const char *mode);
+void removeFileHelper(const char *filename);
 
 /* SNES screen width and height */
 #define SNES_WIDTH		256
@@ -228,8 +230,6 @@ struct SCPUState{
     long   MemSpeed;
     long   MemSpeedx2;
     long   FastROMSpeed;
-    uint32 AutoSaveTimer;
-    bool8  SRAMModified;
     uint32 NMITriggerPoint;
     bool8  BRKTriggered;
     bool8  TriedInterleavedMode2;
@@ -324,7 +324,7 @@ struct SSettings{
 	bool8  SPC7110RTC;
 	bool8  OBC1;
     /* Sound options */
-    uint32 SoundPlaybackRate = 44100;
+    int SoundPlaybackRate = 44100;
 		#ifdef DEBUGGER
     bool8  TraceSoundDSP;
 		#endif

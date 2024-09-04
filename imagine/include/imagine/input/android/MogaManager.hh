@@ -18,7 +18,7 @@
 #include <imagine/base/ApplicationContext.hh>
 #include <imagine/util/jni.hh>
 
-namespace Input
+namespace IG::Input
 {
 
 class AndroidInputDevice;
@@ -26,7 +26,7 @@ class AndroidInputDevice;
 class MogaManager
 {
 public:
-	MogaManager(Base::ApplicationContext, bool notify);
+	MogaManager(ApplicationContext, bool notify);
 	~MogaManager();
 	explicit operator bool() const { return mogaHelper; }
 
@@ -34,14 +34,14 @@ private:
 	JNI::UniqueGlobalRef mogaHelper{};
 	JNI::InstMethod<jint(jint)> jMOGAGetState{};
 	JNI::InstMethod<void()> jMOGAOnPause{}, jMOGAOnResume{}, jMOGAExit{};
-	AndroidInputDevice *mogaDev{};
-	Base::OnExit onExit;
+	Device *mogaDev{};
+	OnExit onExit;
 
-	static AndroidInputDevice makeMOGADevice(const char *name);
+	static std::unique_ptr<Device> makeMOGADevice(const char *name);
 	void initMOGAJNIAndDevice(JNIEnv *, jobject mogaHelper);
 	void onResumeMOGA(JNIEnv *, bool notify);
 	void updateMOGAState(JNIEnv *env, bool connected, bool notify);
-	Base::ApplicationContext appContext() const;
+	ApplicationContext appContext() const;
 };
 
 }

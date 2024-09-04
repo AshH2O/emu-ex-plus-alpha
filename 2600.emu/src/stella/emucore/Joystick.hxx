@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -18,7 +18,6 @@
 #ifndef JOYSTICK_HXX
 #define JOYSTICK_HXX
 
-#include "bspf.hxx"
 #include "Control.hxx"
 #include "Event.hxx"
 
@@ -33,12 +32,27 @@ class Joystick : public Controller
     /**
       Create a new joystick controller plugged into the specified jack
 
-      @param jack   The jack the controller is plugged into
-      @param event  The event object to use for events
-      @param system The system using this controller
+      @param jack    The jack the controller is plugged into
+      @param event   The event object to use for events
+      @param system  The system using this controller
+      @param altmap  If true, use alternative mapping
     */
-    Joystick(Jack jack, const Event& event, const System& system);
-    virtual ~Joystick() = default;
+    Joystick(Jack jack, const Event& event, const System& system,
+             bool altmap = false);
+
+    ~Joystick() override = default;
+
+  protected:
+    /**
+      Create a new controller plugged into the specified jack
+
+      @param jack    The jack the controller is plugged into
+      @param event   The event object to use for events
+      @param system  The system using this controller
+      @param type    The controller type
+    */
+    Joystick(Jack jack, const Event& event, const System& system,
+             Controller::Type type, bool altmap = false);
 
   public:
     /**
@@ -71,24 +85,39 @@ class Joystick : public Controller
     bool setMouseControl(
       Controller::Type xtype, int xid, Controller::Type ytype, int yid) override;
 
+  protected:
     /**
-      Sets the deadzone amount for real analog joysticks.
-      Technically, this isn't really used by the Joystick class at all,
-      but it seemed like the best place to put it.
+      Update the button pin states.
     */
-    static void setDeadZone(int deadzone);
-    inline static int deadzone() { return _DEAD_ZONE; }
+    virtual void updateButtons();
+
+    /**
+      Update the button states from the mouse button events currently set.
+    */
+    void updateMouseButtons(bool& pressedLeft, bool& pressedRight);
+
+  protected:
+    Event::Type myFireEvent;
 
   private:
     // Pre-compute the events we care about based on given port
     // This will eliminate test for left or right port in update()
-    Event::Type myUpEvent, myDownEvent, myLeftEvent, myRightEvent,
-                myXAxisValue, myYAxisValue, myFireEvent;
+    Event::Type myUpEvent, myDownEvent, myLeftEvent, myRightEvent;
 
     // Controller to emulate in normal mouse axis mode
     int myControlID{-1};
 
-    static int _DEAD_ZONE;
+  private:
+    /**
+      Update the axes pin states according to the keyboard
+      or joystick hats & buttons events currently set.
+    */
+    void updateDigitalAxes();
+
+    /**
+      Update the axes pin states according to mouse events currently set.
+    */
+    void updateMouseAxes();
 
   private:
     // Following constructors and assignment operators not supported

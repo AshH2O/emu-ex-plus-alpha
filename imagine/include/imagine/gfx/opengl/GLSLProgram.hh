@@ -16,32 +16,66 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/config/defs.hh>
-#include "glIncludes.h"
+#include <imagine/gfx/defs.hh>
 #include "defs.hh"
+#include <imagine/util/memory/UniqueResource.hh>
+#include <utility>
 
-namespace Gfx
+namespace IG::Gfx
 {
 
 class RendererTask;
 class RendererCommands;
+class Text;
+class Mat4;
 
-using Shader = GLuint;
+// Shader
+
+using NativeShader = GLuint;
+
+void destroyGLShader(RendererTask &, NativeShader);
+
+struct GLShaderDeleter
+{
+	RendererTask *rTask{};
+
+	void operator()(NativeShader s) const
+	{
+		destroyGLShader(*rTask, s);
+	}
+};
+using UniqueGLShader = UniqueResource<NativeShader, GLShaderDeleter>;
+
+using ShaderImpl = UniqueGLShader;
+
+// Program
+
+using NativeProgram = GLuint;
+
+void destroyGLProgram(RendererTask &, NativeProgram);
+
+struct GLProgramDeleter
+{
+	RendererTask *rTask{};
+
+	void operator()(NativeProgram p) const
+	{
+		destroyGLProgram(*rTask, p);
+	}
+};
+using UniqueGLProgram = UniqueResource<NativeProgram, GLProgramDeleter>;
 
 class GLSLProgram
 {
 public:
-	constexpr GLSLProgram() {}
-	GLint modelViewProjectionUniform() const;
-	GLuint glProgram() const;
-	bool operator ==(GLSLProgram const&) const;
+	constexpr GLSLProgram() = default;
+	constexpr NativeProgram glProgram() const { return program_; }
+	constexpr bool operator ==(GLSLProgram const &rhs) const { return program_.get() == rhs.program_.get(); }
+	constexpr NativeProgram release() { return program_.release(); }
+	constexpr RendererTask &task() { return *program_.get_deleter().rTask; }
 
 protected:
-	#ifdef CONFIG_GFX_OPENGL_SHADER_PIPELINE
-	GLuint program_ = 0;
-	GLint mvpUniform = -1;
-
-	void initUniforms(RendererTask &);
-	#endif
+	UniqueGLProgram program_{};
 };
 
 using ProgramImpl = GLSLProgram;

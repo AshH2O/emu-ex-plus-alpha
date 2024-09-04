@@ -15,145 +15,179 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/config/defs.hh>
-#include <imagine/input/config.hh>
 #include <imagine/input/inputDefs.hh>
-#include <imagine/util/bitset.hh>
-#include <imagine/util/DelegateFunc.hh>
+#include <imagine/time/Time.hh>
+#include <imagine/util/utility.h>
+#include <imagine/util/variant.hh>
 #include <string>
+#include <string_view>
+#include <span>
 
-namespace Base
+#ifdef CONFIG_PACKAGE_X11
+#include <imagine/base/x11/XInputDevice.hh>
+#include <imagine/input/evdev/EvdevInputDevice.hh>
+#elif defined __ANDROID__
+#include <imagine/base/android/AndroidInputDevice.hh>
+#elif defined CONFIG_OS_IOS
+#include <imagine/input/apple/KeyboardDevice.hh>
+#endif
+#ifdef CONFIG_INPUT_BLUETOOTH
+#include <imagine/bluetooth/IControlPad.hh>
+#include <imagine/bluetooth/Wiimote.hh>
+#include <imagine/bluetooth/Zeemote.hh>
+#endif
+#ifdef CONFIG_BLUETOOTH_SERVER
+#include <imagine/bluetooth/PS3Controller.hh>
+#endif
+#ifdef CONFIG_INPUT_APPLE_GAME_CONTROLLER
+#include <imagine/input/apple/AppleGameDevice.hh>
+#endif
+
+namespace IG
 {
 class ApplicationContext;
 }
 
-namespace Input
+namespace IG::Input
 {
 
-enum class DeviceAction: uint8_t { ADDED, REMOVED, CHANGED, SHOWN, HIDDEN, CONNECT_ERROR };
+class Axis;
 
-class DeviceChange
+struct KeyNameFlags
 {
-public:
-	constexpr DeviceChange(DeviceAction action): action(action) {}
-	constexpr bool added() const { return action == DeviceAction::ADDED; }
-	constexpr bool removed() const { return action == DeviceAction::REMOVED; }
-	constexpr bool changed() const { return action == DeviceAction::CHANGED; }
-	constexpr bool shown() const { return action == DeviceAction::SHOWN; }
-	constexpr bool hidden() const { return action == DeviceAction::HIDDEN; }
-	constexpr bool hadConnectError() const { return action == DeviceAction::CONNECT_ERROR; }
-
-protected:
-	DeviceAction action;
+	bool basicModifiers{};
 };
 
-class Device
+class NullDevice : public BaseDevice {};
+
+using DeviceVariant = std::variant<
+#ifdef CONFIG_PACKAGE_X11
+XInputDevice,
+EvdevInputDevice,
+#elif defined __ANDROID__
+AndroidInputDevice,
+#elif defined CONFIG_OS_IOS
+KeyboardDevice,
+#endif
+#ifdef CONFIG_INPUT_BLUETOOTH
+IG::IControlPad,
+IG::Wiimote,
+IG::WiimoteExtDevice,
+IG::Zeemote,
+#endif
+#ifdef CONFIG_BLUETOOTH_SERVER
+IG::PS3Controller,
+#endif
+#ifdef CONFIG_INPUT_APPLE_GAME_CONTROLLER
+AppleGameDevice,
+#endif
+NullDevice
+>;
+
+class Device : public DeviceVariant, public AddVisit
 {
 public:
-	static constexpr uint32_t
-		SUBTYPE_NONE = 0,
-		SUBTYPE_XPERIA_PLAY = 1,
-		SUBTYPE_PS3_CONTROLLER = 2,
-		SUBTYPE_MOTO_DROID_KEYBOARD = 3,
-		SUBTYPE_OUYA_CONTROLLER = 4,
-		SUBTYPE_PANDORA_HANDHELD = 5,
-		SUBTYPE_XBOX_360_CONTROLLER = 6,
-		SUBTYPE_NVIDIA_SHIELD = 7,
-		SUBTYPE_GENERIC_GAMEPAD = 8,
-		SUBTYPE_APPLE_EXTENDED_GAMEPAD = 9,
-		SUBTYPE_8BITDO_SF30_PRO = 10,
-		SUBTYPE_8BITDO_SN30_PRO_PLUS = 11,
-		SUBTYPE_8BITDO_M30_GAMEPAD = 12;
+	using Subtype = DeviceSubtype;
+	using DeviceVariant::DeviceVariant;
+	using AddVisit::visit;
 
-	static constexpr uint32_t
-		TYPE_BIT_KEY_MISC = IG::bit(0),
-		TYPE_BIT_KEYBOARD = IG::bit(1),
-		TYPE_BIT_GAMEPAD = IG::bit(2),
-		TYPE_BIT_JOYSTICK = IG::bit(3),
-		TYPE_BIT_VIRTUAL = IG::bit(4),
-		TYPE_BIT_MOUSE = IG::bit(5),
-		TYPE_BIT_TOUCHSCREEN = IG::bit(6),
-		TYPE_BIT_POWER_BUTTON = IG::bit(7);
+	bool hasKeyboard() const { return typeFlags().keyboard; }
+	bool hasGamepad() const { return typeFlags().gamepad; }
+	bool hasJoystick() const { return typeFlags().joystick; }
+	bool isVirtual() const { return typeFlags().virtualInput; }
+	bool hasKeys() const { return hasKeyboard() || hasGamepad() || typeFlags().miscKeys; }
+	bool isPowerButton() const { return typeFlags().powerButton; }
 
-	static constexpr uint32_t
-		AXIS_BIT_X = IG::bit(0), AXIS_BIT_Y = IG::bit(1), AXIS_BIT_Z = IG::bit(2),
-		AXIS_BIT_RX = IG::bit(3), AXIS_BIT_RY = IG::bit(4), AXIS_BIT_RZ = IG::bit(5),
-		AXIS_BIT_HAT_X = IG::bit(6), AXIS_BIT_HAT_Y = IG::bit(7),
-		AXIS_BIT_LTRIGGER = IG::bit(8), AXIS_BIT_RTRIGGER = IG::bit(9),
-		AXIS_BIT_RUDDER = IG::bit(10), AXIS_BIT_WHEEL = IG::bit(11),
-		AXIS_BIT_GAS = IG::bit(12), AXIS_BIT_BRAKE = IG::bit(13);
-
-	static constexpr uint32_t
-		AXIS_BITS_STICK_1 = AXIS_BIT_X | AXIS_BIT_Y,
-		AXIS_BITS_STICK_2 = AXIS_BIT_Z | AXIS_BIT_RZ,
-		AXIS_BITS_HAT = AXIS_BIT_HAT_X | AXIS_BIT_HAT_Y;
-
-	Device() {}
-	Device(uint32_t devId, Map map, uint32_t type, const char *name):
-		name_{name}, map_{map}, type_{type}, devId{devId} {}
-	virtual ~Device() {}
-
-	bool hasKeyboard() const
+	constexpr bool isModifierKey(Key k) const
 	{
-		return typeBits() & TYPE_BIT_KEYBOARD;
+		using namespace Keycode;
+		switch(k)
+		{
+			case LALT:
+			case RALT:
+			case LSHIFT:
+			case RSHIFT:
+			case LCTRL:
+			case RCTRL:
+				return true;
+		}
+		return false;
 	}
 
-	bool hasGamepad() const
+	constexpr Key swapModifierKey(Key k) const
 	{
-		return typeBits() & TYPE_BIT_GAMEPAD;
+		using namespace Keycode;
+		switch(k)
+		{
+			case LALT: return RALT;
+			case RALT: return LALT;
+			case LSHIFT: return RSHIFT;
+			case RSHIFT: return LSHIFT;
+			case LCTRL: return RCTRL;
+			case RCTRL: return LCTRL;
+		}
+		return k;
 	}
 
-	bool hasJoystick() const
-	{
-		return typeBits() & TYPE_BIT_JOYSTICK;
-	}
-
-	bool isVirtual() const
-	{
-		return typeBits() & TYPE_BIT_VIRTUAL;
-	}
-
-	bool hasKeys() const
-	{
-		return hasKeyboard() || hasGamepad() || typeBits() & TYPE_BIT_KEY_MISC;
-	}
-
-	bool isPowerButton() const
-	{
-		return typeBits() & TYPE_BIT_POWER_BUTTON;
-	}
-
-	uint32_t enumId() const { return devId; }
-	const char *name() const { return name_.c_str(); }
+	int id() const { return visit([](auto &d){ return d.id_; }); }
+	uint8_t enumId() const { return visit([](auto &d){ return d.enumId_; }); }
+	void setEnumId(uint8_t id) { visit([&](auto &d){ d.enumId_ = id; }); }
+	std::string_view name() const { return visit([](auto &d){ return std::string_view{d.name_}; }); }
+	std::string displayName() const;
+	static std::string makeDisplayName(std::string_view name, int id);
 	Map map() const;
-	uint32_t typeBits() const;
-	uint32_t subtype() const { return subtype_; }
-
-	bool operator ==(Device const& rhs) const;
-
-	virtual void setICadeMode(bool on);
-	virtual bool iCadeMode() const { return false; }
-	virtual void setJoystickAxisAsDpadBits(uint32_t axisMask) {}
-	virtual uint32_t joystickAxisAsDpadBits() { return 0; }
-	virtual uint32_t joystickAxisAsDpadBitsDefault() { return 0; }
-	virtual uint32_t joystickAxisBits() { return 0; }
-
-	virtual const char *keyName(Key k) const;
+	DeviceTypeFlags typeFlags() const
+	{
+		return visit([&](auto &d)
+		{
+			auto flags = d.typeFlags_;
+			if(iCadeMode())
+				flags.gamepad = true;
+			return flags;
+		});
+	}
+	Subtype subtype() const { return visit([](auto &d){ return d.subtype_; }); }
+	void setSubtype(Subtype s) { visit([&](auto &d){ d.subtype_ = s; }); }
+	bool operator==(Device const&) const = default;
+	void setJoystickAxesAsKeys(AxisSetId, bool on);
+	bool joystickAxesAsKeys(AxisSetId);
+	Axis *motionAxis(AxisId);
+	std::string keyString(Key k, KeyNameFlags flags = {}) const;
+	static bool anyTypeFlagsPresent(ApplicationContext, DeviceTypeFlags);
 
 	// TODO
 	//bool isDisconnectable() { return 0; }
 	//void disconnect() { }
 
-	static bool anyTypeBitsPresent(Base::ApplicationContext, uint32_t typeBits);
+	template <class T>
+	T &makeAppData(auto &&...args)
+	{
+		auto &appDataPtr = visit([&](auto &d) -> auto& { return d.appDataPtr; });
+		appDataPtr = std::make_shared<T>(IG_forward(args)...);
+		return *appData<T>();
+	}
 
-protected:
-	std::string name_{""};
-	Map map_{Map::UNKNOWN};
-	uint32_t type_ = 0;
-	uint32_t devId = 0;
-public:
-	uint32_t subtype_ = 0;
-	uint32_t idx = 0;
+	template<class T>
+	T *appData() const
+	{
+		return visit([&](auto &d){ return static_cast<T*>(d.appDataPtr.get()); });
+	}
+
+	// optional API
+	std::span<Axis> motionAxes()
+	{
+		return visit([&](auto &d)
+		{
+			if constexpr(requires {d.motionAxes();})
+				return d.motionAxes();
+			else
+				return std::span<Axis>{};
+		});
+	}
+	const char *keyName(Key k) const;
+	void setICadeMode(bool on);
+	[[nodiscard]]
+	bool iCadeMode() const;
 };
 
 }

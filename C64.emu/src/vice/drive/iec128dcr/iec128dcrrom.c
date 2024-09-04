@@ -41,11 +41,7 @@
 /* Logging goes here.  */
 static log_t iec128dcrrom_log;
 
-#ifdef USE_EMBEDDED
-#include "drived1571cr.h"
-#else
 static uint8_t drive_rom1571cr[DRIVE_ROM1571CR_SIZE];
-#endif
 
 /* If nonzero, the ROM image has been loaded.  */
 static unsigned int rom1571cr_loaded = 0;
@@ -58,12 +54,12 @@ int iec128dcrrom_load_1571cr(void)
             DRIVE_TYPE_1571CR, NULL);
 }
 
-void iec128dcrrom_setup_image(drive_t *drive)
+void iec128dcrrom_setup_image(diskunit_context_t *unit)
 {
     if (rom_loaded) {
-        switch (drive->type) {
+        switch (unit->type) {
             case DRIVE_TYPE_1571CR:
-                memcpy(drive->rom, drive_rom1571cr, DRIVE_ROM1571CR_SIZE);
+                memcpy(unit->rom, drive_rom1571cr, DRIVE_ROM1571CR_SIZE);
                 break;
         }
     }

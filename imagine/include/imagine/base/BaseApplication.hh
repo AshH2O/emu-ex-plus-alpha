@@ -21,16 +21,18 @@
 #include <imagine/base/Screen.hh>
 #include <imagine/base/Timer.hh>
 #include <imagine/base/MessagePort.hh>
-#include <imagine/input/Input.hh>
+#include <imagine/input/Device.hh>
 #include <imagine/util/DelegateFuncSet.hh>
-#include <imagine/util/NonCopyable.hh>
-#include <vector>
 #include <memory>
 #include <optional>
 #include <cstdint>
+#include <string_view>
+#include <algorithm>
 
-namespace Base
+namespace IG
 {
+
+enum class BluetoothSocketState: uint8_t;
 
 enum class ActivityState : uint8_t
 {
@@ -45,11 +47,14 @@ struct CommandArgs
 	char **v{};
 };
 
-class BaseApplication : private NonCopyable
+class BaseApplication
 {
 public:
+	OnApplicationEvent onEvent{delegateFuncDefaultInit};
+
 	BaseApplication(ApplicationContext);
-	virtual ~BaseApplication();
+	virtual ~BaseApplication() = default;
+	BaseApplication &operator=(BaseApplication &&) = delete;
 	ActivityState activityState() const;
 	void setPausedActivityState();
 	void setRunningActivityState();
@@ -73,10 +78,9 @@ public:
 	bool containsOnExit(ExitDelegate) const;
 	void dispatchOnExit(ApplicationContext, bool backgrounded);
 
-	void setOnFreeCaches(FreeCachesDelegate del);
 	void dispatchOnFreeCaches(ApplicationContext, bool running);
 
-	void setOnScreenChange(ScreenChangeDelegate del);
+	void dispatchOnScreenChange(ApplicationContext ctx, Screen &, ScreenChange);
 	Screen &addScreen(ApplicationContext, std::unique_ptr<Screen>, bool notify);
 	Screen *findScreen(ScreenId) const;
 	std::unique_ptr<Screen> removeScreen(ApplicationContext, ScreenId, bool notify);
@@ -85,58 +89,56 @@ public:
 	bool screensArePosted() const;
 	void setActiveForAllScreens(bool active);
 
-	void setOnInterProcessMessage(InterProcessMessageDelegate);
-	bool hasOnInterProcessMessage() const;
-	void dispatchOnInterProcessMessage(ApplicationContext, const char *filename);
-
 	// Input functions
-	void startKeyRepeatTimer(Input::Event);
+	void startKeyRepeatTimer(Input::KeyEvent);
 	void cancelKeyRepeatTimer();
 	void deinitKeyRepeatTimer();
 	void setAllowKeyRepeatTimer(bool on);
-	const InputDeviceContainer &systemInputDevices() const;
-	void addSystemInputDevice(Input::Device &d, bool notify = false);
-	void removeSystemInputDevice(Input::Device &d, bool notify = false);
-	bool dispatchRepeatableKeyInputEvent(Input::Event, Window &);
-	bool dispatchRepeatableKeyInputEvent(Input::Event);
-	bool dispatchKeyInputEvent(Input::Event, Window &);
-	bool dispatchKeyInputEvent(Input::Event);
-	void setOnInputDeviceChange(InputDeviceChangeDelegate);
-	void dispatchInputDeviceChange(const Input::Device &, Input::DeviceChange);
-	void setOnInputDevicesEnumerated(InputDevicesEnumeratedDelegate);
+	const InputDeviceContainer &inputDevices() const;
+	Input::Device &addInputDevice(ApplicationContext, std::unique_ptr<Input::Device>, bool notify = false);
+	void removeInputDevice(ApplicationContext, Input::Device &, bool notify = false);
+	void removeInputDevice(ApplicationContext, Input::Map map, int id, bool notify = false);
+
+	void removeInputDeviceIf(ApplicationContext ctx, auto unaryPredicate, bool notify)
+	{
+		removeInputDevice(ctx, std::ranges::find_if(inputDev, unaryPredicate), notify);
+	}
+
+	void removeInputDevices(ApplicationContext, Input::Map matchingMap, bool notify = false);
+	bool dispatchRepeatableKeyInputEvent(Input::KeyEvent, Window &);
+	bool dispatchRepeatableKeyInputEvent(Input::KeyEvent);
+	bool dispatchKeyInputEvent(Input::KeyEvent, Window &);
+	bool dispatchKeyInputEvent(Input::KeyEvent);
+	void dispatchInputDeviceChange(ApplicationContext, const Input::Device &, Input::DeviceChange);
 	std::optional<bool> swappedConfirmKeysOption() const;
 	bool swappedConfirmKeys() const;
 	void setSwappedConfirmKeys(std::optional<bool>);
 	uint8_t keyEventFlags() const;
-	bool processICadeKey(Input::Key, Input::Action, Input::Time, const Input::Device &, Base::Window &);
+	bool processICadeKey(const Input::KeyEvent &, Window &);
+	void bluetoothInputDeviceStatus(ApplicationContext, Input::Device&, BluetoothSocketState);
 
 protected:
 	struct CommandMessage
 	{
-		MainThreadMessageDelegate del{};
-		constexpr explicit operator bool() const { return (bool)del; }
+		MainThreadMessageDelegate del;
 	};
 
-	InterProcessMessageDelegate onInterProcessMessage_;
 	DelegateFuncSet<ResumeDelegate> onResume_;
-	FreeCachesDelegate onFreeCaches_;
 	DelegateFuncSet<ExitDelegate> onExit_;
-	ScreenChangeDelegate onScreenChange_;
-	InputDeviceChangeDelegate onInputDeviceChange{};
-	InputDevicesEnumeratedDelegate onInputDevicesEnumerated{};
 	WindowContainer window_{};
 	ScreenContainer screen_{};
 	MessagePort<CommandMessage> commandPort{"Main thread messages"};
 	InputDeviceContainer inputDev{};
-	std::optional<Base::Timer> keyRepeatTimer{};
-	Input::Event keyRepeatEvent{};
+	std::optional<Timer> keyRepeatTimer{};
+	Input::KeyEvent keyRepeatEvent{};
 	bool allowKeyRepeatTimer_{true};
 	bool swappedConfirmKeys_{Input::SWAPPED_CONFIRM_KEYS_DEFAULT};
 	ActivityState appState = ActivityState::PAUSED;
 
 	void deinitWindows();
 	void removeSecondaryScreens();
-	void indexSystemInputDevices();
+	uint8_t nextInputDeviceEnumId(std::string_view name) const;
+	void removeInputDevice(ApplicationContext, InputDeviceContainer::iterator, bool notify = false);
 };
 
 }

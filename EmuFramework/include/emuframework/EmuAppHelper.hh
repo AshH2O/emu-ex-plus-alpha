@@ -17,16 +17,26 @@
 
 #include <emuframework/config.hh>
 
+namespace EmuEx
+{
+
 class EmuApp;
 
 // Easier access to the EmuApp object for any class that provides an appContext() function
-template <class T>
-class EmuAppHelper
+template<class App>
+struct EmuAppHelperBase
 {
-public:
-	EmuApp &app() const
+	auto& app(this auto&& self)
 	{
-		auto &application = static_cast<const T*>(this)->appContext().application();
-		return static_cast<EmuApp&>(application);
+		return self.appContext().template applicationAs<App>();
+	}
+
+	auto& system(this auto&& self)
+	{
+		return self.EmuAppHelperBase<App>::app().system();
 	}
 };
+
+using EmuAppHelper = EmuAppHelperBase<EmuApp>;
+
+}

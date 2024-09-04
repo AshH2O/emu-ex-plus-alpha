@@ -53,15 +53,14 @@
 
 /*
     FIXME: this implementation is based on vague guesses on how the hardware
-           really works. remaining problems are:
-           - fastloader fails
+           really works.
 
-    Evesham Micros "Freeze Frame MK4"
+    Evesham Micros "Freeze Frame MK3 v2"
 
     - 2 Buttons (Freeze, Reset)
     - 16k ROM
 
-    Evesham Micros "Freeze Machine"
+    Evesham Micros "Freeze Frame MK4 LAZER", "Freeze Machine"
 
     - 2 Buttons (Freeze, Reset)
     - 7474, 74163, 2 * 7400, 7402
@@ -114,7 +113,7 @@ static uint8_t freezemachine_io1_peek(uint16_t addr)
 
 static void freezemachine_io1_store(uint16_t addr, uint8_t value)
 {
-    DBG(("io1 %04x %02x\n", addr, value));
+    DBG(("io1 w %04x %02x\n", addr, value));
 }
 
 static uint8_t freezemachine_io2_read(uint16_t addr)
@@ -135,7 +134,7 @@ static uint8_t freezemachine_io2_peek(uint16_t addr)
 
 static void freezemachine_io2_store(uint16_t addr, uint8_t value)
 {
-    DBG(("io2 %04x %02x\n", addr, value));
+    DBG(("io2 w %04x %02x\n", addr, value));
 }
 
 static io_source_t freezemachine_io1_device = {
@@ -151,7 +150,8 @@ static io_source_t freezemachine_io1_device = {
     NULL,                          /* TODO: device state information dump function */
     CARTRIDGE_FREEZE_MACHINE,      /* cartridge ID */
     IO_PRIO_NORMAL,                /* normal priority, device read needs to be checked for collisions */
-    0                              /* insertion order, gets filled in by the registration function */
+    0,                             /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE                 /* NO mirroring */
 };
 
 static io_source_t freezemachine_io2_device = {
@@ -167,7 +167,8 @@ static io_source_t freezemachine_io2_device = {
     NULL,                          /* TODO: device state information dump function */
     CARTRIDGE_FREEZE_MACHINE,      /* cartridge ID */
     IO_PRIO_NORMAL,                /* normal priority, device read needs to be checked for collisions */
-    0                              /* insertion order, gets filled in by the registration function */
+    0,                             /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE                 /* NO mirroring */
 };
 
 static io_source_list_t *freezemachine_io1_list_item = NULL;
@@ -252,7 +253,7 @@ int freezemachine_bin_attach(const char *filename, uint8_t *rawcart)
 
 /*
  * (old) wrong formats:
- * 
+ *
  * cartconv produced this until 2011:
  *
  * offset  sig  type  bank start size  chunklen
@@ -278,7 +279,8 @@ int freezemachine_bin_attach(const char *filename, uint8_t *rawcart)
  */
 int freezemachine_crt_attach(FILE *fd, uint8_t *rawcart)
 {
-    int i, pos, banks, chips;
+    int i, banks, chips;
+    size_t pos;
     crt_chip_header_t chip;
 
     /* find out how many banks and chips are in the file */
@@ -365,7 +367,7 @@ void freezemachine_detach(void)
    ARRAY | ROMH         |   0.0+  | 16384 BYTES of ROMH data
  */
 
-static char snap_module_name[] = "CARTFREEZEM";
+static const char snap_module_name[] = "CARTFREEZEM";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   1
 

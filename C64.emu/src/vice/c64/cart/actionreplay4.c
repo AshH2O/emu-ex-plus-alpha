@@ -82,7 +82,8 @@ static io_source_t actionreplay4_io1_device = {
     actionreplay4_dump,            /* device state information dump function */
     CARTRIDGE_ACTION_REPLAY4,      /* cartridge ID */
     IO_PRIO_NORMAL,                /* normal priority, device read needs to be checked for collisions */
-    0                              /* insertion order, gets filled in by the registration function */
+    0,                             /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE                 /* NO mirroring */
 };
 
 static io_source_t actionreplay4_io2_device = {
@@ -98,7 +99,8 @@ static io_source_t actionreplay4_io2_device = {
     actionreplay4_dump,            /* device state information dump function */
     CARTRIDGE_ACTION_REPLAY4,      /* cartridge ID */
     IO_PRIO_NORMAL,                /* normal priority, device read needs to be checked for collisions */
-    0                              /* insertion order, gets filled in by the registration function */
+    0,                             /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE                 /* NO mirroring */
 };
 
 static io_source_list_t *actionreplay4_io1_list_item = NULL;
@@ -178,13 +180,13 @@ static int actionreplay4_dump(void)
 void actionreplay4_freeze(void)
 {
     ar_active = 1;
-    cart_config_changed_slotmain(3, 3, CMODE_READ);
+    cart_config_changed_slotmain(CMODE_ULTIMAX, CMODE_ULTIMAX, CMODE_READ);
 }
 
 void actionreplay4_config_init(void)
 {
     ar_active = 1;
-    cart_config_changed_slotmain(0 | (1 << CMODE_BANK_SHIFT), 0 | (1 << CMODE_BANK_SHIFT), CMODE_READ);
+    cart_config_changed_slotmain(CMODE_8KGAME | (1 << CMODE_BANK_SHIFT), CMODE_8KGAME | (1 << CMODE_BANK_SHIFT), CMODE_READ);
 }
 
 void actionreplay4_reset(void)
@@ -264,7 +266,7 @@ void actionreplay4_detach(void)
    ARRAY | ROML   | 32768 BYTES of ROML data
  */
 
-static char snap_module_name[] = "CARTAR4";
+static const char snap_module_name[] = "CARTAR4";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   0
 

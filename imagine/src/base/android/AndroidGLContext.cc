@@ -19,31 +19,31 @@
 #include <imagine/time/Time.hh>
 #include <android/native_window.h>
 
-namespace Base
+namespace IG
 {
 
-GLDisplay GLManager::getDefaultDisplay(Base::NativeDisplayConnection) const
+GLDisplay GLManager::getDefaultDisplay(NativeDisplayConnection) const
 {
 	return {eglGetDisplay(EGL_DEFAULT_DISPLAY)};
 }
 
 bool GLManager::bindAPI(GL::API api)
 {
-	return api == GL::API::OPENGL_ES;
+	return api == GL::API::OpenGLES;
 }
 
-std::optional<GLBufferConfig> GLManager::makeBufferConfig(Base::ApplicationContext ctx, GLBufferConfigAttributes attr, GL::API api, unsigned majorVersion) const
+std::optional<GLBufferConfig> GLManager::tryBufferConfig(ApplicationContext ctx, const GLBufferRenderConfigAttributes& attrs) const
 {
-	if(majorVersion > 2 && ctx.androidSDK() < 18)
+	if(attrs.version.major > 2 && ctx.androidSDK() < 18)
 	{
 		// need at least Android 4.3 to use ES 3 attributes
 		return {};
 	}
-	auto renderableType = makeRenderableType(GL::API::OPENGL_ES, majorVersion);
-	return chooseConfig(display(), renderableType, attr);
+	auto renderableType = makeRenderableType(GL::API::OpenGLES, attrs.version);
+	return chooseConfig(display(), renderableType, attrs);
 }
 
-Base::NativeWindowFormat GLManager::nativeWindowFormat(Base::ApplicationContext, GLBufferConfig glConfig) const
+NativeWindowFormat GLManager::nativeWindowFormat(ApplicationContext, GLBufferConfig glConfig) const
 {
 	EGLint nId;
 	auto dpy = display();
@@ -62,14 +62,12 @@ Base::NativeWindowFormat GLManager::nativeWindowFormat(Base::ApplicationContext,
 
 bool GLManager::hasBufferConfig(GLBufferConfigAttributes attrs) const
 {
-	switch(attrs.pixelFormat.id())
+	switch(attrs.pixelFormat)
 	{
-		default:
-			bug_unreachable("format id == %d", attrs.pixelFormat.id());
-			return false;
-		case PIXEL_NONE:
-		case PIXEL_RGB565:
-		case PIXEL_RGBA8888: return true;
+		case PixelFmtUnset:
+		case PixelFmtRGB565:
+		case PixelFmtRGBA8888: return true;
+		default: std::unreachable();
 	}
 }
 

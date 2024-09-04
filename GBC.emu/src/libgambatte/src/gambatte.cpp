@@ -55,15 +55,15 @@ struct GB::Priv {
 GB::GB() : p_(new Priv) {}
 
 GB::~GB() {
-	/*if (p_->cpu.loaded())
-		p_->cpu.saveSavedata();*/
+	if (p_->cpu.loaded())
+		p_->cpu.saveSavedata();
 
 	delete p_;
 }
 
 std::ptrdiff_t GB::runFor(gambatte::uint_least32_t *const videoBuf, std::ptrdiff_t const pitch,
                           gambatte::uint_least32_t *const soundBuf, std::size_t &samples,
-													DelegateFunc<void()> videoFrameCallback) {
+													gambatte::VideoFrameDelegate videoFrameCallback) {
 	if (!p_->cpu.loaded()) {
 		samples = 0;
 		return -1;
@@ -101,9 +101,6 @@ void GB::setSaveDir(std::string const &sdir) {
 }
 
 LoadRes GB::load(const void *romdata, std::size_t size, std::string const &romfilename, unsigned const flags) {
-	if (p_->cpu.loaded())
-		p_->cpu.saveSavedata();
-
 	LoadRes const loadres = p_->cpu.load(romdata, size, romfilename,
 	                                     flags & FORCE_DMG,
 	                                     flags & MULTICART_COMPAT);
@@ -113,7 +110,6 @@ LoadRes GB::load(const void *romdata, std::size_t size, std::string const &romfi
 		p_->loadflags = flags;
 		setInitState(state, p_->cpu.isCgb(), flags & GBA_CGB);
 		p_->cpu.loadState(state);
-		p_->cpu.loadSavedata();
 
 		p_->stateNo = 1;
 		#ifndef GAMBATTE_NO_OSD
@@ -137,12 +133,41 @@ void GB::saveSavedata() {
 		p_->cpu.saveSavedata();
 }
 
+void GB::loadSavedata() {
+	if (p_->cpu.loaded())
+		p_->cpu.loadSavedata();
+}
+
+std::span<unsigned char> GB::srambank()
+{
+	if (p_->cpu.loaded())
+		return p_->cpu.srambank();
+	return {};
+}
+
+std::optional<std::time_t> GB::rtcTime() const
+{
+	if (p_->cpu.loaded())
+		return p_->cpu.rtcTime();
+	return {};
+}
+
+void GB::setRtcTime(std::time_t time)
+{
+	if (p_->cpu.loaded())
+		p_->cpu.setRtcTime(time);
+}
+
 void GB::setDmgPaletteColor(int palNum, int colorNum, unsigned long rgb32) {
 	p_->cpu.setDmgPaletteColor(palNum, colorNum, rgb32);
 }
 
 void GB::refreshPalettes() {
 	p_->cpu.refreshPalettes();
+}
+
+void GB::setColorConversionFlags(unsigned flags) {
+	p_->cpu.setColorConversionFlags(flags);
 }
 
 bool GB::loadState(std::string const &filepath) {
@@ -153,6 +178,22 @@ bool GB::loadState(std::string const &filepath) {
 		p_->cpu.setStatePtrs(state);
 
 		if (StateSaver::loadState(state, filepath)) {
+			p_->cpu.loadState(state);
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool GB::loadState(std::istream &file) {
+	if (p_->cpu.loaded()) {
+		p_->cpu.saveSavedata();
+
+		SaveState state = SaveState();
+		p_->cpu.setStatePtrs(state);
+
+		if (StateSaver::loadState(state, file)) {
 			p_->cpu.loadState(state);
 			return true;
 		}
@@ -190,6 +231,19 @@ bool GB::saveState(gambatte::uint_least32_t const *videoBuf, std::ptrdiff_t pitc
 		p_->cpu.setStatePtrs(state);
 		p_->cpu.saveState(state);
 		return StateSaver::saveState(state, videoBuf, pitch, filepath);
+	}
+
+	return false;
+}
+
+bool GB::saveState(gambatte::uint_least32_t const *videoBuf, std::ptrdiff_t pitch,
+	             std::ostream &file)
+{
+	if (p_->cpu.loaded()) {
+		SaveState state;
+		p_->cpu.setStatePtrs(state);
+		p_->cpu.saveState(state);
+		return StateSaver::saveState(state, videoBuf, pitch, file);
 	}
 
 	return false;

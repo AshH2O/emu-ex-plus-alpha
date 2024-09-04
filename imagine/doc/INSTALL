@@ -5,9 +5,9 @@ Building the Imagine SDK and applications is currently supported on Linux and Ma
 
 You need the following basic tools to start building Imagine. For platform-specific info, see the INSTALL-* file for that port.
 
-Linux: GCC 10/Clang 10 or newer, GNU Make, pkgconfig (install from your distro's package manager)
+Linux: GCC 14/Clang 18 or newer, mold linker, GNU Make, pkgconfig (install from your distro's package manager)
 
-MacOS X: Xcode 12 or newer, MacPorts versions of coreutils, libtool, pkgconfig and gnutar (http://www.macports.org)
+MacOS X: Xcode 12 or newer (user must provide a Clang 18 or newer toolchain), MacPorts versions of coreutils, libtool, pkgconfig and gnutar (http://www.macports.org)
 
 The following make variables are used by the build system:
 
@@ -25,7 +25,7 @@ V : Optional, defaults to undefined
 2. Dependencies
 ===============
 
-For ports that need linking to additional static libraries (currently all except a stock Linux build), change to the "bundle/all" directory and run the specific bash script for the port to build the needed packages. All arguments passed to this script are passed to make directly. Extracted source & build output goes into "/tmp/imagine-bundle/$(pkgName)" but you can override the "tempDir" variable to change this. The "install" target installs the resulting files under "$(IMAGINE_SDK_PATH)" and is overridden via the "installDir" variable. Note that some packages need the GNU version of the tar utility for proper extraction.
+For ports that need linking to additional static libraries (currently all except a stock Linux build), change to the "bundle/all" directory and run the specific bash script for the port to build the needed packages. All arguments passed to this script are passed to make directly. Extracted source & build output goes into "/tmp/imagine-bundle/$(pkgName)" but you can override the "tempDir" variable to change this. The "install" target installs the resulting files under "$(IMAGINE_SDK_PATH)" and is overridden via the "installDir" variable. Note that some packages need the GNU version of the tar utility for proper extraction. FLAC needs the Netwide Assembler (NASM) when building for X86.
 
 For example, to build and install the packages needed for the iOS ARMv7 port, and override the name of the tar utility, use:
 
@@ -42,5 +42,5 @@ To use the resulting Imagine SDK with pkg-config, add that port's "lib/pkgconfig
 
 --------------------------------
 
-Copyright 2014-2021 by Robert Broglia
+Copyright 2014-2023 by Robert Broglia
 

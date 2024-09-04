@@ -15,6 +15,7 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
+#include <imagine/config/defs.hh>
 #if defined __ANDROID__
 #include <imagine/audio/android/AndroidManager.hh>
 #elif (defined __APPLE__ && TARGET_OS_IPHONE)
@@ -25,21 +26,18 @@
 
 #include <imagine/audio/Format.hh>
 #include <imagine/audio/defs.hh>
-#include <memory>
 #include <vector>
 #include <optional>
 
 namespace IG::Audio
 {
-class OutputStreamConfig;
-class OutputStream;
 
 class Manager : public ManagerImpl
 {
 public:
 	using ManagerImpl::ManagerImpl;
 	SampleFormat nativeSampleFormat() const;
-	uint32_t nativeRate() const;
+	int nativeRate() const;
 	Format nativeFormat() const;
 	void setSoloMix(std::optional<bool>);
 	bool soloMix() const;
@@ -64,7 +62,6 @@ public:
 	std::vector<ApiDesc> audioAPIs() const;
 	Api makeValidAPI(Api api = Api::DEFAULT) const;
 	OutputStreamConfig makeNativeOutputStreamConfig() const;
-	std::unique_ptr<OutputStream> makeOutputStream(Api api = Api::DEFAULT) const;
 };
 
 }

@@ -16,37 +16,27 @@
 	along with GBC.emu.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <emuframework/Cheats.hh>
-#include <main/Cheats.hh>
 
-class EmuCheatsView : public BaseCheatsView
+namespace EmuEx
+{
+
+class EditCheatsView : public BaseEditCheatsView
 {
 public:
-	EmuCheatsView(ViewAttachParams attach);
+	EditCheatsView(ViewAttachParams, CheatsView&);
 
 private:
-	void loadCheatItems() final;
+	TextMenuItem addGGGS;
 };
 
-class EmuEditCheatListView : public BaseEditCheatListView
+class EditCheatView : public BaseEditCheatView
 {
 public:
-	EmuEditCheatListView(ViewAttachParams attach);
+	EditCheatView(ViewAttachParams, Cheat&, BaseEditCheatsView&);
+	void loadItems();
 
 private:
-	TextMenuItem addGGGS{};
-
-	void loadCheatItems() final;
+	TextMenuItem addGGGS;
 };
 
-class EmuEditCheatView : public BaseEditCheatView
-{
-public:
-	EmuEditCheatView(ViewAttachParams attach, GbcCheat &cheat, RefreshCheatsDelegate onCheatListChanged_);
-
-private:
-	DualTextMenuItem ggCode{};
-	GbcCheat *cheat{};
-
-	const char *cheatNameString() const final;
-	void renamed(const char *str) final;
-};
+}

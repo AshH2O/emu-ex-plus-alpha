@@ -2,13 +2,13 @@
 #RELEASE := 1
 #PROFILE := 1
 
+CFLAGS_OPTIMIZE_DEBUG_DEFAULT ?= -Og
 CFLAGS_OPTIMIZE_MISC_RELEASE_DEFAULT ?= -fomit-frame-pointer -fno-stack-protector -fno-asynchronous-unwind-tables
 CFLAGS_OPTIMIZE_LEVEL_RELEASE_DEFAULT ?= -Ofast
 CFLAGS_OPTIMIZE_RELEASE_DEFAULT ?= $(CFLAGS_OPTIMIZE_LEVEL_RELEASE_DEFAULT) $(CFLAGS_OPTIMIZE_MISC_RELEASE_DEFAULT)
-CFLAGS_CODEGEN += -pipe -fvisibility=hidden
+CFLAGS_CODEGEN += -pipe -fvisibility=hidden -ffunction-sections -fdata-sections
 CFLAGS_LANG = -fno-common
-CXXFLAGS_LANG = -std=gnu++20 $(if $(cxxRTTI),,-fno-rtti) $(if $(cxxExceptions),,-fno-exceptions) \
-$(if $(cxxThreadSafeStatics),,-fno-threadsafe-statics)
+CXXFLAGS_LANG = -std=gnu++26 $(if $(cxxThreadSafeStatics),,-fno-threadsafe-statics) -fvisibility-inlines-hidden
 
 ifeq ($(ENV), ios)
  ifeq ($(SUBARCH), armv7)
@@ -18,8 +18,7 @@ endif
 
 # setup warnings
 
-CFLAGS_WARN ?= -Wall -Wextra -Werror=return-type -Wno-comment -Wno-unused -Wno-unused-parameter
-CFLAGS_WARN += $(CFLAGS_WARN_EXTRA)
+CFLAGS_WARN ?= -Wall -Wextra -Werror=return-type -Wno-comment
 CXXFLAGS_WARN ?= $(CFLAGS_WARN) -Woverloaded-virtual
 
 # setup optimizations
@@ -60,18 +59,19 @@ ifdef CHOST
  CHOST_PREFIX := $(CHOST)-
 endif
 
+# Disable some undefined sanitizers that greatly increase compile time or are not needed
+compiler_noSanitizeMode ?= unreachable,return,vptr,enum,nonnull-attribute
+
 ifndef RELEASE
- ifeq ($(compiler_sanitizeMode), address)
-  CFLAGS_CODEGEN += -fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer
-  LDFLAGS_SYSTEM += -fsanitize=address -fsanitize=undefined
+ ifneq ($(compiler_sanitizeMode),)
+  CFLAGS_CODEGEN += -fsanitize=$(compiler_sanitizeMode) -fno-omit-frame-pointer
+  LDFLAGS_SYSTEM += -fsanitize=$(compiler_sanitizeMode)
   # Disable debug section compression since it may prevent symbols from appearing in backtrace
   COMPRESS_DEBUG_SECTIONS = none
- endif
- ifeq ($(compiler_sanitizeMode), thread)
-  CFLAGS_CODEGEN += -fsanitize=thread -fno-omit-frame-pointer
-  LDFLAGS_SYSTEM += -fsanitize=thread
-  # Disable debug section compression since it may prevent symbols from appearing in backtrace
-  COMPRESS_DEBUG_SECTIONS = none
+  ifneq ($(compiler_sanitizeMode),)
+   CFLAGS_CODEGEN += -fno-sanitize=$(compiler_noSanitizeMode)
+   LDFLAGS_SYSTEM += -fno-sanitize=$(compiler_noSanitizeMode)
+  endif
  endif
 endif
 

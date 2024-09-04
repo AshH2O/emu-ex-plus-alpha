@@ -24,6 +24,7 @@
 #include <imagine/util/algorithm.h>
 #include <emuframework/EmuApp.hh>
 #include "shared.h"
+#include "vdp_render.h"
 #include "Fir_Resampler.h"
 #include "eq.h"
 #include "assert.h"
@@ -35,17 +36,18 @@
 
 /* Global variables */
 //t_bitmap bitmap;
-t_snd snd{44100, 60};
+t_snd snd{44100, 1};
 uint32 mcycles_vdp;
 //uint32 Z80.cycleCount;
 //uint32 mcycles_68k;
 uint8 system_hw;
-void (*system_frame)(EmuSystemTask *task, EmuVideo *emuVideo);
+void (*system_frame)(EmuEx::EmuSystemTaskContext, EmuEx::EmuVideo *);
 int (*audioUpdateFunc)(int16 *sb);
+Z80CPU<z80Desc> Z80;
 
 template <bool hasSegaCD = 0>
-static void system_frame_md(EmuSystemTask *task, EmuVideo *emuVideo);
-static void system_frame_sms(EmuSystemTask *task, EmuVideo *emuVideo);
+static void system_frame_md(EmuEx::EmuSystemTaskContext, EmuEx::EmuVideo *);
+static void system_frame_sms(EmuEx::EmuSystemTaskContext, EmuEx::EmuVideo *);
 static int pause_b;
 static EQSTATE eq;
 static int32 llp,rrp;
@@ -172,7 +174,7 @@ int audioUpdateAll(int16 *sb)
 	{
 		auto cddaPtr = (int32*)cddaBuff;
 		auto cddaResampledPtr = (int32*)cddaRemsampledBuff;
-		iterateTimes(size, i)
+		for(auto i : IG::iotaCount(size))
 		{
 			unsigned samplePos = round(i * cddaRatio);
 			if(samplePos > cddaFrames)
@@ -350,11 +352,11 @@ static void runM68k(unsigned cycles)
 	#endif
 }
 
-template void system_frame_md<0>(EmuSystemTask *task, EmuVideo *emuVideo);
-template void system_frame_md<1>(EmuSystemTask *task, EmuVideo *emuVideo);
+template void system_frame_md<0>(EmuEx::EmuSystemTaskContext, EmuEx::EmuVideo *);
+template void system_frame_md<1>(EmuEx::EmuSystemTaskContext, EmuEx::EmuVideo *);
 
 template <bool hasSegaCD>
-static void system_frame_md(EmuSystemTask *task, EmuVideo *emuVideo)
+static void system_frame_md(EmuEx::EmuSystemTaskContext taskCtx, EmuEx::EmuVideo *emuVideo)
 {
 	int do_skip = !emuVideo;
 
@@ -558,9 +560,9 @@ static void system_frame_md(EmuSystemTask *task, EmuVideo *emuVideo)
   }
   while (++line < bitmap.viewport.h);
 
-  if(!do_skip)
+  if(emuVideo)
   {
-  	emuVideo->startFrameWithAltFormat(task, pixmap);
+  	emuVideo->startFrameWithAltFormat(taskCtx, pixmap);
   }
 
   /* end of active display */
@@ -750,7 +752,7 @@ static void system_frame_md(EmuSystemTask *task, EmuVideo *emuVideo)
 }
 
 
-static void system_frame_sms(EmuSystemTask *task, EmuVideo *emuVideo)
+static void system_frame_sms(EmuEx::EmuSystemTaskContext taskCtx, EmuEx::EmuVideo *emuVideo)
 {
 	int do_skip = !emuVideo;
 
@@ -937,9 +939,9 @@ static void system_frame_sms(EmuSystemTask *task, EmuVideo *emuVideo)
   }
   while (++line < bitmap.viewport.h);
 
-  if(!do_skip)
+  if(emuVideo)
   {
-  	emuVideo->startFrameWithAltFormat(task, pixmap);
+  	emuVideo->startFrameWithAltFormat(taskCtx, pixmap);
   }
 
   /* end of active display */

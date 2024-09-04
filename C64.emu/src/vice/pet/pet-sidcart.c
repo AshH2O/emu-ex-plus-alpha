@@ -29,11 +29,13 @@
 #include "cartio.h"
 #include "cmdline.h"
 #include "resources.h"
+#include "pets.h"
 #include "sid.h"
 #include "sidcart.h"
 #include "sid-cmdline-options.h"
 #include "sid-resources.h"
 #include "sound.h"
+#include "uiapi.h"
 
 int sidcart_address;
 int sidcart_clock;
@@ -49,9 +51,19 @@ static int sidcart_sound_machine_init(sound_t *psid, int speed, int cycles_per_s
     }
 }
 
+#ifdef SOUND_SYSTEM_FLOAT
+/* stereo mixing placement of the PET SID cartridge sound */
+static sound_chip_mixing_spec_t sidcart_sound_mixing_spec[SOUND_CHIP_CHANNELS_MAX] = {
+    {
+        100, /* left channel volume % in case of stereo output, default output to both */
+        100  /* right channel volume % in case of stereo output, default output to both */
+    }
+};
+#endif
+
 /* PET SID cartridge sound chip */
 static sound_chip_t sidcart_sound_chip = {
-    sid_sound_machine_open,              /* sound chip open function */ 
+    sid_sound_machine_open,              /* sound chip open function */
     sidcart_sound_machine_init,          /* sound chip init function */
     sid_sound_machine_close,             /* sound chip close function */
     sid_sound_machine_calculate_samples, /* sound chip calculate samples function */
@@ -60,6 +72,9 @@ static sound_chip_t sidcart_sound_chip = {
     sid_sound_machine_reset,             /* sound chip reset function */
     sid_sound_machine_cycle_based,       /* sound chip 'is_cycle_based()' function, RESID engine is cycle based, all other engines are NOT */
     sid_sound_machine_channels,          /* sound chip 'get_amount_of_channels()' function, sound chip has 1 channel */
+#ifdef SOUND_SYSTEM_FLOAT
+    sidcart_sound_mixing_spec,           /* stereo mixing placement specs */
+#endif
     0                                    /* sound chip enabled flag, toggled upon device (de-)activation */
 };
 
@@ -85,9 +100,11 @@ static io_source_t sidcart_8f00_device = {
     sid_dump,             /* device state information dump function */
     IO_CART_ID_NONE,      /* not a cartridge */
     IO_PRIO_NORMAL,       /* normal priority, device read needs to be checked for collisions */
-    0                     /* insertion order, gets filled in by the registration function */
+    0,                    /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE        /* NO mirroring */
 };
 
+/* the $e9xx range is only exposed when the I/O size is big (30xx and superpet models) */
 static io_source_t sidcart_e900_device = {
     "SIDCART",            /* name of the device */
     IO_DETACH_RESOURCE,   /* use resource to detach the device when involved in a read-collision */
@@ -101,7 +118,8 @@ static io_source_t sidcart_e900_device = {
     sid_dump,             /* device state information dump function */
     IO_CART_ID_NONE,      /* not a cartridge */
     IO_PRIO_NORMAL,       /* normal priority, device read needs to be checked for collisions */
-    0                     /* insertion order, gets filled in by the registration function */
+    0,                    /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE        /* NO mirroring */
 };
 
 static io_source_list_t *sidcart_list_item = NULL;
@@ -123,6 +141,10 @@ static int set_sidcart_enabled(int value, void *param)
         if (sidcart_address == 0x8f00) {
             sidcart_list_item = io_source_register(&sidcart_8f00_device);
         } else {
+            if (petres.model.IOSize < 2048) {
+                ui_error("Cannot enable SID: $e9xx range only available on superpet and 30xx models");
+                return -1;
+            }
             sidcart_list_item = io_source_register(&sidcart_e900_device);
         }
     } else {
@@ -158,6 +180,10 @@ static int set_sid_address(int val, void *param)
         if (val == 0x8f00) {
             sidcart_list_item = io_source_register(&sidcart_8f00_device);
         } else {
+            if (petres.model.IOSize < 2048) {
+                ui_error("Cannot enable SID: $e9xx range only available on superpet and 30xx models");
+                return -1;
+            }
             sidcart_list_item = io_source_register(&sidcart_e900_device);
         }
     }
@@ -189,7 +215,7 @@ static int set_sid_clock(int val, void *param)
 static const resource_int_t sidcart_resources_int[] = {
     { "SidCart", 0, RES_EVENT_SAME, NULL,
       &sidcart_sound_chip.chip_enabled, set_sidcart_enabled, NULL },
-    { "SidAddress", 0xe900, RES_EVENT_SAME, NULL,
+    { "SidAddress", 0x8f00, RES_EVENT_SAME, NULL,
       &sidcart_address, set_sid_address, NULL },
     { "SidClock", SIDCART_CLOCK_NATIVE, RES_EVENT_SAME, NULL,
       &sidcart_clock, set_sid_clock, NULL },
@@ -204,6 +230,7 @@ int sidcart_resources_init(void)
     if (sid_resources_init() < 0) {
         return -1;
     }
+
     return resources_register_int(sidcart_resources_int);
 }
 
@@ -232,4 +259,13 @@ int sidcart_cmdline_options_init(void)
         return -1;
     }
     return cmdline_register_options(sidcart_cmdline_options);
+}
+
+
+/** \brief  Free memory allocated for the sidcart command line options
+ */
+void sidcart_cmdline_options_shutdown(void)
+{
+    /* clean up the runtime-constructed sid cmdline help */
+    sid_cmdline_options_shutdown();
 }

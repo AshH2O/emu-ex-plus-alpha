@@ -19,81 +19,97 @@
 #include <imagine/gfx/GfxText.hh>
 #include <imagine/fs/FSDefs.hh>
 #include <imagine/gui/MenuItem.hh>
-#include <imagine/util/DelegateFunc.hh>
 #include <imagine/gui/View.hh>
 #include <imagine/gui/ViewStack.hh>
+#include <imagine/base/CustomEvent.hh>
+#include <imagine/thread/WorkThread.hh>
+#include <imagine/util/DelegateFunc.hh>
+#include <imagine/util/string/CStringView.hh>
 #include <vector>
-#include <system_error>
+#include <string>
+#include <string_view>
 
-namespace Input
+namespace IG::FS
 {
-class Event;
+class directory_entry;
 }
+
+namespace IG
+{
+
+class TableView;
 
 class FSPicker : public View
 {
 public:
-	using FilterFunc = DelegateFunc<bool(FS::directory_entry &entry)>;
-	using OnChangePathDelegate = DelegateFunc<void (FSPicker &picker, FS::PathString prevPath, Input::Event e)>;
-	using OnSelectFileDelegate = DelegateFunc<void (FSPicker &picker, const char *name, Input::Event e)>;
-	using OnCloseDelegate = DelegateFunc<void (FSPicker &picker, Input::Event e)>;
-	using OnPathReadError = DelegateFunc<void (FSPicker &picker, std::error_code ec)>;
-	static constexpr bool needsUpDirControl = true;
+	using FilterFunc = DelegateFunc<bool(const FS::directory_entry &)>;
+	using OnChangePathDelegate = DelegateFunc<void (FSPicker &, const Input::Event &)>;
+	using OnSelectPathDelegate = DelegateFunc<void (FSPicker &, CStringView filePath, std::string_view displayName, const Input::Event &)>;
+	enum class Mode : uint8_t { FILE, FILE_IN_DIR, DIR };
 
-	FSPicker(ViewAttachParams attach, Gfx::TextureSpan backRes, Gfx::TextureSpan closeRes,
-			FilterFunc filter = {}, bool singleDir = false, Gfx::GlyphTextureSet *face = {});
-	void place() override;
-	bool inputEvent(Input::Event e) override;
-	void prepareDraw() override;
-	void draw(Gfx::RendererCommands &cmds) override;
-	void onAddedToController(ViewController *c, Input::Event e) override;
-	void setOnChangePath(OnChangePathDelegate del);
-	void setOnSelectFile(OnSelectFileDelegate del);
-	void setOnClose(OnCloseDelegate del);
-	void setOnPathReadError(OnPathReadError del);
-	void onLeftNavBtn(Input::Event e);
-	void onRightNavBtn(Input::Event e);
-	std::error_code setPath(const char *path, bool forcePathChange, FS::RootPathInfo rootInfo, Input::Event e);
-	std::error_code setPath(const char *path, bool forcePathChange, FS::RootPathInfo rootInfo);
-	std::error_code setPath(FS::PathString path, bool forcePathChange, FS::RootPathInfo rootInfo, Input::Event e);
-	std::error_code setPath(FS::PathString path, bool forcePathChange, FS::RootPathInfo rootInfo);
-	std::error_code setPath(FS::PathLocation location, bool forcePathChange);
-	std::error_code setPath(FS::PathLocation location, bool forcePathChange, Input::Event e);
-	FS::PathString path() const;
-	void clearSelection() override;
-	FS::PathString makePathString(const char *base) const;
-	bool isSingleDirectoryMode() const;
-	void goUpDirectory(Input::Event e);
-
-protected:
 	struct FileEntry
 	{
-		FS::FileString name{};
-		bool isDir{};
+		static constexpr auto isDirFlag = bit(0);
 
-		constexpr FileEntry() {}
-		constexpr FileEntry(FS::FileString name, bool isDir):
-			name{name}, isDir{isDir}
-		{}
+		std::string path;
+		TextMenuItem text;
+
+		FileEntry(ViewAttachParams attach, auto &&path, UTF16Convertible auto &&name):
+			path{IG_forward(path)}, text{IG_forward(name), attach} {}
+		bool isDir() const { return text.flags.user & isDirFlag; }
+		TextMenuItem &menuItem() { return text; }
 	};
 
-	FilterFunc filter{};
-	ViewStack controller{};
-	OnChangePathDelegate onChangePath_{};
-	OnSelectFileDelegate onSelectFile_{};
-	OnCloseDelegate onClose_;
-	OnPathReadError onPathReadError_{};
-	std::vector<TextMenuItem> text{};
-	std::vector<FileEntry> dir{};
-	std::vector<FS::PathLocation> rootLocation{};
-	FS::RootPathInfo root{};
-	FS::PathString currPath{};
-	FS::PathString rootedPath{};
-	Gfx::Text msgText{};
-	bool singleDir = false;
+	enum class DepthMode { increment, decrement, reset };
 
-	void changeDirByInput(const char *path, FS::RootPathInfo rootInfo, bool forcePathChange, Input::Event e);
+	FSPicker(ViewAttachParams attach, Gfx::TextureSpan backRes, Gfx::TextureSpan closeRes,
+			FilterFunc filter = {}, Mode mode = Mode::FILE, Gfx::GlyphTextureSet *face = {});
+	void place() override;
+	bool inputEvent(const Input::Event&, ViewInputEventParams p = {}) override;
+	void prepareDraw() override;
+	void draw(Gfx::RendererCommands &__restrict__, ViewDrawParams p = {}) const override;
+	void onAddedToController(ViewController *, const Input::Event &) override;
+	void setOnChangePath(OnChangePathDelegate);
+	void setOnSelectPath(OnSelectPathDelegate);
+	void onLeftNavBtn(const Input::Event &);
+	void onRightNavBtn(const Input::Event &);
+	void setEmptyPath();
+	void setPath(CStringView path, FS::RootPathInfo, const Input::Event &);
+	void setPath(CStringView path, FS::RootPathInfo);
+	void setPath(CStringView path, const Input::Event &);
+	void setPath(CStringView path);
+	FS::PathString path() const;
+	FS::RootedPath rootedPath() const;
+	void clearSelection() override;
+	bool isSingleDirectoryMode() const;
+	void goUpDirectory(const Input::Event &);
+	void pushFileLocationsView(const Input::Event &);
+	void setShowHiddenFiles(bool);
+	bool onDocumentPicked(const DocumentPickerEvent&) override;
+
+protected:
+	FilterFunc filter{};
+	ViewStack controller;
+	OnChangePathDelegate onChangePath_;
+	OnSelectPathDelegate onSelectPath_;
+	std::vector<FileEntry> dir;
+	std::vector<TableUIState> fileUIStates;
+	FS::RootedPath root;
+	Gfx::Text msgText;
+	CustomEvent dirListEvent;
+	TableUIState newFileUIState{};
+	Mode mode_{};
+	bool showHiddenFiles_{};
+	WorkThread dirListThread{};
+
+	void changeDirByInput(CStringView path, FS::RootPathInfo, const Input::Event &,
+		DepthMode depthMode = DepthMode::increment);
 	bool isAtRoot() const;
-	void pushFileLocationsView(Input::Event e);
 	Gfx::GlyphTextureSet &face();
+	TableView &fileTableView();
+	void startDirectoryListThread(CStringView path);
+	void listDirectory(CStringView path, ThreadStop &stop);
+	void setEmptyPath(std::string_view message);
 };
+
+}

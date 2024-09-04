@@ -16,69 +16,44 @@
 	along with MD.emu.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/util/container/ArrayList.hh>
-#include <imagine/util/bitset.hh>
+#include <imagine/util/bit.hh>
 #include <imagine/util/string.h>
 #include <emuframework/EmuSystem.hh>
+#include <vector>
 
-namespace EmuCheats
+namespace EmuEx
 {
-
-static const unsigned MAX = 100;
-
-}
 
 // Needs to be a #define because it get strigified in Cheats.cc
 #define MAX_CHEAT_NAME_CHARS 127
 
-struct MdCheat
+using CheatCodeString = StaticString<11>;
+
+struct CheatCode
 {
-	constexpr MdCheat() { }
-	uint8_t flags = 0;
-	char name[MAX_CHEAT_NAME_CHARS+1]{};
-	char code[12]{};
-	uint32_t address = 0;
-	uint16_t data = 0;
-	uint16_t origData = 0;
+	CheatCodeString text;
+	uint32_t address{};
+	uint16_t data{};
+	uint16_t origData{};
 	uint8_t *prev{};
 
-	static const uint8_t ON = IG::bit(0), APPLIED = IG::bit(1);
+	constexpr bool operator==(const CheatCode& rhs) const { return text == rhs.text;  }
+};
 
-	bool isOn()
+struct Cheat
+{
+	StaticString<MAX_CHEAT_NAME_CHARS> name;
+	std::vector<CheatCode> codes;
+	union
 	{
-		return flags & ON;
-	}
+		struct{uint8_t on:1, applied:1;};
+		uint8_t flags{};
+	};
 
-	bool isApplied()
+	bool operator==(Cheat const& rhs) const
 	{
-		return flags & APPLIED;
-	}
-
-	void toggleOn()
-	{
-		flags = IG::flipBits(flags, ON);
-	}
-
-	void setApplied(bool applied)
-	{
-		IG::setOrClearBits(flags, APPLIED, applied);
-	}
-
-	bool operator ==(MdCheat const& rhs) const
-	{
-		return string_equal(code, rhs.code);
+		return codes == rhs.codes;
 	}
 };
 
-void applyCheats();
-void clearCheats();
-void updateCheats(); // clears and applies cheats
-void clearCheatList();
-void writeCheatFile();
-void readCheatFile();
-void RAMCheatUpdate();
-void ROMCheatUpdate();
-
-extern StaticArrayList<MdCheat, EmuCheats::MAX> cheatList;
-extern StaticArrayList<MdCheat*, EmuCheats::MAX> romCheatList;
-extern StaticArrayList<MdCheat*, EmuCheats::MAX> ramCheatList;
-extern bool cheatsModified;
+}

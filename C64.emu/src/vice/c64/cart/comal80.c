@@ -129,7 +129,8 @@ static io_source_t comal80_device = {
     comal80_dump,           /* device state information dump function */
     CARTRIDGE_COMAL80,      /* cartridge ID */
     IO_PRIO_NORMAL,         /* normal priority, device read needs to be checked for collisions */
-    0                       /* insertion order, gets filled in by the registration function */
+    0,                      /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE          /* NO mirroring */
 };
 
 static io_source_list_t *comal80_list_item = NULL;
@@ -241,7 +242,7 @@ void comal80_detach(void)
    ARRAY | ROMH     | 32768 or 65536 BYTES of ROMH data
  */
 
-static char snap_module_name[] = "CARTCOMAL";
+static const char snap_module_name[] = "CARTCOMAL";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   1
 

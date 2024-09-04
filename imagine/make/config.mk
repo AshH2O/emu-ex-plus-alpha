@@ -21,8 +21,10 @@ buildSysPath := $(IMAGINE_PATH)/make
 projectPath ?= $(firstMakefileDir)
 
 LN ?= ln
+RANLIB ?= ranlib
+CLANG_TIDY ?= clang-tidy
 
-toolchainEnvParams = CC="$(CC)" CXX="$(CXX)" AR="$(AR)"
+toolchainEnvParams = CC="$(CC)" CXX="$(CXX)" AR="$(AR)" RANLIB="$(RANLIB)"
 
 ifndef V
  PRINT_CMD := @

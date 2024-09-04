@@ -16,63 +16,92 @@
 	along with EmuFramework.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/base/MessagePort.hh>
+#include <imagine/thread/Thread.hh>
+#include <imagine/time/Time.hh>
+#include <imagine/util/variant.hh>
+#include <imagine/util/ScopeGuard.hh>
+
+namespace EmuEx
+{
+
+using namespace IG;
 
 class EmuVideo;
 class EmuAudio;
 class EmuApp;
 
-namespace IG
-{
-class Semaphore;
-}
-
 class EmuSystemTask
 {
 public:
-	enum class Command: uint8_t
+	struct SuspendCommand {};
+	struct ExitCommand {};
+	struct SetWindowCommand
 	{
-		UNSET,
-		RUN_FRAME,
-		PAUSE,
-		EXIT,
+		Window* winPtr;
+	};
+
+	using CommandVariant = std::variant<SuspendCommand, ExitCommand, SetWindowCommand>;
+	class Command: public CommandVariant, public AddVisit
+	{
+	public:
+		using CommandVariant::CommandVariant;
+		using AddVisit::visit;
 	};
 
 	struct CommandMessage
 	{
-		IG::Semaphore *semPtr{};
-		union Args
-		{
-			struct RunArgs
-			{
-				EmuVideo *video;
-				EmuAudio *audio;
-				uint8_t frames;
-				bool skipForward;
-			} run;
-		} args{};
-		Command command{Command::UNSET};
+		std::binary_semaphore* semPtr{};
+		Command command{SuspendCommand{}};
 
-		constexpr CommandMessage() {}
-		constexpr CommandMessage(Command command, IG::Semaphore *semPtr = nullptr):
-			semPtr{semPtr}, command{command} {}
-		constexpr CommandMessage(Command command, EmuVideo *video, EmuAudio *audio, uint8_t frames, bool skipForward = false):
-			args{video, audio, frames, skipForward}, command{command} {}
-		explicit operator bool() const { return command != Command::UNSET; }
-		void setReplySemaphore(IG::Semaphore *semPtr_) { assert(!semPtr); semPtr = semPtr_; };
+		void setReplySemaphore(std::binary_semaphore *semPtr_) { assert(!semPtr); semPtr = semPtr_; };
 	};
 
-	EmuSystemTask(EmuApp &);
-	void start();
-	void pause();
+	struct SuspendContext
+	{
+		SuspendContext() = default;
+		SuspendContext(EmuSystemTask* taskPtr):taskPtr{taskPtr} {}
+		SuspendContext(SuspendContext&& rhs) noexcept { *this = std::move(rhs); }
+		SuspendContext& operator=(SuspendContext&& rhs)
+		{
+			taskPtr = std::exchange(rhs.taskPtr, nullptr);
+			return *this;
+		}
+
+		void resume()
+		{
+			if(taskPtr)
+				std::exchange(taskPtr, nullptr)->resume();
+		}
+
+		~SuspendContext() { resume(); }
+
+	private:
+		EmuSystemTask* taskPtr{};
+	};
+
+	EmuSystemTask(EmuApp&);
+	void start(Window&);
+	[[nodiscard]]
+	SuspendContext setWindow(Window&);
+	[[nodiscard]]
+	SuspendContext suspend();
 	void stop();
-	void runFrame(EmuVideo *video, EmuAudio *audio, uint8_t frames, bool skipForward = false);
-	void sendVideoFormatChangedReply(EmuVideo &video);
-	void sendFrameFinishedReply(EmuVideo &video);
-	void sendScreenshotReply(int num, bool success);
-	EmuApp &app() const;
+	void sendVideoFormatChangedReply(EmuVideo&);
+	void sendFrameFinishedReply(EmuVideo&);
+	void sendScreenshotReply(bool success);
+	auto threadId() const { return threadId_; }
+	Window &window() { return *winPtr; }
 
 private:
-	EmuApp *appPtr{};
-	Base::MessagePort<CommandMessage> commandPort{"EmuSystemTask Command"};
-	bool started = false;
+	EmuApp &app;
+	Window *winPtr{};
+	MessagePort<CommandMessage> commandPort{"EmuSystemTask Command"};
+	std::thread taskThread;
+	ThreadId threadId_{};
+	std::binary_semaphore suspendSem{0};
+	bool isSuspended{};
+
+	void resume();
 };
+
+}

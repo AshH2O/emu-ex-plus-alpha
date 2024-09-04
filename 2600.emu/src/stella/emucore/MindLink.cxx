@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -22,10 +22,6 @@
 MindLink::MindLink(Jack jack, const Event& event, const System& system)
   : Controller(jack, event, system, Controller::Type::MindLink)
 {
-  setPin(DigitalPin::One, true);
-  setPin(DigitalPin::Two, true);
-  setPin(DigitalPin::Three, true);
-  setPin(DigitalPin::Four, true);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -39,19 +35,20 @@ void MindLink::update()
   if(!myMouseEnabled)
     return;
 
-  myMindlinkPos = (myMindlinkPos & 0x3fffffff) +
-                  (myEvent.get(Event::MouseAxisXMove) << 3);
-  if(myMindlinkPos < 0x2800)
-    myMindlinkPos = 0x2800;
-  if(myMindlinkPos >= 0x3800)
-    myMindlinkPos = 0x3800;
-
-  myMindlinkShift = 1;
-  nextMindlinkBit();
-
+  myMindlinkPos = BSPF::clamp((myMindlinkPos & ~TRIGGER_VALUE) +
+                              myEvent.get(Event::MouseAxisXMove) * MOUSE_SENSITIVITY,
+                              MIN_POS, MAX_POS);
+  // Additional option for trigger (NOT existing in orginal hardware!)
   if(myEvent.get(Event::MouseButtonLeftValue) ||
      myEvent.get(Event::MouseButtonRightValue))
-    myMindlinkPos |= 0x4000;  // this bit starts a game
+    myMindlinkPos = myMindlinkPos | TRIGGER_VALUE; // starts game, calibration and reverse
+
+//#ifdef DEBUG_BUILD
+//  cerr << std::hex << myMindlinkPos << endl;
+//#endif
+
+  myMindlinkShift = 1; // start transfer with least significant bit
+  nextMindlinkBit();
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -63,8 +60,8 @@ void MindLink::nextMindlinkBit()
     setPin(DigitalPin::Four, false);
     if(myMindlinkPos & myMindlinkShift)
       setPin(DigitalPin::Four, true);
-    myMindlinkShift <<= 1;
-	}
+    myMindlinkShift <<= 1; // next bit
+  }
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -79,3 +76,4 @@ bool MindLink::setMouseControl(
                    (xid != -1 || yid != -1);
   return true;
 }
+

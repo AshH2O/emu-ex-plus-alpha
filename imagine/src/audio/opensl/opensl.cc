@@ -13,13 +13,15 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "OpenSL"
 #include <imagine/audio/opensl/OpenSLESOutputStream.hh>
+#include <imagine/audio/OutputStream.hh>
 #include <imagine/audio/Manager.hh>
 #include <imagine/logger/logger.h>
 
 namespace IG::Audio
 {
+
+constexpr SystemLogger log{"OpenSL"};
 
 OpenSLESOutputStream::OpenSLESOutputStream(const Manager &manager)
 {
@@ -28,7 +30,7 @@ OpenSLESOutputStream::OpenSLESOutputStream(const Manager &manager)
 	SLresult result = slCreateEngine(&slE, 0, nullptr, 0, nullptr, nullptr);
 	if(result != SL_RESULT_SUCCESS)
 	{
-		logErr("error creating engine");
+		log.error("error creating engine");
 		return;
 	}
 	result = (*slE)->Realize(slE, SL_BOOLEAN_FALSE);
@@ -44,7 +46,7 @@ OpenSLESOutputStream::OpenSLESOutputStream(const Manager &manager)
 	result = (*outMix)->Realize(outMix, SL_BOOLEAN_FALSE);
 	if(result != SL_RESULT_SUCCESS)
 	{
-		logErr("error creating output mix");
+		log.error("error creating output mix");
 		return;
 	}
 	this->slE = slE;
@@ -65,24 +67,24 @@ OpenSLESOutputStream::~OpenSLESOutputStream()
 	(*slE)->Destroy(slE);
 }
 
-IG::ErrorCode OpenSLESOutputStream::open(OutputStreamConfig config)
+StreamError OpenSLESOutputStream::open(OutputStreamConfig config)
 {
 	if(player)
 	{
-		logWarn("stream already open");
+		log.warn("stream already open");
 		return {};
 	}
 	if(!*this) [[unlikely]]
 	{
-		return {EINVAL};
+		return StreamError::NotInitialized;
 	}
-	auto format = config.format();
-	logMsg("creating stream %dHz, %d channels, %u frames/buffer", format.rate, format.channels, bufferFrames);
+	auto format = config.format;
+	log.info("creating stream {}Hz, {} channels, {} frames/buffer", format.rate, format.channels, bufferFrames);
 	SLDataLocator_AndroidSimpleBufferQueue buffQLoc{SL_DATALOCATOR_ANDROIDSIMPLEBUFFERQUEUE, outputBuffers};
 	SLDataFormat_PCM slFormat
 	{
 		SL_DATAFORMAT_PCM, (SLuint32)format.channels, (SLuint32)format.rate * 1000, // as milliHz
-		format.sample.bits(), format.sample.bits(),
+		(SLuint32)format.sample.bits(), (SLuint32)format.sample.bits(),
 		format.channels == 1 ? SL_SPEAKER_FRONT_CENTER : SL_SPEAKER_FRONT_LEFT | SL_SPEAKER_FRONT_RIGHT,
 		SL_BYTEORDER_LITTLEENDIAN
 	};
@@ -100,8 +102,8 @@ IG::ErrorCode OpenSLESOutputStream::open(OutputStreamConfig config)
 	}
 	else if(format.sample.isFloat()) [[unlikely]]
 	{
-		logErr("floating-point samples need API level 21+");
-		return {EINVAL};
+		log.error("floating-point samples need API level 21+");
+		return StreamError::BadArgument;
 	}
 	SLDataLocator_OutputMix outMixLoc{SL_DATALOCATOR_OUTPUTMIX, outMix};
 	SLDataSink sink{&outMixLoc, nullptr};
@@ -113,9 +115,9 @@ IG::ErrorCode OpenSLESOutputStream::open(OutputStreamConfig config)
 	result = (*slI)->CreateAudioPlayer(slI, &player, &audioSrc, &sink, std::size(ids), ids, req);
 	if(result != SL_RESULT_SUCCESS) [[unlikely]]
 	{
-		logErr("CreateAudioPlayer returned 0x%X", (uint32_t)result);
+		log.error("CreateAudioPlayer returned {:#X}", result);
 		player = nullptr;
-		return {EINVAL};
+		return StreamError::BadArgument;
 	}
 	result = (*player)->Realize(player, SL_BOOLEAN_FALSE);
 	assert(result == SL_RESULT_SUCCESS);
@@ -123,7 +125,7 @@ IG::ErrorCode OpenSLESOutputStream::open(OutputStreamConfig config)
 	assert(result == SL_RESULT_SUCCESS);
 	result = (*player)->GetInterface(player, SL_IID_ANDROIDSIMPLEBUFFERQUEUE, &slBuffQI);
 	assert(result == SL_RESULT_SUCCESS);
-	onSamplesNeeded = config.onSamplesNeeded();
+	onSamplesNeeded = config.onSamplesNeeded;
 	bufferBytes = format.framesToBytes(bufferFrames);
 	buffer = std::make_unique<uint8_t[]>(bufferBytes);
 	result = (*slBuffQI)->RegisterCallback(slBuffQI,
@@ -133,7 +135,7 @@ IG::ErrorCode OpenSLESOutputStream::open(OutputStreamConfig config)
 			thisPtr->doBufferCallback(queue);
 		}, this);
 	assert(result == SL_RESULT_SUCCESS);
-	if(config.startPlaying())
+	if(config.startPlaying)
 		play();
 	return {};
 }
@@ -145,8 +147,8 @@ void OpenSLESOutputStream::play()
 	if(SLresult result = (*playerI)->SetPlayState(playerI, SL_PLAYSTATE_PLAYING);
 		result == SL_RESULT_SUCCESS)
 	{
-		logMsg("started playback");
-		isPlaying_ = 1;
+		log.info("started playback");
+		isPlaying_ = true;
 		if(!bufferQueued)
 		{
 			doBufferCallback(slBuffQI);
@@ -155,7 +157,7 @@ void OpenSLESOutputStream::play()
 	}
 	else
 	{
-		logErr("SetPlayState(SL_PLAYSTATE_PLAYING) returned 0x%X", (uint32_t)result);
+		log.error("SetPlayState(SL_PLAYSTATE_PLAYING) returned {:#X}", result);
 	}
 }
 
@@ -163,20 +165,20 @@ void OpenSLESOutputStream::pause()
 {
 	if(!player || !isPlaying_) [[unlikely]]
 		return;
-	logMsg("pausing playback");
+	log.info("pausing playback");
 	if(SLresult result = (*playerI)->SetPlayState(playerI, SL_PLAYSTATE_PAUSED);
 		result != SL_RESULT_SUCCESS)
 	{
-		logWarn("SetPlayState(SL_PLAYSTATE_PAUSED) returned 0x%X", (uint32_t)result);
+		log.warn("SetPlayState(SL_PLAYSTATE_PAUSED) returned {:#X}", result);
 	}
-	isPlaying_ = 0;
+	isPlaying_ = false;
 }
 
 void OpenSLESOutputStream::close()
 {
 	if(!player)
 		return;
-	logMsg("closing player");
+	log.info("closing player");
 	isPlaying_ = false;
 	slBuffQI = nullptr;
 	(*player)->Destroy(player);
@@ -189,12 +191,12 @@ void OpenSLESOutputStream::flush()
 {
 	if(!isOpen())
 		return;
-	logMsg("clearing queued samples");
+	log.info("clearing queued samples");
 	pause();
 	if(SLresult result = (*slBuffQI)->Clear(slBuffQI);
 		result != SL_RESULT_SUCCESS)
 	{
-		logWarn("Clear returned 0x%X", (uint32_t)result);
+		log.warn("Clear returned {:#X}", result);
 	}
 	bufferQueued = false;
 }
@@ -220,7 +222,7 @@ void OpenSLESOutputStream::doBufferCallback(SLAndroidSimpleBufferQueueItf queue)
 	if(SLresult result = (*queue)->Enqueue(queue, buffer.get(), bufferBytes);
 			result != SL_RESULT_SUCCESS)
 		{
-			logWarn("Enqueue returned 0x%X", (uint32_t)result);
+			log.warn("Enqueue returned {:#X}", result);
 		}
 }
 

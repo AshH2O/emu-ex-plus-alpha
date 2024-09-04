@@ -40,6 +40,7 @@
 #include "export.h"
 #include "lib.h"
 #include "monitor.h"
+#include "ram.h"
 #include "snapshot.h"
 #include "types.h"
 #include "util.h"
@@ -143,7 +144,8 @@ static io_source_t pagefox_device = {
     pagefox_dump,           /* device state information dump function */
     CARTRIDGE_PAGEFOX,      /* cartridge ID */
     IO_PRIO_NORMAL,         /* normal priority, device read needs to be checked for collisions */
-    0                       /* insertion order, gets filled in by the registration function */
+    0,                      /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE          /* NO mirroring */
 };
 
 static io_source_list_t *pagefox_list_item = NULL;
@@ -191,6 +193,27 @@ void pagefox_romh_store(uint16_t addr, uint8_t value)
 
 /* ---------------------------------------------------------------------*/
 
+/* FIXME: this still needs to be tweaked to match the hardware */
+static RAMINITPARAM ramparam = {
+    .start_value = 255,
+    .value_invert = 2,
+    .value_offset = 1,
+
+    .pattern_invert = 0x100,
+    .pattern_invert_value = 255,
+
+    .random_start = 0,
+    .random_repeat = 0,
+    .random_chance = 0,
+};
+
+void pagefox_powerup(void)
+{
+    if (pagefox_ram) {
+        ram_init_with_pattern(pagefox_ram, PAGEFOX_RAMSIZE, &ramparam);
+    }
+}
+
 void pagefox_config_init(void)
 {
     pagefox_io1_store(0xde80, 0x00);
@@ -224,7 +247,9 @@ int pagefox_bin_attach(const char *filename, uint8_t *rawcart)
     if (util_file_load(filename, rawcart, 0x10000, UTIL_FILE_LOAD_SKIP_ADDRESS) < 0) {
         return -1;
     }
-    pagefox_ram = lib_malloc(PAGEFOX_RAMSIZE);
+    if (pagefox_ram == NULL) {
+        pagefox_ram = lib_malloc(PAGEFOX_RAMSIZE);
+    }
     return pagefox_common_attach();
 }
 
@@ -245,7 +270,9 @@ int pagefox_crt_attach(FILE *fd, uint8_t *rawcart)
             return -1;
         }
     }
-    pagefox_ram = lib_malloc(PAGEFOX_RAMSIZE);
+    if (pagefox_ram == NULL) {
+        pagefox_ram = lib_malloc(PAGEFOX_RAMSIZE);
+    }
     return pagefox_common_attach();
 }
 
@@ -255,6 +282,7 @@ void pagefox_detach(void)
     io_source_unregister(pagefox_list_item);
     pagefox_list_item = NULL;
     lib_free(pagefox_ram);
+    pagefox_ram = NULL;
 }
 
 /* ---------------------------------------------------------------------*/
@@ -270,7 +298,7 @@ void pagefox_detach(void)
    ARRAY | ROMH    |   0.0+  | 32768 BYTES of ROMH data
  */
 
-static char snap_module_name[] = "CARTPAGEFOX";
+static const char snap_module_name[] = "CARTPAGEFOX";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   1
 
@@ -331,6 +359,7 @@ int pagefox_snapshot_read_module(snapshot_t *s)
         || SMR_BA(m, roml_banks, 0x8000) < 0
         || SMR_BA(m, romh_banks, 0x8000) < 0) {
         lib_free(pagefox_ram);
+        pagefox_ram = NULL;
         goto fail;
     }
 

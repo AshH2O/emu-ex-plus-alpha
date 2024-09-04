@@ -17,11 +17,11 @@
 
 #include <imagine/config/defs.hh>
 
-#if defined CONFIG_BASE_X11
+#if defined CONFIG_PACKAGE_X11
 #include <imagine/base/x11/XScreen.hh>
-#elif defined CONFIG_BASE_ANDROID
+#elif defined __ANDROID__
 #include <imagine/base/android/AndroidScreen.hh>
-#elif defined CONFIG_BASE_IOS
+#elif defined CONFIG_OS_IOS
 #include <imagine/base/iphone/IOSScreen.hh>
 #elif defined CONFIG_BASE_MACOSX
 #include <imagine/base/osx/CocoaScreen.hh>
@@ -31,49 +31,55 @@
 #include <imagine/base/ApplicationContext.hh>
 #include <imagine/time/Time.hh>
 #include <imagine/util/DelegateFuncSet.hh>
-#include <imagine/util/typeTraits.hh>
-#include <vector>
+#include <imagine/util/Point2D.hh>
+#include <span>
 
-namespace Base
+namespace IG
 {
-using namespace IG;
 
 class Screen : public ScreenImpl
 {
 public:
-  static constexpr double DISPLAY_RATE_DEFAULT = 0;
-
 	Screen(ApplicationContext, InitParams);
 	int width() const;
 	int height() const;
+	WSize sizePx() const { return {width(), height()}; }
 	bool isPosted() const;
 	bool addOnFrame(OnFrameDelegate, int priority = 0);
 	bool removeOnFrame(OnFrameDelegate);
 	bool containsOnFrame(OnFrameDelegate) const;
-	uint32_t onFrameDelegates() const;
-	FrameParams makeFrameParams(FrameTime timestamp) const;
+	size_t onFrameDelegates() const;
+	void setVariableFrameTime(bool);
+	void setFrameEventsOnThisThread();
+	void removeFrameEvents();
+	FrameParams makeFrameParams(SteadyClockTimePoint timestamp) const;
 	bool frameRateIsReliable() const;
-	double frameRate() const;
-	FloatSeconds frameTime() const;
-	void setFrameRate(double rate);
-	std::vector<double> supportedFrameRates(ApplicationContext) const;
+	FrameRate frameRate() const;
+	SteadyClockTime frameTime() const;
+	SteadyClockTime presentationDeadline() const;
+	void setFrameRate(FrameRate);
+	std::span<const FrameRate> supportedFrameRates() const;
 	void setFrameInterval(int interval);
 	static bool supportsFrameInterval();
 	bool supportsTimestamps() const;
-	bool frameUpdate(FrameTime timestamp);
+	bool frameUpdate(SteadyClockTimePoint timestamp);
 	void setActive(bool active);
+	ApplicationContext appContext() const { return appCtx; }
+	Application &application() const { return appContext().application(); }
 
 private:
 	DelegateFuncSet<OnFrameDelegate> onFrameDelegate{};
 	const WindowContainer *windowsPtr{};
+	ApplicationContext appCtx;
 	bool framePosted{};
 	bool isActive{true};
 
-	void runOnFrameDelegates(FrameTime timestamp);
+	void runOnFrameDelegates(SteadyClockTimePoint timestamp);
 	void postFrame();
 	void unpostFrame();
 	void postFrameTimer();
 	void unpostFrameTimer();
+	bool shouldUpdateFrameTimer(const FrameTimer&, bool newVariableFrameTimeValue);
 };
 
 }

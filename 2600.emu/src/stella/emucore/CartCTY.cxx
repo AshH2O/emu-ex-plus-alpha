@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -24,18 +24,19 @@
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 CartridgeCTY::CartridgeCTY(const ByteBuffer& image, size_t size,
                            const string& md5, const Settings& settings)
-  : Cartridge(settings, md5)
+  : Cartridge(settings, md5),
+    myImage{make_unique<uInt8[]>(32_KB)}
 {
   // Copy the ROM image into my buffer
-  std::copy_n(image.get(), std::min(myImage.size(), size), myImage.begin());
-  createCodeAccessBase(myImage.size());
+  std::copy_n(image.get(), std::min(32_KB, size), myImage.get());
+  createRomAccessArrays(32_KB);
 
   // Default to no tune data in case user is utilizing an old ROM
   myTuneData.fill(0);
 
   // Extract tune data if it exists
-  if(size > myImage.size())
-    std::copy_n(image.get() + myImage.size(), size - myImage.size(), myTuneData.begin());
+  if(size > 32_KB)
+    std::copy_n(image.get() + 32_KB, size - 32_KB, myTuneData.begin());
 
   // Point to the first tune
   myFrequencyImage = myTuneData.data();
@@ -64,12 +65,28 @@ void CartridgeCTY::reset()
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+void CartridgeCTY::consoleChanged(ConsoleTiming timing)
+{
+  constexpr double NTSC  = 1193191.66666667;  // NTSC  6507 clock rate
+  constexpr double PAL   = 1182298.0;         // PAL   6507 clock rate
+  constexpr double SECAM = 1187500.0;         // SECAM 6507 clock rate
+
+  switch(timing)
+  {
+    case ConsoleTiming::ntsc:   myClockRate = NTSC;   break;
+    case ConsoleTiming::pal:    myClockRate = PAL;    break;
+    case ConsoleTiming::secam:  myClockRate = SECAM;  break;
+    default:  break;  // satisfy compiler
+  }
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 void CartridgeCTY::install(System& system)
 {
   mySystem = &system;
 
   // Map all RAM accesses to call peek and poke
-  System::PageAccess access(this, System::PageAccessType::READ);
+  const System::PageAccess access(this, System::PageAccessType::READ);
   for(uInt16 addr = 0x1000; addr < 0x1080; addr += System::PAGE_SIZE)
     mySystem->setPageAccess(addr, access);
 
@@ -80,13 +97,13 @@ void CartridgeCTY::install(System& system)
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 uInt8 CartridgeCTY::peek(uInt16 address)
 {
-  uInt16 peekAddress = address;
+  const uInt16 peekAddress = address;
   address &= 0x0FFF;
-  uInt8 peekValue = myImage[myBankOffset + address];
+  const uInt8 peekValue = myImage[myBankOffset + address];
 
   // In debugger/bank-locked mode, we ignore all hotspots and in general
   // anything that can change the internal state of the cart
-  if(bankLocked())
+  if(hotspotsLocked())
     return peekValue;
 
   // Check for aliasing to 'LDA #$F2'
@@ -173,7 +190,7 @@ uInt8 CartridgeCTY::peek(uInt16 address)
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 bool CartridgeCTY::poke(uInt16 address, uInt8 value)
 {
-  uInt16 pokeAddress = address;
+  const uInt16 pokeAddress = address;
   address &= 0x0FFF;
 
   if(address < 0x0040)  // Write port is at $1000 - $103F (64 bytes)
@@ -229,9 +246,9 @@ bool CartridgeCTY::poke(uInt16 address, uInt8 value)
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-bool CartridgeCTY::bank(uInt16 bank)
+bool CartridgeCTY::bank(uInt16 bank, uInt16)
 {
-  if(bankLocked()) return false;
+  if(hotspotsLocked()) return false;
 
   // Remember what bank we're in
   myBankOffset = bank << 12;
@@ -240,7 +257,9 @@ bool CartridgeCTY::bank(uInt16 bank)
   System::PageAccess access(this, System::PageAccessType::READ);
   for(uInt16 addr = 0x1080; addr < 0x2000; addr += System::PAGE_SIZE)
   {
-    access.codeAccessBase = &myCodeAccessBase[myBankOffset + (addr & 0x0FFF)];
+    access.romAccessBase = &myRomAccessBase[myBankOffset + (addr & 0x0FFF)];
+    access.romPeekCounter = &myRomAccessCounter[myBankOffset + (addr & 0x0FFF)];
+    access.romPokeCounter = &myRomAccessCounter[myBankOffset + (addr & 0x0FFF) + myAccessSize];
     mySystem->setPageAccess(addr, access);
   }
   return myBankChanged = true;
@@ -253,7 +272,7 @@ uInt16 CartridgeCTY::getBank(uInt16) const
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-uInt16 CartridgeCTY::bankCount() const
+uInt16 CartridgeCTY::romBankCount() const
 {
   return 8;
 }
@@ -277,10 +296,10 @@ bool CartridgeCTY::patch(uInt16 address, uInt8 value)
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-const uInt8* CartridgeCTY::getImage(size_t& size) const
+const ByteBuffer& CartridgeCTY::getImage(size_t& size) const
 {
-  size = myImage.size();
-  return myImage.data();
+  size = 32_KB;
+  return myImage;
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -338,9 +357,9 @@ bool CartridgeCTY::load(Serializer& in)
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-void CartridgeCTY::setNVRamFile(const string& nvramdir, const string& romfile)
+void CartridgeCTY::setNVRamFile(const string& nvramfile)
 {
-  myEEPROMFile = nvramdir + romfile + "_eeprom.dat";
+  myEEPROMFile = nvramfile + "_eeprom.dat";
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -363,14 +382,14 @@ uInt8 CartridgeCTY::ramReadWrite()
        1 s for write).
   */
 
-  if(bankLocked()) return 0xff;
+  if(hotspotsLocked()) return 0xff;
 
   // First access sets the timer
   if(myRamAccessTimeout == 0)
   {
     // Opcode and value in form of XXXXYYYY (from myOperationType), where:
     //    XXXX = index and YYYY = operation
-    uInt8 index = myOperationType >> 4;
+    const uInt8 index = myOperationType >> 4;
     switch(myOperationType & 0xf)
     {
       case 1:  // Load tune (index = tune)
@@ -401,6 +420,9 @@ uInt8 CartridgeCTY::ramReadWrite()
         // Add 1 s delay for write
         myRamAccessTimeout = TimerManager::getTicks() + 1000000;
         wipeAllScores();
+        break;
+
+      default:  // satisfy compiler
         break;
     }
     // Bit 6 is 1, busy
@@ -470,7 +492,7 @@ void CartridgeCTY::updateTune()
 //  b       NewAddress
 
   myTunePosition += 1;
-  uInt16 songPosition = (myTunePosition - 1) *3;
+  const uInt16 songPosition = (myTunePosition - 1) *3;
 
   uInt8 note = myFrequencyImage[songPosition + 0];
   if (note)
@@ -537,7 +559,7 @@ void CartridgeCTY::saveScore(uInt8 index)
     catch(...)
     {
       // Maybe add logging here that save failed?
-      cerr << name() << ": ERROR saving score table " << int(index) << endl;
+      cerr << name() << ": ERROR saving score table " << static_cast<int>(index) << endl;
     }
   }
 }
@@ -566,13 +588,13 @@ void CartridgeCTY::wipeAllScores()
 inline void CartridgeCTY::updateMusicModeDataFetchers()
 {
   // Calculate the number of cycles since the last update
-  uInt32 cycles = uInt32(mySystem->cycles() - myAudioCycles);
+  const uInt32 cycles = static_cast<uInt32>(mySystem->cycles() - myAudioCycles);
   myAudioCycles = mySystem->cycles();
 
   // Calculate the number of CTY OSC clocks since the last update
-  double clocks = ((20000.0 * cycles) / 1193191.66666667) + myFractionalClocks;
-  uInt32 wholeClocks = uInt32(clocks);
-  myFractionalClocks = clocks - double(wholeClocks);
+  const double clocks = ((20000.0 * cycles) / myClockRate) + myFractionalClocks;
+  const uInt32 wholeClocks = static_cast<uInt32>(clocks);
+  myFractionalClocks = clocks - static_cast<double>(wholeClocks);
 
   // Let's update counters and flags of the music mode data fetchers
   if(wholeClocks > 0)

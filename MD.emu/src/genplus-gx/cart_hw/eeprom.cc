@@ -20,6 +20,7 @@
  ***************************************************************************/
 
 #include "shared.h"
+#include <emuframework/EmuSystem.hh>
 
 #define GAME_CNT 30
 
@@ -83,8 +84,6 @@ static const T_GAME_ENTRY database[GAME_CNT] =
 
 void eeprom_init()
 {
-  int i = 0;
-
   /* initialize eeprom */
   memset(&eeprom, 0, sizeof(T_EEPROM));
   eeprom.sda = eeprom.old_sda = 1;
@@ -396,6 +395,7 @@ void eeprom_write(unsigned int address, unsigned int data, int word_access)
           uint16 sram_address = (eeprom.slave_mask | eeprom.word_address) & 0xFFFF;
           if (eeprom.old_sda) sram.sram[sram_address] |= (1 << (8 - eeprom.cycles));
           else sram.sram[sram_address] &= ~(1 << (8 - eeprom.cycles));
+          EmuEx::gSystem().onBackupMemoryWritten();
 
           if (eeprom.cycles == 8) 
           {

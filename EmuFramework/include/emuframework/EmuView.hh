@@ -15,34 +15,54 @@
 	You should have received a copy of the GNU General Public License
 	along with EmuFramework.  If not, see <http://www.gnu.org/licenses/> */
 
+#include <emuframework/config.hh>
 #include <imagine/gui/View.hh>
-#ifdef CONFIG_EMUFRAMEWORK_AUDIO_STATS
+#include <imagine/time/Time.hh>
 #include <imagine/gfx/GfxText.hh>
-#endif
+#include <imagine/gfx/Quads.hh>
 
+namespace EmuEx
+{
+
+using namespace IG;
 class EmuInputView;
 class EmuVideoLayer;
+class EmuSystem;
+struct FrameTimeStats;
 
 class EmuView : public View
 {
 public:
-	EmuView();
-	EmuView(ViewAttachParams attach, EmuVideoLayer *layer);
+	EmuView(ViewAttachParams, EmuVideoLayer *, EmuSystem &);
 	void place() final;
 	void prepareDraw() final;
-	void draw(Gfx::RendererCommands &cmds) final;
-	bool inputEvent(Input::Event e) final;
+	void draw(Gfx::RendererCommands &__restrict__, ViewDrawParams p = {}) const final;
+	void drawframeTimeStatsText(Gfx::RendererCommands &__restrict__);
 	bool hasLayer() const { return layer; }
-	void setLayoutInputView(EmuInputView *view);
-	void updateAudioStats(unsigned underruns, unsigned overruns, unsigned callbacks, double avgCallbackFrames, unsigned frames);
+	void setLayoutInputView(EmuInputView *view) { inputView = view; }
+	void updateFrameTimeStats(FrameTimeStats, SteadyClockTimePoint currentFrameTimestamp);
+	void updateAudioStats(int underruns, int overruns, int callbacks, double avgCallbackFrames, int frames);
 	void clearAudioStats();
 	EmuVideoLayer *videoLayer() const { return layer; }
+	auto& system(this auto&& self) { return *self.sysPtr; }
 
 private:
 	EmuVideoLayer *layer{};
 	EmuInputView *inputView{};
+	EmuSystem *sysPtr{};
+	struct FrameTimeStatsUI
+	{
+		Gfx::Text text;
+		Gfx::IQuads bgQuads;
+		WRect rect{};
+	};
+	ConditionalMember<enableFrameTimeStats, FrameTimeStatsUI> frameTimeStats;
 	#ifdef CONFIG_EMUFRAMEWORK_AUDIO_STATS
 	Gfx::Text audioStatsText{};
-	Gfx::GCRect audioStatsRect{};
+	WRect audioStatsRect{};
 	#endif
+
+	void placeFrameTimeStats();
 };
+
+}

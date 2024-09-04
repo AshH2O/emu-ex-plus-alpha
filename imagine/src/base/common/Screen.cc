@@ -13,7 +13,6 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "Screen"
 #include <imagine/base/ApplicationContext.hh>
 #include <imagine/base/Application.hh>
 #include <imagine/base/Screen.hh>
@@ -21,15 +20,16 @@
 #include <imagine/time/Time.hh>
 #include <imagine/util/utility.h>
 #include <imagine/util/algorithm.h>
-#include <imagine/util/math/int.hh>
 
-namespace Base
+namespace IG
 {
+
+constexpr SystemLogger log{"Screen"};
 
 Screen::Screen(ApplicationContext ctx, InitParams params):
 	ScreenImpl{ctx, params},
-	windowsPtr{&ctx.application().windows()}
-{}
+	windowsPtr{&ctx.application().windows()},
+	appCtx{ctx} {}
 
 bool Screen::addOnFrame(OnFrameDelegate del, int priority)
 {
@@ -52,21 +52,17 @@ bool Screen::containsOnFrame(OnFrameDelegate del) const
 	return onFrameDelegate.contains(del);
 }
 
-void Screen::runOnFrameDelegates(FrameTime timestamp)
+void Screen::runOnFrameDelegates(SteadyClockTimePoint timestamp)
 {
+	postFrame();
 	auto params = makeFrameParams(timestamp);
 	onFrameDelegate.runAll([&](OnFrameDelegate del)
-		{
-			return del(params);
-		});
-	if(onFrameDelegate.size())
 	{
-		//logDMsg("posting next frame");
-		postFrame();
-	}
+		return del(params);
+	});
 }
 
-uint32_t Screen::onFrameDelegates() const
+size_t Screen::onFrameDelegates() const
 {
 	return onFrameDelegate.size();
 }
@@ -76,9 +72,9 @@ bool Screen::isPosted() const
 	return framePosted;
 }
 
-bool Screen::frameUpdate(FrameTime timestamp)
+bool Screen::frameUpdate(SteadyClockTimePoint timestamp)
 {
-	assert(timestamp.count());
+	assert(hasTime(timestamp));
 	assert(isActive);
 	framePosted = false;
 	if(!onFrameDelegate.size())
@@ -98,34 +94,34 @@ void Screen::setActive(bool active)
 {
 	if(active && !isActive)
 	{
-		logMsg("screen:%p activated", this);
+		log.info("screen:{} activated", (void*)this);
 		isActive = true;
 		if(onFrameDelegate.size())
 			postFrame();
 	}
 	else if(!active && isActive)
 	{
-		logMsg("screen:%p deactivated", this);
+		log.info("screen:{} deactivated", (void*)this);
 		isActive = false;
 		unpostFrame();
 	}
 }
 
-FrameParams Screen::makeFrameParams(FrameTime timestamp) const
+FrameParams Screen::makeFrameParams(SteadyClockTimePoint timestamp) const
 {
-	return {timestamp, frameTime()};
+	return {.timestamp = timestamp, .frameTime = frameTime(), .timeSource = FrameTimeSource::Screen};
 }
 
 void Screen::postFrame()
 {
 	if(!isActive) [[unlikely]]
 	{
-		logMsg("skipped posting inactive screen:%p", this);
+		log.info("skipped posting inactive screen:{}", (void*)this);
 		return;
 	}
 	if(framePosted)
 		return;
-	//logMsg("posting frame");
+	//log.info("posting frame");
 	framePosted = true;
 	postFrameTimer();
 }
@@ -137,6 +133,14 @@ void Screen::unpostFrame()
 	framePosted = false;
 	unpostFrameTimer();
 }
+
+bool Screen::shouldUpdateFrameTimer(const FrameTimer& frameTimer, bool newVariableFrameTimeValue)
+{
+	return (newVariableFrameTimeValue && !std::holds_alternative<SimpleFrameTimer>(frameTimer)) ||
+		(!newVariableFrameTimeValue && std::holds_alternative<SimpleFrameTimer>(frameTimer));
+}
+
+[[gnu::weak]] SteadyClockTime Screen::presentationDeadline() const { return {}; }
 
 
 }

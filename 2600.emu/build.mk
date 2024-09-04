@@ -13,18 +13,23 @@ CPPFLAGS += -I$(projectPath)/src \
 -I$(projectPath)/src/stella/common/tv_filters \
 -I$(projectPath)/src/stella/gui
 
+CFLAGS_WARN += -Wno-unused-parameter
+
 stellaSrc := AtariVox.cxx \
 Bankswitch.cxx \
 Booster.cxx \
 Cart0840.cxx \
+Cart0FA0.cxx \
 Cart2K.cxx \
 Cart3E.cxx \
 Cart3EPlus.cxx \
+Cart3EX.cxx \
 Cart3F.cxx \
 Cart4A50.cxx \
 Cart4K.cxx \
 Cart4KSC.cxx \
 CartAR.cxx \
+CartARM.cxx \
 CartBF.cxx \
 CartBFSC.cxx \
 CartBUS.cxx \
@@ -32,19 +37,18 @@ CartCDF.cxx \
 CartCM.cxx \
 CartCTY.cxx \
 CartCV.cxx \
-CartCVPlus.cxx \
 Cart.cxx \
-CartDASH.cxx \
+CartCreator.cxx \
 CartDetector.cxx \
 CartDF.cxx \
 CartDFSC.cxx \
 CartDPC.cxx \
 CartDPCPlus.cxx \
 CartE0.cxx \
-CartE78K.cxx \
 CartE7.cxx \
 CartEF.cxx \
 CartEFSC.cxx \
+CartEnhanced.cxx \
 CartF0.cxx \
 CartF4.cxx \
 CartF4SC.cxx \
@@ -57,8 +61,9 @@ CartFA.cxx \
 CartFC.cxx \
 CartFE.cxx \
 CartMDM.cxx \
-CartMNetwork.cxx \
+CartMVC.cxx \
 CartSB.cxx \
+CartTVBoy.cxx \
 CartUA.cxx \
 CartWD.cxx \
 CartX07.cxx \
@@ -69,7 +74,6 @@ ControllerDetector.cxx \
 DispatchResult.cxx \
 Driving.cxx \
 EmulationTiming.cxx \
-FSNode.cxx \
 Genesis.cxx \
 Joystick.cxx \
 Keyboard.cxx \
@@ -81,15 +85,18 @@ MD5.cxx \
 MindLink.cxx \
 MT24LC256.cxx \
 Paddles.cxx \
+PlusROM.cxx \
 PointingDevice.cxx \
 Props.cxx \
 PropsSet.cxx \
+QuadTari.cxx \
 SaveKey.cxx \
 Serializer.cxx \
 Settings.cxx \
 Switches.cxx \
 System.cxx \
 Thumbulator.cxx \
+tia/AnalogReadout.cxx \
 tia/Audio.cxx \
 tia/AudioChannel.cxx \
 tia/Background.cxx \
@@ -97,7 +104,6 @@ tia/Ball.cxx \
 tia/DrawCounterDecodes.cxx \
 tia/LatchedInput.cxx \
 tia/Missile.cxx \
-tia/PaddleReader.cxx \
 tia/Player.cxx \
 tia/Playfield.cxx \
 tia/TIA.cxx \
@@ -110,7 +116,6 @@ stellaPath := stella/emucore
 SRC += main/Main.cc \
 main/options.cc \
 main/input.cc \
-main/EmuControls.cc \
 main/EmuMenuViews.cc \
 main/SoundEmuEx.cc \
 main/FrameBuffer.cc \
@@ -119,6 +124,8 @@ main/FSNodeEmuEx.cc \
 stella/common/AudioQueue.cxx \
 stella/common/AudioSettings.cxx \
 stella/common/Base.cxx \
+stella/common/DevSettingsHandler.cxx \
+stella/common/PaletteHandler.cxx \
 stella/common/RewindManager.cxx \
 stella/common/StateManager.cxx \
 stella/common/TimerManager.cxx \
@@ -126,6 +133,7 @@ stella/common/audio/ConvolutionBuffer.cxx \
 stella/common/audio/HighPass.cxx \
 stella/common/audio/LanczosResampler.cxx \
 stella/common/audio/SimpleResampler.cxx \
+stella/common/repository/CompositeKeyValueRepository.cxx \
 $(addprefix $(stellaPath)/,$(stellaSrc))
 
 include $(EMUFRAMEWORK_PATH)/package/emuframework.mk

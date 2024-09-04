@@ -1,6 +1,5 @@
 #pragma once
 
-#include <chrono>
 #include <Carbon/Carbon.h>
 #ifdef __OBJC__
 #import <AppKit/NSEvent.h>
@@ -85,17 +84,15 @@ enum {
 
 #endif
 
-namespace Input
+namespace IG::Input
 {
 
 using PointerIdImpl = void*;
 
-using Time = std::chrono::duration<double>;
-
 using Key = uint16_t;
 
 // TODO: remove dummy defs
-namespace OSX
+namespace Keycode
 {
 	static const Key
 	A = 3000, // TODO kVK_ANSI_A,
@@ -136,6 +133,7 @@ namespace OSX
 	_0 = kVK_ANSI_0,
 	ENTER = kVK_Return,
 	ESCAPE = kVK_Escape,
+	BACK = ESCAPE,
 	BACK_SPACE = kVK_Delete,
 	TAB = kVK_Tab,
 	SPACE = kVK_Space,
@@ -266,10 +264,7 @@ namespace OSX
 	PRINT_SCREEN = NSPrintScreenFunctionKey,*/
 
 	// private key-codes for misc keys, gamepads, & analog -> digital joystick axis emulation
-	miscKeyBase = 30000,
-	BACK = miscKeyBase,
-
-	gpKeyBase = BACK + 1,
+	gpKeyBase = 30000,
 	GAME_A = gpKeyBase,
 	GAME_B = gpKeyBase+1,
 	GAME_C = gpKeyBase+2,
@@ -305,13 +300,12 @@ namespace OSX
 	JS3_YAXIS_POS = axisKeyBase+18, JS3_YAXIS_NEG = axisKeyBase+19,
 
 	JS_LTRIGGER_AXIS = axisKeyBase+20, JS_RTRIGGER_AXIS = axisKeyBase+21,
-	JS_GAS_AXIS = axisKeyBase+22, JS_BRAKE_AXIS = axisKeyBase+23
-	;
+	JS_GAS_AXIS = axisKeyBase+22, JS_BRAKE_AXIS = axisKeyBase+23,
+
+	BACK_KEY = ESCAPE;
 
 	static const uint32_t COUNT = 0xffff;
 };
-
-namespace Keycode = OSX;
 
 namespace Pointer
 {
@@ -319,11 +313,9 @@ namespace Pointer
 	static constexpr Key
 	LBUTTON = 1,
 	MBUTTON = 2,
-	RBUTTON = 3,
-	WHEEL_UP = 4,
-	WHEEL_DOWN = 5,
-	DOWN_BUTTON = 6,
-	UP_BUTTON = 7;
+	RBUTTON = 4,
+	DOWN_BUTTON = 8,
+	UP_BUTTON = 16;
 }
 
 }

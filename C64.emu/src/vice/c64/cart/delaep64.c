@@ -164,7 +164,8 @@ static io_source_t delaep64_device = {
     delaep64_dump,            /* device state information dump function */
     CARTRIDGE_DELA_EP64,      /* cartridge ID */
     IO_PRIO_NORMAL,           /* normal priority, device read needs to be checked for collisions */
-    0                         /* insertion order, gets filled in by the registration function */
+    0,                        /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE            /* NO mirroring */
 };
 
 static io_source_list_t *delaep64_list_item = NULL;
@@ -286,7 +287,7 @@ void delaep64_detach(void)
    ARRAY | ROML   |   0.0+  | 73728 BYTES of ROML data
  */
 
-static char snap_module_name[] = "CARTDELAEP64";
+static const char snap_module_name[] = "CARTDELAEP64";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   1
 

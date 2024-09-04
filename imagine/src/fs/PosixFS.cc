@@ -17,15 +17,16 @@
 #include <imagine/fs/FS.hh>
 #include <imagine/logger/logger.h>
 #include <imagine/util/utility.h>
-#include <imagine/util/string.h>
 #ifdef __APPLE__
 #include <imagine/util/string/apple.h>
 #endif
-#include <errno.h>
+#include <cerrno>
 #include <sys/stat.h>
 #include <cstdlib>
+#include <cstring>
+#include <system_error>
 
-namespace FS
+namespace IG::FS
 {
 
 static file_type makeDirType(int type)
@@ -43,162 +44,128 @@ static file_type makeDirType(int type)
 	return file_type::unknown;
 }
 
-static bool isDotName(const char *name)
+static bool isDotName(std::string_view name)
 {
-	return string_equal(name, ".") || string_equal(name, "..");
+	return name == "." || name == "..";
 }
 
-DirectoryEntryImpl::DirectoryEntryImpl(const char *path, std::error_code &ec):
-	DirectoryEntryImpl{path, &ec}
-{}
-
-DirectoryEntryImpl::DirectoryEntryImpl(const char *path):
-	DirectoryEntryImpl{path, nullptr}
-{}
-
-DirectoryEntryImpl::DirectoryEntryImpl(const char *path, std::error_code *ecPtr):
+DirectoryStream::DirectoryStream(CStringView path, DirOpenFlags flags):
 	dir{opendir(path)}
 {
 	if(!dir)
 	{
 		if(Config::DEBUG_BUILD)
-			logErr("opendir(%s) error: %s", path, strerror(errno));
-		if(ecPtr)
-			*ecPtr = {errno, std::system_category()};
-		return;
+			logErr("opendir(%s) error:%s", path.data(), strerror(errno));
+		if(flags.test)
+			return;
+		else
+			throw std::system_error{errno, std::generic_category(), path};
 	}
-	logMsg("opened directory:%s", path);
-	if(ecPtr)
-		ecPtr->clear();
-	string_copy(basePath, path);
+	logMsg("opened directory:%s", path.data());
+	basePath = path;
 	readNextDir(); // go to first entry
 }
 
-bool DirectoryEntryImpl::readNextDir()
+bool DirectoryStream::readNextDir()
 {
 	if(!dir) [[unlikely]]
 		return false;
 	errno = 0;
-	// clear cached types
-	type_ = {};
-	linkType_ = {};
-	while((dirent_ = readdir(dir.get())))
+	struct dirent *ent{};
+	while((ent = readdir(dir.get())))
 	{
 		//logMsg("reading entry:%s", dirent.d_name);
-		if(!isDotName(dirent_->d_name))
+		if(!isDotName(ent->d_name))
 		{
 			#ifdef __APPLE__
 			// Precompose all strings for text renderer
 			// TODO: make optional when renderer supports decomposed unicode
-			precomposeUnicodeString(dirent_->d_name, dirent_->d_name, NAME_MAX + 1);
+			precomposeUnicodeString(ent->d_name, ent->d_name, NAME_MAX + 1);
 			#endif
+			entry_ = {pathString(basePath, ent->d_name), ent};
 			return true; // got an entry
 		}
 	}
 	// handle error or end of directory
 	if(Config::DEBUG_BUILD && errno)
 		logErr("readdir error: %s", strerror(errno));
+	entry_ = {};
 	return false;
 }
 
-bool DirectoryEntryImpl::hasEntry() const
+bool DirectoryStream::hasEntry() const
 {
-	return dirent_;
+	return (bool)entry_;
 }
 
-const char *DirectoryEntryImpl::name() const
+void DirectoryStream::closeDirectoryStream(DIR *dir)
 {
-	assumeExpr(dirent_);
-	return dirent_->d_name;
+	//logDMsg("closing dir:%p", dir);
+	auto dirAddr = (size_t)dir;
+	if(::closedir(dir) == -1 && Config::DEBUG_BUILD) [[unlikely]]
+	{
+		logErr("closedir(0x%zX) error: %s", dirAddr, strerror(errno));
+	}
 }
 
-file_type DirectoryEntryImpl::type() const
+std::string_view directory_entry::name() const
 {
-	assumeExpr(dirent_);
+	if(name_.size())
+	{
+		return name_;
+	}
+	else
+	{
+		assumeExpr(dirent_);
+		return dirent_->d_name;
+	}
+}
+
+file_type directory_entry::type() const
+{
 	if(type_ == file_type::none)
 	{
+		assumeExpr(dirent_);
 		type_ = makeDirType(dirent_->d_type);
 		if(type_ == file_type::unknown || type_ == file_type::symlink)
 		{
-			type_ = status(path()).type();
+			type_ = status(path_).type();
 		}
 	}
 	return type_;
 }
 
-file_type DirectoryEntryImpl::symlink_type() const
+file_type directory_entry::symlink_type() const
 {
-	assumeExpr(dirent_);
 	if(linkType_ == file_type::none)
 	{
-		linkType_ = makeDirType(dirent_->d_type);
-		if(linkType_ == file_type::unknown)
+		linkType_ = type();
+		if(linkType_ == file_type::symlink)
 		{
-			logMsg("dir entry doesn't provide file type");
-			linkType_ = symlink_status(path()).type();
+			logMsg("checking symlink type for:%s", path_.data());
+			linkType_ = symlink_status(path_).type();
 		}
 	}
 	return linkType_;
 }
 
-PathStringImpl DirectoryEntryImpl::path() const
+static std::shared_ptr<DirectoryStream> makeDirectoryStream(CStringView path)
 {
-	return makePathStringPrintf("%s/%s", basePath.data(), name());
+	auto streamPtr = std::make_shared<DirectoryStream>(path);
+	return streamPtr->hasEntry() ? streamPtr : nullptr;
 }
 
-void DirectoryEntryImpl::close()
-{
-	if(dir)
-	{
-		logMsg("closing directory:%s", basePath.data());
-	}
-	dir.reset();
-}
-
-void DirectoryEntryImpl::closeDirectoryStream(DIR *dir)
-{
-	if(!dir)
-		return;
-	//logDMsg("closing dir:%p", dir);
-	if(::closedir(dir) == -1 && Config::DEBUG_BUILD)
-	{
-		logErr("closedir(%p) error: %s", dir, strerror(errno));
-	}
-}
-
-template <class... Args>
-static std::shared_ptr<DirectoryEntryImpl> makeDirEntryPtr(Args&& ...args)
-{
-	DirectoryEntryImpl dirEntry{std::forward<Args>(args)...};
-	if(dirEntry.hasEntry())
-	{
-		return std::make_shared<DirectoryEntryImpl>(std::move(dirEntry));
-	}
-	else
-	{
-		// empty directory
-		return {};
-	}
-}
-
-directory_iterator::directory_iterator(const char *path):
-	impl{makeDirEntryPtr(path)}
-{}
-
-directory_iterator::directory_iterator(const char *path, std::error_code &ec):
-	impl{makeDirEntryPtr(path, ec)}
-{}
-
-directory_iterator::~directory_iterator() {}
+directory_iterator::directory_iterator(CStringView path):
+	impl{makeDirectoryStream(path)} {}
 
 directory_entry& directory_iterator::operator*()
 {
-	return *impl;
+	return impl->entry();
 }
 
 directory_entry* directory_iterator::operator->()
 {
-	return impl.get();
+	return &impl->entry();
 }
 
 void directory_iterator::operator++()
@@ -232,32 +199,13 @@ static file_type makeFileType(struct stat s)
 	return file_type::unknown;
 }
 
-std::tm file_status::lastWriteTimeLocal() const
-{
-	std::tm localMTime;
-	std::time_t mTime = lastWriteTime();
-	if(!localtime_r(&mTime, &localMTime))
-	{
-		logErr("localtime_r failed");
-		return {};
-	}
-	return localMTime;
-}
-
 PathString current_path()
 {
-	std::error_code dummy;
-	return current_path(dummy);
-}
-
-PathString current_path(std::error_code &result)
-{
-	PathString wDir{};
-	if(!getcwd(wDir.data(), sizeof(wDir)))
+	PathStringArray wDir;
+	if(!getcwd(wDir.data(), sizeof(wDir))) [[unlikely]]
 	{
 		if(Config::DEBUG_BUILD)
-			logErr("getcwd error: %s", strerror(errno));
-		result = {errno, std::system_category()};
+			logErr("getcwd error:%s", strerror(errno));
 		return {};
 	}
 	#ifdef __APPLE__
@@ -265,203 +213,131 @@ PathString current_path(std::error_code &result)
 	// TODO: make optional when renderer supports decomposed unicode
 	precomposeUnicodeString(wDir.data(), wDir.data(), sizeof(wDir));
 	#endif
-	result.clear();
-	return wDir;
+	return wDir.data();
 }
 
-void current_path(const char *path)
+void current_path(CStringView path)
 {
-	std::error_code dummy;
-	current_path(path, dummy);
-}
-
-void current_path(const char *path, std::error_code &result)
-{
-	if(chdir(path) == -1)
+	if(chdir(path) == -1) [[unlikely]]
 	{
 		if(Config::DEBUG_BUILD)
-			logErr("chdir(%s) error: %s", path, strerror(errno));
-		result = {errno, std::system_category()};
-		return;
+			logErr("chdir(%s) error:%s", path.data(), strerror(errno));
 	}
-	result.clear();
 }
 
-bool exists(const char *path)
+bool exists(CStringView path)
 {
-	std::error_code dummy;
-	return exists(path, dummy);
+	return access(path, acc::e);
 }
 
-bool exists(const char *path, std::error_code &result)
+std::uintmax_t file_size(CStringView path)
 {
-	return access(path, acc::e, result);
-}
-
-std::uintmax_t file_size(const char *path)
-{
-	std::error_code dummy;
-	return file_size(path, dummy);
-}
-
-std::uintmax_t file_size(const char *path, std::error_code &ec)
-{
-	auto s = status(path, ec);
-	if(ec)
-	{
-		return -1;
-	}
+	auto s = status(path);
 	if(s.type() != file_type::regular)
 	{
-		ec = {EINVAL, std::system_category()};
 		return -1;
 	}
-	ec.clear();
 	return s.size();
 }
 
-file_status status(const char *path)
-{
-	std::error_code dummy;
-	return status(path, dummy);
-}
-
-file_status status(const char *path, std::error_code &result)
+file_status status(CStringView path)
 {
 	struct stat s;
 	if(stat(path, &s) == -1)
 	{
 		if(Config::DEBUG_BUILD)
-			logErr("stat(%s) error: %s", path, strerror(errno));
-		result = {errno, std::system_category()};
-		if(result.value() == ENOENT)
+			logErr("stat(%s) error:%s", path.data(), strerror(errno));
+		if(errno == ENOENT)
 			return {file_type::not_found, {}, {}};
 		else
 			return {};
 	}
-	result.clear();
-	return {makeFileType(s), (std::uintmax_t)s.st_size, (file_time_type)s.st_mtime};
+	return {makeFileType(s), (std::uintmax_t)s.st_size, file_time_type{std::chrono::seconds{s.st_mtime}}};
 }
 
-file_status symlink_status(const char *path)
-{
-	std::error_code dummy;
-	return symlink_status(path, dummy);
-}
-
-file_status symlink_status(const char *path, std::error_code &result)
+file_status symlink_status(CStringView path)
 {
 	struct stat s;
 	if(lstat(path, &s) == -1)
 	{
 		if(Config::DEBUG_BUILD)
-			logErr("lstat(%s) error: %s", path, strerror(errno));
-		result = {errno, std::system_category()};
-		if(result.value() == ENOENT)
+			logErr("lstat(%s) error:%s", path.data(), strerror(errno));
+		if(errno == ENOENT)
 			return {file_type::not_found, {}, {}};
 		else
 			return {};
 	}
-	result.clear();
-	return {makeFileType(s), (std::uintmax_t)s.st_size, (file_time_type)s.st_mtime};
+	return {makeFileType(s), (std::uintmax_t)s.st_size, file_time_type{std::chrono::seconds{s.st_mtime}}};
 }
 
-void chown(const char *path, uid_t owner, gid_t group)
+void chown(CStringView path, uid_t owner, gid_t group)
 {
-	std::error_code dummy;
-	return chown(path, owner, group, dummy);
-}
-
-void chown(const char *path, uid_t owner, gid_t group, std::error_code &result)
-{
-	if(::chown(path, owner, group) == -1)
+	if(::chown(path, owner, group) == -1) [[unlikely]]
 	{
 		if(Config::DEBUG_BUILD)
-			logErr("chown(%s) error: %s", path, strerror(errno));
-		result = {errno, std::system_category()};
+			logErr("chown(%s) error:%s", path.data(), strerror(errno));
 		return;
 	}
-	result.clear();
 }
 
-bool access(const char *path, acc type)
+bool access(CStringView path, acc type)
 {
-	std::error_code dummy;
-	return access(path, type, dummy);
-}
-
-bool access(const char *path, acc type, std::error_code &result)
-{
-	result.clear();
 	if(::access(path, (int)type) == -1)
 	{
-		if(errno != ENOENT)
+		if(errno != ENOENT) [[unlikely]]
 		{
 			if(Config::DEBUG_BUILD)
-				logErr("access(%s) error: %s", path, strerror(errno));
-			result = {errno, std::system_category()};
+				logErr("access(%s) error:%s", path.data(), strerror(errno));
 		}
 		return false;
 	}
-	logMsg("file exists:%s", path);
+	logMsg("file exists:%s", path.data());
 	return true;
 }
 
-bool remove(const char *path)
+bool remove(CStringView path)
 {
-	std::error_code dummy;
-	return remove(path, dummy);
-}
-
-bool remove(const char *path, std::error_code &result)
-{
-	logErr("removing: %s", path);
-	if(::unlink(path) == -1)
+	if(::remove(path) == -1) [[unlikely]]
 	{
 		if(Config::DEBUG_BUILD)
-			logErr("unlink(%s) error: %s", path, strerror(errno));
-		result = {errno, std::system_category()};
+			logErr("remove(%s) error:%s", path.data(), strerror(errno));
 		return false;
 	}
-	result.clear();
+	logErr("removed:%s", path.data());
 	return true;
 }
 
-bool create_directory(const char *path)
-{
-	std::error_code dummy;
-	return create_directory(path, dummy);
-}
-
-bool create_directory(const char *path, std::error_code &result)
+bool create_directory(CStringView path)
 {
 	const mode_t defaultOpenMode = S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH;
 	if(::mkdir(path, defaultOpenMode) == -1)
 	{
-		if(Config::DEBUG_BUILD)
-			logErr("mkdir(%s) error: %s", path, strerror(errno));
-		result = {errno, std::system_category()};
-		return false;
+		auto err = errno;
+		if(err == EEXIST)
+		{
+			return false;
+		}
+		else [[unlikely]]
+		{
+			if(Config::DEBUG_BUILD)
+				logErr("mkdir(%s) error:%s", path.data(), strerror(err));
+			throw std::system_error(err, std::generic_category(), path);
+		}
 	}
-	result.clear();
+	logMsg("made directory:%s", path.data());
 	return true;
 }
 
-void rename(const char *oldPath, const char *newPath)
+bool rename(CStringView oldPath, CStringView newPath)
 {
-	std::error_code dummy;
-	return rename(oldPath, newPath, dummy);
-}
-
-void rename(const char *oldPath, const char *newPath, std::error_code &result)
-{
-	if(::rename(oldPath, newPath) == -1)
+	if(::rename(oldPath, newPath) == -1) [[unlikely]]
 	{
 		if(Config::DEBUG_BUILD)
-			logErr("rename(%s, %s) error: %s", oldPath, newPath, strerror(errno));
-		result = {errno, std::system_category()};
+			logErr("rename(%s, %s) error:%s", oldPath.data(), newPath.data(), strerror(errno));
+		return false;
 	}
-	result.clear();
+	logMsg("renamed:%s -> %s", oldPath.data(), newPath.data());
+	return true;
 }
 
 }

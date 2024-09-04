@@ -33,6 +33,7 @@
 #include "debug.h"
 #include "video.h"
 #include "conf.h"
+#include <imagine/logger/logger.h>
 
 struct Cyclone MyCyclone;
 static int total_cycles;
@@ -280,7 +281,7 @@ static void MyWrite32(unsigned int a,unsigned int   d) {
 	mem68k_store_invalid_long(a, d);
 }
 
-void cpu_68k_mkstate(gzFile gzf,int mode) {
+void cpu_68k_mkstate(Stream *gzf,int mode) {
 	Uint8 save_buffer[128];
 	logMsg("Save state mode %s PC=%08x",(mode==STREAD?"READ":"WRITE"),MyCyclone.pc-MyCyclone.membase);
 	if (mode==STWRITE) CyclonePack(&MyCyclone, save_buffer);
@@ -380,11 +381,6 @@ void cpu_68k_interrupt(int a) {
 	MyCyclone.irq=a;
 }
 
-void cpu_68k_bankswitch(Uint32 address) {
-	//printf("Bankswitch %08x\n",address);
-	bankaddress = address;
-}
-
 void cpu_68k_disassemble(int pc, int nb_instr) {
 	/* TODO */
 }
@@ -416,7 +412,7 @@ void cpu_68k_fill_state(M68K_STATE *st) {
 void cpu_68k_set_state(M68K_STATE *st) {
 }
 
-int cpu_68k_debuger(void (*execstep)(int),void (*dump)(void)) {
+int cpu_68k_debuger(void (*execstep)(int, void *, void *, void *),void (*dump)(void)) {
 	/* TODO */
 	return 0;
 }

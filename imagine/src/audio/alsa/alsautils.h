@@ -2,7 +2,7 @@
 
 #include <alsa/asoundlib.h>
 
-static const char *alsaPcmStateToString(snd_pcm_state_t state)
+constexpr const char *alsaPcmStateToString(snd_pcm_state_t state)
 {
 	switch(state)
 	{
@@ -15,11 +15,11 @@ static const char *alsaPcmStateToString(snd_pcm_state_t state)
 		case SND_PCM_STATE_PAUSED: return "Paused";
 		case SND_PCM_STATE_SUSPENDED: return "Suspended";
 		case SND_PCM_STATE_DISCONNECTED: return "Disconnected";
-		default: bug_unreachable("state == %d", state); return nullptr;
+		default: bug_unreachable("state == %d", state);
 	}
 }
 
-static const char *alsaPcmWriteErrorToString(int error)
+constexpr const char *alsaPcmWriteErrorToString(int error)
 {
 	switch(error)
 	{

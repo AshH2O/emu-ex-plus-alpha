@@ -17,11 +17,13 @@
 
 #include <imagine/config/defs.hh>
 #include <imagine/base/baseDefs.hh>
+#include <imagine/base/ApplicationContext.hh>
 #include <imagine/util/jni.hh>
+#include <variant>
 
 struct AChoreographer;
 
-namespace Base
+namespace IG
 {
 
 class AndroidApplication;
@@ -29,44 +31,54 @@ class AndroidApplication;
 class NativeChoreographer
 {
 public:
-	constexpr NativeChoreographer() {}
-	NativeChoreographer(AndroidApplication &);
+	constexpr NativeChoreographer() = default;
+	NativeChoreographer(AndroidApplication&);
 	void scheduleVSync();
+	void cancel() { requested = false; }
+	void setEventsOnThisThread(ApplicationContext);
 	explicit constexpr operator bool() const { return choreographer; }
 
 protected:
 	using AChoreographerFrameCallback = void (*)(long frameTimeNanos, void* data);
 	using PostFrameCallbackFunc = void (*)(AChoreographer*, AChoreographerFrameCallback, void* data);
 
-	AndroidApplication *appPtr{};
-	AChoreographer *choreographer{};
+	AndroidApplication* appPtr{};
+	AChoreographer* choreographer{};
 	PostFrameCallbackFunc postFrameCallback{};
+	AChoreographer* (*getInstance)(){};
 	bool requested{};
 };
 
 class JavaChoreographer
 {
 public:
-	constexpr JavaChoreographer() {}
+	constexpr JavaChoreographer() = default;
 	JavaChoreographer(AndroidApplication &, JNIEnv *, jobject baseActivity, jclass baseActivityClass);
 	void scheduleVSync();
+	void cancel() { requested = false; }
+	void setEventsOnThisThread(ApplicationContext);
 	explicit constexpr operator bool() const { return frameHelper; }
 
 protected:
-	AndroidApplication *appPtr{};
-	JNI::UniqueGlobalRef frameHelper{};
-	JNI::InstMethod<void()> jPostFrame{};
+	AndroidApplication* appPtr{};
+	JNIEnv* jniEnv{};
+	JNI::UniqueGlobalRef frameHelper;
+	JNI::InstMethod<void()> jPostFrame;
+	JNI::InstMethod<void()> jSetInstance;
 	bool requested{};
 };
 
 template <class ChoreographerBase>
-class ChoreographerFrameTimer final : public FrameTimerI
+class ChoreographerFrameTimer final
 {
 public:
+	constexpr ChoreographerFrameTimer() = default;
 	ChoreographerFrameTimer(ChoreographerBase &choreographer):
-		choreographerPtr{&choreographer}
-	{}
-	void scheduleVSync() final { choreographerPtr->scheduleVSync(); }
+		choreographerPtr{&choreographer} {}
+	void scheduleVSync() { choreographerPtr->scheduleVSync(); }
+	void cancel() { choreographerPtr->cancel(); }
+	void setFrameRate(FrameRate) {}
+	void setEventsOnThisThread(ApplicationContext ctx) { choreographerPtr->setEventsOnThisThread(ctx); }
 
 protected:
 	ChoreographerBase *choreographerPtr{};

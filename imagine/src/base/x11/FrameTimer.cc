@@ -13,37 +13,49 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "FrameTimer"
 #include <imagine/base/Application.hh>
 #include <imagine/logger/logger.h>
 #include <memory>
 
-namespace Base
+namespace IG
 {
 
-FrameTimer XApplication::makeFrameTimer(Screen &screen)
+constexpr SystemLogger log{"FrameTimer"};
+
+void XApplication::emplaceFrameTimer(FrameTimer &t, Screen &screen, bool useVariableTime)
 {
-	switch(supportedFrameTimer)
+	if(useVariableTime)
 	{
-		default: return FrameTimer{std::in_place_type<SimpleFrameTimer>, screen};
-		case SupportedFrameTimer::DRM: return FrameTimer{std::in_place_type<DRMFrameTimer>, screen};
-		case SupportedFrameTimer::FBDEV: return FrameTimer{std::in_place_type<FBDevFrameTimer>, screen};
+		t.emplace<SimpleFrameTimer>(screen);
+	}
+	else
+	{
+		switch(supportedFrameTimer)
+		{
+			default: t.emplace<SimpleFrameTimer>(screen); break;
+			#if CONFIG_PACKAGE_LIBDRM
+			case SupportedFrameTimer::DRM: t.emplace<DRMFrameTimer>(screen); break;
+			#endif
+			case SupportedFrameTimer::FBDEV: t.emplace<FBDevFrameTimer>(screen); break;
+		}
 	}
 }
 
 SupportedFrameTimer XApplication::testFrameTimers()
 {
+	#if CONFIG_PACKAGE_LIBDRM
 	if(DRMFrameTimer::testSupport())
 	{
-		logMsg("using DRM frame timer");
+		log.info("using DRM frame timer");
 		return SupportedFrameTimer::DRM;
 	}
+	#endif
 	if(FBDevFrameTimer::testSupport())
 	{
-		logMsg("using FBDev frame timer");
+		log.info("using FBDev frame timer");
 		return SupportedFrameTimer::FBDEV;
 	}
-	logMsg("using simple frame timer");
+	log.info("using simple frame timer");
 	return SupportedFrameTimer::SIMPLE;
 }
 

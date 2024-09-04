@@ -107,7 +107,8 @@ static io_source_t gamekiller_io1_device = {
     NULL,                       /* TODO: device state information dump function */
     CARTRIDGE_GAME_KILLER,      /* cartridge ID */
     IO_PRIO_NORMAL,             /* normal priority, device read needs to be checked for collisions */
-    0                           /* insertion order, gets filled in by the registration function */
+    0,                          /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE              /* NO mirroring */
 };
 
 static io_source_t gamekiller_io2_device = {
@@ -123,7 +124,8 @@ static io_source_t gamekiller_io2_device = {
     NULL,                       /* TODO: device state information dump function */
     CARTRIDGE_GAME_KILLER,      /* cartridge ID */
     IO_PRIO_NORMAL,             /* normal priority, device read needs to be checked for collisions */
-    0                           /* insertion order, gets filled in by the registration function */
+    0,                          /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE              /* NO mirroring */
 };
 
 static io_source_list_t *gamekiller_io1_list_item = NULL;
@@ -149,20 +151,20 @@ int gamekiller_peek_mem(export_t *ex, uint16_t addr, uint8_t *value)
 void gamekiller_freeze(void)
 {
     DBG(("Game Killer freeze\n"));
-    cart_config_changed_slotmain(3, 3, CMODE_READ | CMODE_RELEASE_FREEZE);
+    cart_config_changed_slotmain(CMODE_ULTIMAX, CMODE_ULTIMAX, CMODE_READ | CMODE_RELEASE_FREEZE);
     cartridge_disable_flag = 0;
 }
 
 void gamekiller_config_init(void)
 {
-    cart_config_changed_slotmain(3, 3, CMODE_READ);
+    cart_config_changed_slotmain(CMODE_ULTIMAX, CMODE_ULTIMAX, CMODE_READ);
     cartridge_disable_flag = 0;
 }
 
 void gamekiller_config_setup(uint8_t *rawcart)
 {
     memcpy(romh_banks, rawcart, GAME_KILLER_CART_SIZE);
-    cart_config_changed_slotmain(3, 3, CMODE_READ);
+    cart_config_changed_slotmain(CMODE_ULTIMAX, CMODE_ULTIMAX, CMODE_READ);
     cartridge_disable_flag = 0;
 }
 
@@ -227,7 +229,7 @@ void gamekiller_detach(void)
    ARRAY | ROMH    | 8192 BYTES of ROMH data
  */
 
-static char snap_module_name[] = "CARTGK";
+static const char snap_module_name[] = "CARTGK";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   0
 

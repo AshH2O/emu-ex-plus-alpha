@@ -13,36 +13,29 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "Window"
 #include <imagine/base/ApplicationContext.hh>
 #include <imagine/base/Application.hh>
 #include <imagine/base/Window.hh>
 #include <imagine/base/Screen.hh>
-#include <imagine/input/Input.hh>
+#include <imagine/input/Event.hh>
 #include <imagine/util/algorithm.h>
+#include <imagine/util/variant.hh>
+#include <imagine/util/bit.hh>
 #include <imagine/logger/logger.h>
 
-namespace Base
+namespace IG
 {
 
-static constexpr uint8_t MAX_DRAW_EVENT_PRIORITY = 0xFF;
-
-static auto defaultOnSurfaceChange = [](Window &, Window::SurfaceChange){};
-static auto defaultOnDraw = [](Window &, Window::DrawParams){ return true; };
-static auto defaultOnFocusChange = [](Window &, bool){};
-static auto defaultOnDragDrop = [](Window &, const char *){};
-static auto defaultOnInputEvent = [](Window &, Input::Event ){ return false; };
-static auto defaultOnDismissRequest = [](Window &win){ win.appContext().exit(); };
-static auto defaultOnDismiss = [](Window &){};
+constexpr SystemLogger log{"Window"};
 
 BaseWindow::BaseWindow(ApplicationContext ctx, WindowConfig config):
+	onEvent{config.onEvent},
 	onExit
 	{
 		[this](ApplicationContext ctx, bool backgrounded)
 		{
 			auto &win = *static_cast<Window*>(this);
-			auto savedDrawEventPriority = win.setDrawEventPriority(MAX_DRAW_EVENT_PRIORITY);
-			drawEvent.cancel();
+			auto savedDrawEventPriority = win.setDrawEventPriority(Window::drawEventPriorityLocked);
 			drawEvent.detach();
 			if(backgrounded)
 			{
@@ -51,117 +44,34 @@ BaseWindow::BaseWindow(ApplicationContext ctx, WindowConfig config):
 					{
 						auto &win = *static_cast<Window*>(this);
 						win.setDrawEventPriority(savedDrawEventPriority);
-						attachDrawEvent();
+						drawEvent.attach();
 						return false;
 					}, WINDOW_ON_RESUME_PRIORITY
 				);
 			}
 			return true;
-		}, ctx, WINDOW_ON_EXIT_PRIORITY},
-	onSurfaceChange{config.onSurfaceChange() ? config.onSurfaceChange() : defaultOnSurfaceChange},
-	onDraw{config.onDraw() ? config.onDraw() : defaultOnDraw},
-	onInputEvent{config.onInputEvent() ? config.onInputEvent() : defaultOnInputEvent},
-	onFocusChange{config.onFocusChange() ? config.onFocusChange() : defaultOnFocusChange},
-	onDragDrop{config.onDragDrop() ? config.onDragDrop() : defaultOnDragDrop},
-	onDismissRequest{config.onDismissRequest() ? config.onDismissRequest() : defaultOnDismissRequest},
-	onDismiss{config.onDismiss() ? config.onDismiss() : defaultOnDismiss},
-	validSoftOrientations_{ctx.defaultSystemOrientations()}
-{
-	attachDrawEvent();
-}
-
-void BaseWindow::setOnSurfaceChange(SurfaceChangeDelegate del)
-{
-	onSurfaceChange = del ? del : defaultOnSurfaceChange;
-}
-
-void BaseWindow::setOnDraw(DrawDelegate del)
-{
-	onDraw = del ? del : defaultOnDraw;
-}
-
-void BaseWindow::setOnFocusChange(FocusChangeDelegate del)
-{
-	onFocusChange = del ? del : defaultOnFocusChange;
-}
-
-void BaseWindow::setOnDragDrop(DragDropDelegate del)
-{
-	onDragDrop = del ? del : defaultOnDragDrop;
-}
-
-void BaseWindow::setOnInputEvent(InputEventDelegate del)
-{
-	onInputEvent = del ? del : defaultOnInputEvent;
-}
-
-void BaseWindow::setOnDismissRequest(DismissRequestDelegate del)
-{
-	onDismissRequest = del ? del : defaultOnDismissRequest;
-}
-
-void BaseWindow::setOnDismiss(DismissDelegate del)
-{
-	onDismiss = del ? del : defaultOnDismiss;
-}
-
-void BaseWindow::attachDrawEvent()
-{
-	drawEvent.attach(
-		[&win = *static_cast<Window*>(this)]()
+		}, ctx, WINDOW_ON_EXIT_PRIORITY
+	},
+	drawEvent
+	{
+		{.debugLabel = "Window::drawEvent", .eventLoop = EventLoop::forThread()},
+		[&win = *static_cast<Window*>(this)]
 		{
-			//logDMsg("running window events");
+			//log.debug("running window events");
 			win.dispatchOnFrame();
 			win.dispatchOnDraw();
-		});
+		}
+	} {}
+
+FrameTimeSource Window::evalFrameTimeSource(FrameTimeSource src) const
+{
+	return src == FrameTimeSource::Unset ? defaultFrameTimeSource() : src;
 }
 
-void Window::setOnSurfaceChange(SurfaceChangeDelegate del)
+bool Window::addOnFrame(OnFrameDelegate del, FrameTimeSource src, int priority)
 {
-	BaseWindow::setOnSurfaceChange(del);
-}
-
-void Window::setOnDraw(DrawDelegate del)
-{
-	BaseWindow::setOnDraw(del);
-}
-
-void Window::setOnFocusChange(FocusChangeDelegate del)
-{
-	BaseWindow::setOnFocusChange(del);
-}
-
-void Window::setOnDragDrop(DragDropDelegate del)
-{
-	BaseWindow::setOnDragDrop(del);
-}
-
-void Window::setOnInputEvent(InputEventDelegate del)
-{
-	BaseWindow::setOnInputEvent(del);
-}
-
-void Window::setOnDismissRequest(DismissRequestDelegate del)
-{
-	BaseWindow::setOnDismissRequest(del);
-}
-
-void Window::setOnDismiss(DismissDelegate del)
-{
-	BaseWindow::setOnDismiss(del);
-}
-
-static Window::FrameTimeSource frameClock(const Screen &screen, Window::FrameTimeSource clock)
-{
-	if(clock == Window::FrameTimeSource::AUTO)
-		return screen.supportsTimestamps() ? Window::FrameTimeSource::SCREEN : Window::FrameTimeSource::RENDERER;
-	return clock;
-}
-
-bool Window::addOnFrame(Base::OnFrameDelegate del, FrameTimeSource clock, int priority)
-{
-	clock = frameClock(*screen(), clock);
-	if(clock == FrameTimeSource::SCREEN)
+	src = evalFrameTimeSource(src);
+	if(src != FrameTimeSource::Renderer)
 	{
 		return screen()->addOnFrame(del);
 	}
@@ -178,16 +88,38 @@ bool Window::addOnFrame(Base::OnFrameDelegate del, FrameTimeSource clock, int pr
 	}
 }
 
-bool Window::removeOnFrame(Base::OnFrameDelegate del, FrameTimeSource clock)
+bool Window::removeOnFrame(OnFrameDelegate del, FrameTimeSource src)
 {
-	clock = frameClock(*screen(), clock);
-	if(clock == FrameTimeSource::SCREEN)
+	src = evalFrameTimeSource(src);
+	if(src != FrameTimeSource::Renderer)
 	{
 		return screen()->removeOnFrame(del);
 	}
 	else
 	{
 		return onFrame.remove(del);
+	}
+}
+
+bool Window::moveOnFrame(Window &srcWin, OnFrameDelegate del, FrameTimeSource src)
+{
+	srcWin.removeOnFrame(del, src);
+	return addOnFrame(del, src);
+}
+
+FrameTimeSource Window::defaultFrameTimeSource() const
+{
+	return screen()->supportsTimestamps() ? FrameTimeSource::Screen :
+		(Config::envIsAndroid ? FrameTimeSource::Renderer : FrameTimeSource::Timer);
+}
+
+void Window::configureFrameTimeSource(FrameTimeSource src)
+{
+	src = evalFrameTimeSource(src);
+	log.info("configuring for frame time source:{}", wise_enum::to_string(src));
+	if(src != FrameTimeSource::Renderer)
+	{
+		screen()->setVariableFrameTime(src == FrameTimeSource::Timer);
 	}
 }
 
@@ -216,21 +148,12 @@ Screen *Window::screen() const
 
 bool Window::setNeedsDraw(bool needsDraw)
 {
-	if(needsDraw)
+	if(needsDraw && (!hasSurface() || drawEventPriority() == drawEventPriorityLocked))
 	{
-		if(!hasSurface()) [[unlikely]]
-		{
-			drawNeeded = false;
-			return false;
-		}
-		drawNeeded = true;
-		return true;
+		needsDraw = false;
 	}
-	else
-	{
-		drawNeeded = false;
-		return false;
-	}
+	drawNeeded = needsDraw;
+	return needsDraw;
 }
 
 bool Window::needsDraw() const
@@ -238,25 +161,25 @@ bool Window::needsDraw() const
 	return drawNeeded;
 }
 
-void Window::postDraw(uint8_t priority)
+void Window::postDraw(int8_t priority)
 {
 	if(priority < drawEventPriority())
 	{
-		logDMsg("skipped posting draw with priority:%u < %u", priority, drawEventPriority());
+		log.debug("skipped posting draw with priority:{} < {}", priority, drawEventPriority());
 		return;
 	}
 	if(!setNeedsDraw(true))
 		return;
 	if(drawPhase != DrawPhase::DRAW)
 		drawEvent.notify();
-	//logDMsg("window:%p needs draw", this);
+	//log.debug("window:{} needs draw", this);
 }
 
 void Window::unpostDraw()
 {
 	setNeedsDraw(false);
 	drawEvent.cancel();
-	//logDMsg("window:%p cancelled draw", this);
+	//log.debug("window:{} cancelled draw", this);
 }
 
 void Window::postFrameReady()
@@ -266,7 +189,7 @@ void Window::postFrameReady()
 		drawEvent.notify();
 }
 
-void Window::postDrawToMainThread(uint8_t priority)
+void Window::postDrawToMainThread(int8_t priority)
 {
 	appContext().runOnMainThread(
 		[this, priority](ApplicationContext)
@@ -280,12 +203,30 @@ void Window::postFrameReadyToMainThread()
 	postFrameReady();
 }
 
-uint8_t Window::setDrawEventPriority(uint8_t priority)
+void Window::setFrameEventsOnThisThread()
 {
+	unpostDraw();
+	screen()->setFrameEventsOnThisThread();
+	drawEvent.attach();
+}
+
+void Window::removeFrameEvents()
+{
+	unpostDraw();
+	screen()->removeFrameEvents();
+	drawEvent.detach();
+}
+
+int8_t Window::setDrawEventPriority(int8_t priority)
+{
+	if(priority == drawEventPriorityLocked)
+	{
+		setNeedsDraw(false);
+	}
 	return std::exchange(drawEventPriority_, priority);
 }
 
-uint8_t Window::drawEventPriority() const
+int8_t Window::drawEventPriority() const
 {
 	return drawEventPriority_;
 }
@@ -295,54 +236,64 @@ void Window::drawNow(bool needsSync)
 	draw(needsSync);
 }
 
-void Window::setNeedsCustomViewportResize(bool needsResize)
-{
-	surfaceChangeFlags = setOrClearBits(surfaceChangeFlags, SurfaceChange::CUSTOM_VIEWPORT_RESIZED, needsResize);
-}
-
 bool Window::dispatchInputEvent(Input::Event event)
 {
-	return onInputEvent.callCopy(*this, event);
+	bool handled = onEvent.callCopy(*this, event);
+	return event.visit(overloaded{
+		[&](const Input::MotionEvent& e)
+		{
+			return handled || (e.isPointer() && contentBounds().overlaps(e.pos()));
+		},
+		[&](const Input::KeyEvent&) { return handled; }
+	});
 }
 
-bool Window::dispatchRepeatableKeyInputEvent(Input::Event event)
+bool Window::dispatchRepeatableKeyInputEvent(Input::KeyEvent event)
 {
-	assert(event.isKey());
 	application().startKeyRepeatTimer(event);
 	return dispatchInputEvent(event);
 }
 
 void Window::dispatchFocusChange(bool in)
 {
-	onFocusChange.callCopy(*this, in);
+	onEvent.callCopy(*this, FocusChangeEvent{in});
 }
 
 void Window::dispatchDragDrop(const char *filename)
 {
-	onDragDrop.callCopy(*this, filename);
+	onEvent.callCopy(*this, DragDropEvent{filename});
 }
 
 void Window::dispatchDismissRequest()
 {
-	onDismissRequest.callCopy(*this);
+	if(!onEvent.callCopy(*this, DismissRequestEvent{}))
+	{
+		appContext().exit();
+	}
 }
 
 void Window::dispatchSurfaceCreated()
 {
-	onSurfaceChange.callCopy(*this, {SurfaceChange::Action::CREATED});
-	surfaceChangeFlags |= SurfaceChange::SURFACE_RESIZED;
+	onEvent.callCopy(*this, WindowSurfaceChangeEvent{SurfaceChange::Action::CREATED});
+	surfaceChangeFlags.surfaceResized = true;
 }
 
 void Window::dispatchSurfaceChanged()
 {
-	onSurfaceChange.callCopy(*this, {SurfaceChange::Action::CHANGED, std::exchange(surfaceChangeFlags, {})});
+	onEvent.callCopy(*this, WindowSurfaceChangeEvent{SurfaceChange{SurfaceChange::Action::CHANGED, std::exchange(surfaceChangeFlags, {})}});
 }
 
 void Window::dispatchSurfaceDestroyed()
 {
-	surfaceChangeFlags = 0;
+	surfaceChangeFlags = {};
 	unpostDraw();
-	onSurfaceChange.callCopy(*this, {SurfaceChange::Action::DESTROYED});
+	onEvent.callCopy(*this, WindowSurfaceChangeEvent{SurfaceChange::Action::DESTROYED});
+}
+
+void Window::signalSurfaceChanged(WindowSurfaceChangeFlags flags)
+{
+	surfaceChangeFlags |= flags;
+	postDraw();
 }
 
 void Window::dispatchOnDraw(bool needsSync)
@@ -359,28 +310,23 @@ void Window::dispatchOnFrame()
 		return;
 	}
 	drawPhase = DrawPhase::UPDATE;
-	//logDMsg("running %u onFrame delegates", onFrame.size());
-	auto now = IG::steadyClockTimestamp();
-	FrameParams frameParams{now, screen()->frameTime()};
-	onFrame.runAll([&](Base::OnFrameDelegate del){ return del(frameParams); });
-	if(onFrame.size())
-	{
-		setNeedsDraw(true);
-	}
+	//log.debug("running {} onFrame delegates", onFrame.size());
+	FrameParams frameParams{.timestamp = SteadyClock::now(), .frameTime = screen()->frameTime(), .timeSource = FrameTimeSource::Renderer};
+	onFrame.runAll([&](OnFrameDelegate del){ return del(frameParams); });
 }
 
 void Window::draw(bool needsSync)
 {
 	DrawParams params;
-	params.needsSync_ = needsSync;
-	if(surfaceChangeFlags) [[unlikely]]
+	params.needsSync = needsSync;
+	if(asInt(surfaceChangeFlags)) [[unlikely]]
 	{
 		dispatchSurfaceChanged();
-		params.wasResized_ = true;
+		params.wasResized = true;
 	}
 	drawNeeded = false;
 	drawPhase = DrawPhase::DRAW;
-	if(onDraw.callCopy(*this, params))
+	if(!onEvent.callCopy(*this, DrawEvent{params}))
 	{
 		postFrameReady();
 	}
@@ -388,12 +334,12 @@ void Window::draw(bool needsSync)
 
 bool Window::updateSize(IG::Point2D<int> surfaceSize)
 {
-	if(orientationIsSideways(softOrientation_))
+	if(isSideways(softOrientation_))
 		std::swap(surfaceSize.x, surfaceSize.y);
 	auto oldSize = std::exchange(winSizePixels, surfaceSize);
 	if(oldSize == winSizePixels)
 	{
-		logMsg("same window size %d,%d", realWidth(), realHeight());
+		log.info("same window size {},{}", realWidth(), realHeight());
 		return false;
 	}
 	if constexpr(Config::envIsAndroid)
@@ -404,14 +350,14 @@ bool Window::updateSize(IG::Point2D<int> surfaceSize)
 	{
 		updatePhysicalSize(pixelSizeAsMM({realWidth(), realHeight()}));
 	}
-	surfaceChangeFlags |= SurfaceChange::SURFACE_RESIZED;
+	surfaceChangeFlags.surfaceResized = true;
 	return true;
 }
 
 bool Window::updatePhysicalSize(IG::Point2D<float> surfaceSizeMM, IG::Point2D<float> surfaceSizeSMM)
 {
 	bool changed = false;
-	if(orientationIsSideways(softOrientation_))
+	if(isSideways(softOrientation_))
 		std::swap(surfaceSizeMM.x, surfaceSizeMM.y);
 	auto oldSizeMM = std::exchange(winSizeMM, surfaceSizeMM);
 	if(oldSizeMM != winSizeMM)
@@ -421,21 +367,21 @@ bool Window::updatePhysicalSize(IG::Point2D<float> surfaceSizeMM, IG::Point2D<fl
 	if constexpr(Config::envIsAndroid)
 	{
 		assert(surfaceSizeSMM.x && surfaceSizeSMM.y);
-		if(orientationIsSideways(softOrientation_))
+		if(isSideways(softOrientation_))
 			std::swap(surfaceSizeSMM.x, surfaceSizeSMM.y);
 		auto oldSizeSMM = std::exchange(winSizeSMM, surfaceSizeSMM);
 		if(oldSizeSMM != sizeScaledMM())
 			changed = true;
 		smmToPixelScaler = pixelSizeFloat / sizeScaledMM();
 	}
-	if(softOrientation_ == VIEW_ROTATE_0)
+	if(softOrientation_ == Rotation::UP)
 	{
-		logMsg("updated window size:%dx%d (%.2fx%.2fmm, scaled %.2fx%.2fmm)",
+		log.info("updated window size:{}x{} ({:g}x{:g}mm, scaled {:g}x{:g}mm)",
 			width(), height(), sizeMM().x, sizeMM().y, sizeScaledMM().x, sizeScaledMM().y);
 	}
 	else
 	{
-		logMsg("updated window size:%dx%d (%.2fx%.2fmm, scaled %.2fx%.2fmm) with rotation, real size:%dx%d",
+		log.info("updated window size:{}x{} ({:g}x{:g}mm, scaled {:g}x{:g}mm) with rotation, real size:{}x{}",
 			width(), height(), sizeMM().x, sizeMM().y, sizeScaledMM().x, sizeScaledMM().y, realWidth(), realHeight());
 	}
 	return changed;
@@ -456,37 +402,25 @@ bool Window::updatePhysicalSizeWithCurrentSize()
 }
 
 #ifdef CONFIG_GFX_SOFT_ORIENTATION
-bool Window::setValidOrientations(Orientation oMask)
+bool Window::setValidOrientations(Orientations o)
 {
-	oMask = appContext().validateOrientationMask(oMask);
-	validSoftOrientations_ = oMask;
-	if(validSoftOrientations_ & setSoftOrientation)
-		return requestOrientationChange(setSoftOrientation);
-	if(!(validSoftOrientations_ & softOrientation_))
-	{
-		if(validSoftOrientations_ & VIEW_ROTATE_0)
-			return requestOrientationChange(VIEW_ROTATE_0);
-		else if(validSoftOrientations_ & VIEW_ROTATE_90)
-			return requestOrientationChange(VIEW_ROTATE_90);
-		else if(validSoftOrientations_ & VIEW_ROTATE_180)
-			return requestOrientationChange(VIEW_ROTATE_180);
-		else if(validSoftOrientations_ & VIEW_ROTATE_270)
-			return requestOrientationChange(VIEW_ROTATE_270);
-		else
-		{
-			bug_unreachable("bad orientation mask: 0x%X", oMask);
-		}
-	}
-	return false;
+	if(o.portrait)
+		return requestOrientationChange(Rotation::UP);
+	else if(o.landscapeRight)
+		return requestOrientationChange(Rotation::RIGHT);
+	else if(o.portraitUpsideDown)
+		return requestOrientationChange(Rotation::DOWN);
+	else if(o.landscapeLeft)
+		return requestOrientationChange(Rotation::LEFT);
+	else
+		return requestOrientationChange(Rotation::UP);
 }
 
-bool Window::requestOrientationChange(Orientation o)
+bool Window::requestOrientationChange(Rotation o)
 {
-	assert(o == VIEW_ROTATE_0 || o == VIEW_ROTATE_90 || o == VIEW_ROTATE_180 || o == VIEW_ROTATE_270);
-	setSoftOrientation = o;
-	if((validSoftOrientations_ & o) && softOrientation_ != o)
+	if(softOrientation_ != o)
 	{
-		logMsg("setting orientation %s", orientationToStr(o));
+		log.info("setting orientation %s", wise_enum::to_string(o).data());
 		int savedRealWidth = realWidth();
 		int savedRealHeight = realHeight();
 		softOrientation_ = o;
@@ -500,26 +434,21 @@ bool Window::requestOrientationChange(Orientation o)
 }
 #endif
 
-Orientation Window::softOrientation() const
+Rotation Window::softOrientation() const
 {
 	return softOrientation_;
 }
 
-Orientation Window::validSoftOrientations() const
-{
-	return validSoftOrientations_;
-}
-
 void Window::dismiss()
 {
-	onDismiss(*this);
+	onEvent(*this, DismissEvent{});
 	drawEvent.detach();
 	application().moveOutWindow(*this);
 }
 
-int Window::realWidth() const { return orientationIsSideways(softOrientation()) ? height() : width(); }
+int Window::realWidth() const { return isSideways(softOrientation()) ? height() : width(); }
 
-int Window::realHeight() const { return orientationIsSideways(softOrientation()) ? width() : height(); }
+int Window::realHeight() const { return isSideways(softOrientation()) ? width() : height(); }
 
 int Window::width() const { return winSizePixels.x; }
 
@@ -555,19 +484,19 @@ IG::Point2D<float> Window::sizeScaledMM() const
 
 int Window::widthMMInPixels(float mm) const
 {
-	return std::round(mm * (mmToPixelScaler.x));
+	return (int)std::round(mm * (mmToPixelScaler.x));
 }
 
 int Window::heightMMInPixels(float mm) const
 {
-	return std::round(mm * (mmToPixelScaler.y));
+	return (int)std::round(mm * (mmToPixelScaler.y));
 }
 
 int Window::widthScaledMMInPixels(float mm) const
 {
 	if constexpr(Config::envIsAndroid)
 	{
-		return std::round(mm * (smmPixelScaler().x));
+		return (int)std::round(mm * (smmPixelScaler().x));
 	}
 	return widthMMInPixels(mm);
 }
@@ -576,7 +505,7 @@ int Window::heightScaledMMInPixels(float mm) const
 {
 	if constexpr(Config::envIsAndroid)
 	{
-		return std::round(mm * (smmPixelScaler().y));
+		return (int)std::round(mm * (smmPixelScaler().y));
 	}
 	return heightMMInPixels(mm);
 }
@@ -591,14 +520,14 @@ IG::WindowRect Window::bounds() const
 	return {{}, size()};
 }
 
-IG::Point2D<int> Window::transformInputPos(IG::Point2D<int> srcPos) const
+F2Pt Window::transformInputPos(F2Pt srcPos) const
 {
 	enum class PointerMode {NORMAL, INVERT};
-	const auto xPointerTransform = softOrientation() == VIEW_ROTATE_0 || softOrientation() == VIEW_ROTATE_90 ? PointerMode::NORMAL : PointerMode::INVERT;
-	const auto yPointerTransform = softOrientation() == VIEW_ROTATE_0 || softOrientation() == VIEW_ROTATE_270 ? PointerMode::NORMAL : PointerMode::INVERT;
-	const auto pointerAxis = softOrientation() == VIEW_ROTATE_0 || softOrientation() == VIEW_ROTATE_180 ? PointerMode::NORMAL : PointerMode::INVERT;
+	const auto xPointerTransform = softOrientation() == Rotation::UP || softOrientation() == Rotation::RIGHT ? PointerMode::NORMAL : PointerMode::INVERT;
+	const auto yPointerTransform = softOrientation() == Rotation::UP || softOrientation() == Rotation::LEFT ? PointerMode::NORMAL : PointerMode::INVERT;
+	const auto pointerAxis = softOrientation() == Rotation::UP || softOrientation() == Rotation::DOWN ? PointerMode::NORMAL : PointerMode::INVERT;
 
-	IG::Point2D<int> pos;
+	F2Pt pos;
 	// x,y axis is swapped first
 	pos.x = pointerAxis == PointerMode::INVERT ? srcPos.y : srcPos.x;
 	pos.y = pointerAxis == PointerMode::INVERT ? srcPos.x : srcPos.y;
@@ -609,6 +538,16 @@ IG::Point2D<int> Window::transformInputPos(IG::Point2D<int> srcPos) const
 	if(yPointerTransform == PointerMode::INVERT)
 		pos.y = height() - pos.y;
 	return pos;
+}
+
+Viewport Window::viewport(WindowRect rect) const
+{
+	return {bounds(), rect, softOrientation()};
+}
+
+Viewport Window::viewport() const
+{
+	return {bounds(), softOrientation()};
 }
 
 Screen &WindowConfig::screen(ApplicationContext ctx) const
@@ -625,5 +564,11 @@ Application &Window::application() const
 {
 	return appContext().application();
 }
+
+[[gnu::weak]] void Window::setSystemGestureExclusionRects(std::span<const WRect>) {}
+[[gnu::weak]] void Window::setDecorations(bool) {}
+[[gnu::weak]] void Window::setPosition(WPt) {}
+[[gnu::weak]] void Window::setSize(WSize) {}
+[[gnu::weak]] void Window::toggleFullScreen() {}
 
 }

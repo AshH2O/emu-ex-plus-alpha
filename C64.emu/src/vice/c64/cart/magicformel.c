@@ -123,12 +123,14 @@ CB2            - enable Cartridge (?)
 #include "machine.h"
 #include "magicformel.h"
 #include "mc6821core.h"
+#include "ram.h"
 #include "snapshot.h"
 #include "types.h"
 #include "util.h"
 #include "crt.h"
 
 /* ---------------------------------------------------------------------*/
+#define CART_RAM_SIZE (8 * 1024)
 
 /* some prototypes are needed */
 static void magicformel_io1_store(uint16_t addr, uint8_t value);
@@ -151,7 +153,8 @@ static io_source_t magicformel_io1_device = {
     NULL,                        /* TODO: device state information dump function */
     CARTRIDGE_MAGIC_FORMEL,      /* cartridge ID */
     IO_PRIO_NORMAL,              /* normal priority, device read needs to be checked for collisions */
-    0                            /* insertion order, gets filled in by the registration function */
+    0,                           /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE               /* NO mirroring */
 };
 
 static io_source_t magicformel_io2_device = {
@@ -167,7 +170,8 @@ static io_source_t magicformel_io2_device = {
     NULL,                        /* TODO: device state information dump function */
     CARTRIDGE_MAGIC_FORMEL,      /* cartridge ID */
     IO_PRIO_NORMAL,              /* normal priority, device read needs to be checked for collisions */
-    0                            /* insertion order, gets filled in by the registration function */
+    0,                           /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE               /* NO mirroring */
 };
 
 static io_source_list_t *magicformel_io1_list_item = NULL;
@@ -511,6 +515,25 @@ int magicformel_peek_mem(export_t *ex, uint16_t addr, uint8_t *value)
 
 /****************************************************************************/
 
+/* FIXME: this still needs to be tweaked to match the hardware */
+static RAMINITPARAM ramparam = {
+    .start_value = 255,
+    .value_invert = 2,
+    .value_offset = 1,
+
+    .pattern_invert = 0x100,
+    .pattern_invert_value = 255,
+
+    .random_start = 0,
+    .random_repeat = 0,
+    .random_chance = 0,
+};
+
+void magicformel_powerup(void)
+{
+    ram_init_with_pattern(export_ram0, CART_RAM_SIZE, &ramparam);
+}
+
 /* ultimax, rom bank 1 */
 void magicformel_freeze(void)
 {
@@ -523,7 +546,7 @@ void magicformel_freeze(void)
 
     freeze_flipflop(0 /* reset */, 1 /* freeze */, my6821.CB2);
 
-    cart_config_changed_slotmain(2, (uint8_t)(3 | ((romh_bank & 0x0f) << CMODE_BANK_SHIFT)), CMODE_READ | CMODE_RELEASE_FREEZE);
+    cart_config_changed_slotmain(CMODE_RAM, (uint8_t)(CMODE_ULTIMAX | ((romh_bank & 0x0f) << CMODE_BANK_SHIFT)), CMODE_READ | CMODE_RELEASE_FREEZE);
 }
 
 void magicformel_config_init(void)
@@ -539,7 +562,7 @@ void magicformel_config_init(void)
 
     freeze_flipflop(1 /* reset */, 0 /* freeze */, my6821.CB2);
 
-    cart_config_changed_slotmain(2, (uint8_t)(3 | (romh_bank << CMODE_BANK_SHIFT)), CMODE_READ);
+    cart_config_changed_slotmain(CMODE_RAM, (uint8_t)(CMODE_ULTIMAX | (romh_bank << CMODE_BANK_SHIFT)), CMODE_READ);
 }
 
 void magicformel_reset(void)
@@ -613,14 +636,14 @@ int magicformel_crt_attach(FILE *fd, uint8_t *rawcart)
     }
 
     if (cnt == 8) {
-        DBG(("MF: 64k ROM loaded.\n"));
+        DBG(("MF: 64KiB ROM loaded.\n"));
         hwversion = 0;
     } else if (cnt == 12) {
-        DBG(("MF: 64k+32k ROM loaded.\n"));
+        DBG(("MF: 64KiB+32KiB ROM loaded.\n"));
         hwversion = 1;
         memcpy(&rawcart[0x18000], &rawcart[0x10000], 0x8000);
     } else if (cnt == 16) {
-        DBG(("MF: 2*64k ROM loaded.\n"));
+        DBG(("MF: 2*64KiB ROM loaded.\n"));
         hwversion = 2;
     } else {
         return -1;
@@ -663,7 +686,7 @@ void magicformel_detach(void)
    BYTE  | CB2 state     | CB2 line state
  */
 
-static char snap_module_name[] = "CARTMF";
+static const char snap_module_name[] = "CARTMF";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   0
 

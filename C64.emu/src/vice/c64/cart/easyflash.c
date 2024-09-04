@@ -47,6 +47,7 @@
 #include "maincpu.h"
 #include "mem.h"
 #include "monitor.h"
+#include "ram.h"
 #include "resources.h"
 #include "snapshot.h"
 #include "util.h"
@@ -94,8 +95,10 @@ static const uint8_t easyflash_memconfig[] = {
     2, 3, 0, 1,
 };
 
+#define CART_RAM_SIZE 256
+
 /* extra RAM */
-static uint8_t easyflash_ram[256];
+static uint8_t easyflash_ram[CART_RAM_SIZE];
 
 /* filename when attached */
 static char *easyflash_filename = NULL;
@@ -246,10 +249,12 @@ static uint8_t easyflash_io1_peek(uint16_t addr)
 
 static int easyflash_io1_dump(void)
 {
-    mon_out("Mode %i, LED %s, jumper %s\n",
-            easyflash_memconfig[(easyflash_jumper << 3) | (easyflash_register_02 & 0x07)],
+    mon_out("Mode: %s, Bank: %d, LED %s, jumper %s\n",
+            cart_config_string(easyflash_memconfig[(easyflash_jumper << 3) | (easyflash_register_02 & 0x07)]),
+            easyflash_register_00,
             (easyflash_register_02 & 0x80) ? "on" : "off",
             easyflash_jumper ? "on" : "off");
+    mon_out("EAPI found: %s\n", (memcmp(&romh_banks[0x1800], "eapi", 4) == 0) ? "yes" : "no");
     return 0;
 }
 
@@ -268,7 +273,8 @@ static io_source_t easyflash_io1_device = {
     easyflash_io1_dump,       /* device state information dump function */
     CARTRIDGE_EASYFLASH,      /* cartridge ID */
     IO_PRIO_NORMAL,           /* normal priority, device read needs to be checked for collisions */
-    0                         /* insertion order, gets filled in by the registration function */
+    0,                        /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE            /* NO mirroring */
 };
 
 static io_source_t easyflash_io2_device = {
@@ -284,7 +290,8 @@ static io_source_t easyflash_io2_device = {
     NULL,                     /* device state information dump function */
     CARTRIDGE_EASYFLASH,      /* cartridge ID */
     IO_PRIO_NORMAL,           /* normal priority, device read needs to be checked for collisions */
-    0                         /* insertion order, gets filled in by the registration function */
+    0,                        /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE            /* NO mirroring */
 };
 
 static io_source_list_t *easyflash_io1_list_item = NULL;
@@ -442,6 +449,31 @@ void easyflash_mmu_translate(unsigned int addr, uint8_t **base, int *start, int 
 
 /* ---------------------------------------------------------------------*/
 
+/* FIXME: this still needs to be tweaked to match the hardware */
+static RAMINITPARAM ramparam = {
+    .start_value = 255,
+    .value_invert = 2,
+    .value_offset = 1,
+
+    .pattern_invert = 0x100,
+    .pattern_invert_value = 255,
+
+    .random_start = 0,
+    .random_repeat = 0,
+    .random_chance = 0,
+};
+
+void easyflash_powerup(void)
+{
+    /* fill easyflash ram with startup value(s). this shall not be zeros, see
+     * http://sourceforge.net/p/vice-emu/bugs/469/
+     *
+     * FIXME: the real hardware likely behaves somewhat differently
+     */
+    /*memset(easyflash_ram, 0xff, CART_RAM_SIZE);*/
+    ram_init_with_pattern(easyflash_ram, CART_RAM_SIZE, &ramparam);
+}
+
 void easyflash_config_init(void)
 {
     easyflash_io1_store((uint16_t)0xde00, 0);
@@ -462,12 +494,7 @@ void easyflash_config_setup(uint8_t *rawcart)
         memcpy(easyflash_state_low->flash_data + i * 0x2000, rawcart + i * 0x4000, 0x2000);
         memcpy(easyflash_state_high->flash_data + i * 0x2000, rawcart + i * 0x4000 + 0x2000, 0x2000);
     }
-    /* fill easyflash ram with startup value(s). this shall not be zeros, see
-     * http://sourceforge.net/p/vice-emu/bugs/469/
-     * 
-     * FIXME: the real hardware likely behaves somewhat differently
-     */
-    memset(easyflash_ram, 0xff, 256);
+
     /*
      * check for presence of EAPI
      */
@@ -661,8 +688,8 @@ int easyflash_crt_save(const char *filename)
    ARRAY | ROMH       | 524288 BYTES of ROMH data
  */
 
-static char snap_module_name[] = "CARTEF";
-static char flash_snap_module_name[] = "FLASH040EF";
+static const char snap_module_name[] = "CARTEF";
+static const char flash_snap_module_name[] = "FLASH040EF";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   0
 
@@ -680,7 +707,7 @@ int easyflash_snapshot_write_module(snapshot_t *s)
         || (SMW_B(m, (uint8_t)easyflash_jumper) < 0)
         || (SMW_B(m, easyflash_register_00) < 0)
         || (SMW_B(m, easyflash_register_02) < 0)
-        || (SMW_BA(m, easyflash_ram, 256) < 0)
+        || (SMW_BA(m, easyflash_ram, CART_RAM_SIZE) < 0)
         || (SMW_BA(m, roml_banks, 0x80000) < 0)
         || (SMW_BA(m, romh_banks, 0x80000) < 0)) {
         snapshot_module_close(m);
@@ -718,7 +745,7 @@ int easyflash_snapshot_read_module(snapshot_t *s)
         || (SMR_B_INT(m, &easyflash_jumper) < 0)
         || (SMR_B(m, &easyflash_register_00) < 0)
         || (SMR_B(m, &easyflash_register_02) < 0)
-        || (SMR_BA(m, easyflash_ram, 256) < 0)
+        || (SMR_BA(m, easyflash_ram, CART_RAM_SIZE) < 0)
         || (SMR_BA(m, roml_banks, 0x80000) < 0)
         || (SMR_BA(m, romh_banks, 0x80000) < 0)) {
         goto fail;

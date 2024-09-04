@@ -15,23 +15,22 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/base/FrameTimer.hh>
 #include <imagine/base/EventLoop.hh>
 #include <imagine/time/Time.hh>
 
-namespace Base
+namespace IG
 {
 
 class Screen;
 
-class DRMFrameTimer : public FrameTimerI
+class DRMFrameTimer
 {
 public:
-	constexpr DRMFrameTimer() {}
 	DRMFrameTimer(Screen &screen, EventLoop loop = {});
-	~DRMFrameTimer() final;
-	void scheduleVSync() final;
-	void cancel() final;
+	void scheduleVSync();
+	void cancel();
+	void setFrameRate(FrameRate) {}
+	void setEventsOnThisThread(ApplicationContext);
 	static bool testSupport();
 
 	explicit operator bool() const
@@ -40,8 +39,8 @@ public:
 	}
 
 protected:
-	Base::FDEventSource fdSrc{};
-	IG::Time timestamp{};
+	FDEventSource fdSrc;
+	Nanoseconds timestamp{};
 	bool requested{};
 	bool cancelled{};
 };

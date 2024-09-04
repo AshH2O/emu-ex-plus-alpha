@@ -18,14 +18,18 @@
 #include <imagine/gui/ScrollView.hh>
 #include <imagine/logger/logger.h>
 #include <imagine/input/DragTracker.hh>
-#include <imagine/gfx/GeomRect.hh>
 #include <imagine/gfx/RendererCommands.hh>
+#include <imagine/gfx/Renderer.hh>
+#include <imagine/gfx/BasicEffect.hh>
+#include <imagine/gfx/Mat4.hh>
 #include <imagine/base/Window.hh>
 #include <imagine/base/Screen.hh>
-#include <imagine/util/math/space.hh>
-#include <imagine/util/math/int.hh>
+#include <imagine/util/math.hh>
 #include <algorithm>
 #include <cmath>
+
+namespace IG
+{
 
 // minimum velocity before releasing a drag causes a scroll animation
 static constexpr float SCROLL_MIN_START_VEL = 1.;
@@ -34,15 +38,13 @@ static constexpr float SCROLL_DECEL = 1. * 60.;
 // over scroll animation velocity scale
 static constexpr float OVER_SCROLL_VEL_SCALE = .2 * 60.;
 
-ScrollView::ScrollView(ViewAttachParams attach): ScrollView{{}, attach} {}
-
-ScrollView::ScrollView(NameString name, ViewAttachParams attach):
-	View{std::move(name), attach},
+ScrollView::ScrollView(ViewAttachParams attach):
+	View{attach},
 	animate
 	{
 		[this](IG::FrameParams params)
 		{
-			auto frames = params.elapsedFrames(std::exchange(lastFrameTimestamp, params.timestamp()));
+			auto frames = params.elapsedFrames(std::exchange(lastFrameTimestamp, params.timestamp));
 			auto prevOffset = offset;
 			if(scrollVel) // scrolling deceleration
 			{
@@ -67,7 +69,7 @@ ScrollView::ScrollView(NameString name, ViewAttachParams attach):
 				//logMsg("animating over-scroll");
 				int clip = offset < 0 ? 0 : offsetMax;
 				int sign = offset < 0 ? 1 : -1;
-				iterateTimes(frames, i)
+				for([[maybe_unused]] auto i : iotaCount(frames))
 				{
 					int vel = std::abs((clip - offset) * overScrollVelScale);
 					offset += sign * std::max(1, vel);
@@ -90,8 +92,8 @@ ScrollView::ScrollView(NameString name, ViewAttachParams attach):
 			lastFrameTimestamp = {};
 			return false;
 		}
-	}
-{}
+	},
+	scrollBarQuads{attach.rendererTask, {.size = 1}} {}
 
 ScrollView::~ScrollView()
 {
@@ -122,9 +124,8 @@ int ScrollView::overScroll() const
 		0;
 }
 
-void ScrollView::setContentSize(IG::WP size)
+void ScrollView::setContentSize(WSize contentSize)
 {
-	IG::WP contentSize = {size.x, size.y};
 	overScrollVelScale = OVER_SCROLL_VEL_SCALE / screen()->frameRate();
 	dragTracker.setDragStartPixels(std::max(1, Config::envIsAndroid ? window().heightMMInPixels(1.5) : window().heightMMInPixels(1.)));
 	const auto viewFrame = viewRect();
@@ -140,45 +141,47 @@ void ScrollView::setContentSize(IG::WP size)
 	contentIsBiggerThanView = contentSize.y > viewFrame.ySize();
 	auto scrollBarRightPadding = std::max(2, IG::makeEvenRoundedUp(window().widthMMInPixels(.4)));
 	auto scrollBarWidth = std::max(2, IG::makeEvenRoundedUp(window().widthMMInPixels(.3)));
+	WRect scrollBarRect;
 	scrollBarRect.x = (viewFrame.x2 - scrollBarRightPadding) - scrollBarWidth;
 	scrollBarRect.x2 = scrollBarRect.x + scrollBarWidth;
 	scrollBarRect.y = 0;
-	scrollBarRect.y2 = std::max(10, (int)(viewFrame.ySize() * (viewFrame.ySize() / (Gfx::GC)contentSize.y)));
+	scrollBarRect.y2 = std::max(10, (int)(viewFrame.ySize() * (viewFrame.ySize() / (float)contentSize.y)));
+	scrollBarYSize = scrollBarRect.ySize();
+	scrollBarQuads.write(0, {.bounds = scrollBarRect.as<int16_t>()});
 }
 
-void ScrollView::drawScrollContent(Gfx::RendererCommands &cmds)
+void ScrollView::drawScrollContent(Gfx::RendererCommands &cmds) const
 {
-	using namespace Gfx;
+	using namespace IG::Gfx;
 	if(contentIsBiggerThanView && (allowScrollWholeArea_ || dragTracker.isDragging()))
 	{
-		cmds.setCommonProgram(CommonProgram::NO_TEX, projP.makeTranslate());
-		cmds.setBlendMode(0);
+		cmds.basicEffect().disableTexture(cmds);
+		cmds.set(BlendMode::OFF);
 		if(scrollWholeArea_)
 		{
 			if(dragTracker.isDragging())
-				cmds.setColor(.8, .8, .8);
+				cmds.setColor({.8, .8, .8});
 			else
-				cmds.setColor(.5, .5, .5);
+				cmds.setColor({.5, .5, .5});
 		}
 		else
-			cmds.setColor(.5, .5, .5);
-		scrollBarRect.setYPos(
-			IG::scalePointRange((Gfx::GC)offset, 0_gc, Gfx::GC(offsetMax), (Gfx::GC)viewRect().y, Gfx::GC(viewRect().y2 - scrollBarRect.ySize())));
-		GeomRect::draw(cmds, scrollBarRect, projP);
+			cmds.setColor({.5, .5, .5});
+		cmds.basicEffect().setModelView(cmds, Mat4::makeTranslate(WPt{0,
+			remap(offset, 0, offsetMax, viewRect().y, viewRect().y2 - scrollBarYSize)}));
+		cmds.drawQuad(scrollBarQuads, 0);
 	}
 }
 
-bool ScrollView::scrollInputEvent(Input::Event e)
+bool ScrollView::scrollInputEvent(const Input::MotionEvent &e)
 {
 	if(!e.isPointer() || (!dragTracker.isDragging() && !pointIsInView(e.pos())))
 		return false;
 	// mouse wheel scroll
-	if(Config::Input::MOUSE_DEVICES && !dragTracker.isDragging()
-		&& (e.pushed(Input::Pointer::WHEEL_UP) || e.pushed(Input::Pointer::WHEEL_DOWN)))
+	if(Config::Input::MOUSE_DEVICES && !dragTracker.isDragging() && e.scrolledVertical())
 	{
 		auto prevOffset = offset;
 		auto vel = window().heightMMInPixels(10.0);
-		offset += e.mapKey() == Input::Pointer::WHEEL_UP ? -vel : vel;
+		offset += e.scrolledVertical() < 0 ? -vel : vel;
 		offset = std::clamp(offset, 0, offsetMax);
 		if(offset != prevOffset)
 			postDraw();
@@ -189,7 +192,7 @@ bool ScrollView::scrollInputEvent(Input::Event e)
 		[&](Input::DragTrackerState, auto)
 		{
 			stopScrollAnimation();
-			velTracker = {std::chrono::duration_cast<VelocityTrackerType::TimeType>(e.time()), {(float)e.pos().y}};
+			velTracker = {e.time(), {(float)e.pos().y}};
 			scrollVel = 0;
 			onDragOffset = offset;
 			const auto viewFrame = viewRect();
@@ -205,14 +208,14 @@ bool ScrollView::scrollInputEvent(Input::Event e)
 		},
 		[&](Input::DragTrackerState state, Input::DragTrackerState, auto)
 		{
-			velTracker.update(std::chrono::duration_cast<VelocityTrackerType::TimeType>(e.time()), {(float)e.pos().y});
+			velTracker.update(e.time(), {(float)e.pos().y});
 			if(state.isDragging())
 			{
 				auto prevOffset = offset;
 				const auto viewFrame = viewRect();
 				if(scrollWholeArea_)
 				{
-					offset = IG::scalePointRange((Gfx::GC)e.pos().y, (Gfx::GC)viewFrame.y, (Gfx::GC)viewFrame.y + (Gfx::GC)viewFrame.ySize(), (Gfx::GC)0, (Gfx::GC)offsetMax);
+					offset = IG::remap((float)e.pos().y, (float)viewFrame.y, (float)viewFrame.y + (float)viewFrame.ySize(), 0.f, (float)offsetMax);
 					offset = std::clamp(offset, 0, offsetMax);
 				}
 				else
@@ -260,13 +263,10 @@ void ScrollView::setScrollOffset(int o)
 	offset = std::clamp(o, 0, offsetMax);
 }
 
-int ScrollView::scrollOffset() const
-{
-	return offset;
-}
-
 void ScrollView::stopScrollAnimation()
 {
 	lastFrameTimestamp = {};
 	window().removeOnFrame(animate);
+}
+
 }

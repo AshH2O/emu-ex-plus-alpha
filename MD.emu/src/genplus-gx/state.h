@@ -23,9 +23,6 @@
 #ifndef _STATE_H_
 #define _STATE_H_
 
-#include <system_error>
-#include <emuframework/EmuSystem.hh>
-
 #ifndef NO_SCD
 #include <scd/scd.h>
 #define STATE_SIZE    0x48100 + sizeof(SegaCD)
@@ -43,7 +40,7 @@
   bufferptr+= size;
 
 /* Function prototypes */
-EmuSystem::Error state_load(const unsigned char *buffer);
-int state_save(unsigned char *buffer);
+void state_load(const unsigned char *buffer);
+int state_save(unsigned char *buffer, bool uncompressed = false);
 
 #endif

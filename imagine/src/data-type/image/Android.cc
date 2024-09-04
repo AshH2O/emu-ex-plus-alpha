@@ -29,7 +29,7 @@
 namespace IG::Data
 {
 
-BitmapFactoryReader::BitmapFactoryReader(Base::ApplicationContext ctx):
+BitmapFactoryReader::BitmapFactoryReader(ApplicationContext ctx):
 	appPtr{&ctx.application()},
 	baseActivity{ctx.baseActivityObject()},
 	jRecycleBitmap{ctx.application().recycleBitmapMethod()}
@@ -44,11 +44,11 @@ static PixmapImage makePixmapImage(JNIEnv *env, jobject bitmap, JNI::InstMethod<
 {
 	void *buff;
 	AndroidBitmap_lockPixels(env, bitmap, &buff);
-	auto pix = Base::makePixmapView(env, bitmap, buff, {});
+	auto pix = makePixmapView(env, bitmap, buff, {});
 	return PixmapImage{{env, bitmap, recycle}, pix};
 }
 
-PixmapImage PixmapReader::load(const char *name) const
+PixmapImage PixmapReader::load(const char *name, PixmapReaderParams) const
 {
 	auto env = app().thisThreadJniEnv();
 	auto nameJStr = env->NewStringUTF(name);
@@ -62,7 +62,7 @@ PixmapImage PixmapReader::load(const char *name) const
 	return makePixmapImage(env, bitmap, jRecycleBitmap);
 }
 
-PixmapImage PixmapReader::loadAsset(const char *name, const char *) const
+PixmapImage PixmapReader::loadAsset(const char *name, PixmapReaderParams, const char *) const
 {
 	logMsg("loading asset: %s", name);
 	auto env = app().thisThreadJniEnv();
@@ -77,7 +77,7 @@ PixmapImage PixmapReader::loadAsset(const char *name, const char *) const
 	return makePixmapImage(env, bitmap, jRecycleBitmap);
 }
 
-BitmapFactoryImage::BitmapFactoryImage(JNI::LockedLocalBitmap lockedBitmap, Pixmap pix):
+BitmapFactoryImage::BitmapFactoryImage(JNI::LockedLocalBitmap lockedBitmap, PixmapView pix):
 	lockedBitmap{std::move(lockedBitmap)}, pixmap_{pix} {}
 
 PixmapImage::operator bool() const
@@ -85,14 +85,12 @@ PixmapImage::operator bool() const
 	return (bool)lockedBitmap;
 }
 
-std::errc PixmapImage::write(Pixmap dest)
+void PixmapImage::write(MutablePixmapView dest)
 {
-	assumeExpr(dest.format() == pixmap_.format());
 	dest.write(pixmap_, {});
-	return {};
 }
 
-Pixmap PixmapImage::pixmapView()
+PixmapView PixmapImage::pixmapView()
 {
 	return pixmap_;
 }
@@ -102,7 +100,9 @@ PixmapImage::operator PixmapSource()
 	return {pixmapView()};
 }
 
-BitmapWriter::BitmapWriter(Base::ApplicationContext ctx):
+bool PixmapImage::isPremultipled() const { return true; }
+
+BitmapWriter::BitmapWriter(ApplicationContext ctx):
 	appPtr{&ctx.application()},
 	baseActivity{ctx.baseActivityObject()}
 {
@@ -112,10 +112,10 @@ BitmapWriter::BitmapWriter(Base::ApplicationContext ctx):
 	jWritePNG = {env, baseActivityCls, "writePNG", "(Landroid/graphics/Bitmap;Ljava/lang/String;)Z"};
 }
 
-bool PixmapWriter::writeToFile(Pixmap pix, const char *path) const
+bool PixmapWriter::writeToFile(PixmapView pix, const char *path) const
 {
 	auto env = app().thisThreadJniEnv();
-	auto aFormat = pix.format().id() == PIXEL_RGB565 ? ANDROID_BITMAP_FORMAT_RGB_565 : ANDROID_BITMAP_FORMAT_RGBA_8888;
+	auto aFormat = pix.format() == PixelFmtRGB565 ? ANDROID_BITMAP_FORMAT_RGB_565 : ANDROID_BITMAP_FORMAT_RGBA_8888;
 	auto bitmap = jMakeBitmap(env, baseActivity, pix.w(), pix.h(), aFormat);
 	if(!bitmap)
 	{
@@ -124,7 +124,7 @@ bool PixmapWriter::writeToFile(Pixmap pix, const char *path) const
 	}
 	void *buffer;
 	AndroidBitmap_lockPixels(env, bitmap, &buffer);
-	Base::makePixmapView(env, bitmap, buffer, pix.format()).writeConverted(pix, {});
+	makePixmapView(env, bitmap, buffer, pix.format()).writeConverted(pix, {});
 	AndroidBitmap_unlockPixels(env, bitmap);
 	auto pathJStr = env->NewStringUTF(path);
 	auto writeOK = jWritePNG(env, baseActivity, bitmap, pathJStr);

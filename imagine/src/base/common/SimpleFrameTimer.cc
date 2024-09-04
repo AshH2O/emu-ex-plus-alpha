@@ -13,25 +13,20 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "SimpleFrameTimer"
 #include <imagine/base/SimpleFrameTimer.hh>
 #include <imagine/base/Screen.hh>
 #include <imagine/time/Time.hh>
 #include <imagine/logger/logger.h>
 
-namespace Base
+namespace IG
 {
 
-FrameTimerI::~FrameTimerI() {}
-
-void FrameTimerI::cancel() {}
-
-void FrameTimerI::setFrameTime(IG::FloatSeconds rate) {}
+constexpr SystemLogger log{"SimpleFrameTimer"};
 
 SimpleFrameTimer::SimpleFrameTimer(Screen &screen, EventLoop loop):
 	timer
 	{
-		"SimpleFrameTimer",
+		{.debugLabel = "SimpleFrameTimer", .eventLoop = loop},
 		[this, &screen]()
 		{
 			if(!requested)
@@ -48,16 +43,12 @@ SimpleFrameTimer::SimpleFrameTimer(Screen &screen, EventLoop loop):
 				}
 			}
 			requested = false;
-			auto timestamp = IG::steadyClockTimestamp();
-			if(screen.frameUpdate(timestamp))
+			if(screen.frameUpdate(SteadyClock::now()))
 				scheduleVSync();
 			return true;
 		}
 	},
-	eventLoop{loop}
-{
-	assumeExpr(screen.frameTime().count());
-}
+	interval{fromHz<Nanoseconds>(screen.frameRate())} {}
 
 void SimpleFrameTimer::scheduleVSync()
 {
@@ -72,7 +63,7 @@ void SimpleFrameTimer::scheduleVSync()
 		return;
 	}
 	assert(interval.count());
-	timer.runIn(IG::Nanoseconds(1), interval, eventLoop);
+	timer.runIn(Nanoseconds{1}, interval);
 }
 
 void SimpleFrameTimer::cancel()
@@ -81,14 +72,21 @@ void SimpleFrameTimer::cancel()
 	keepTimer = false;
 }
 
-void SimpleFrameTimer::setFrameTime(IG::FloatSeconds time)
+void SimpleFrameTimer::setFrameRate(FrameRate rate)
 {
-	logMsg("set frame rate:%.2f", 1. / time.count());
-	interval = std::chrono::duration_cast<IG::Nanoseconds>(time);
+	interval = fromHz<Nanoseconds>(rate);
+	log.info("set frame rate:{:g} (timer interval:{}ns)", rate, interval.count());
 	if(timer.isArmed())
 	{
-		timer.runIn(IG::Nanoseconds(1), interval, eventLoop);
+		timer.runIn(Nanoseconds{1}, interval);
 	}
 }
+
+void SimpleFrameTimer::setEventsOnThisThread(ApplicationContext)
+{
+	timer.setEventLoop({});
+}
+
+void NullFrameTimer::setEventsOnThisThread(ApplicationContext) {}
 
 }

@@ -87,7 +87,8 @@ static io_source_t ethernetcart_device = {
     ethernetcart_dump,           /* device state information dump function */
     CARTRIDGE_TFE,               /* cartridge ID */
     IO_PRIO_NORMAL,              /* normal priority, device read needs to be checked for collisions */
-    0                            /* insertion order, gets filled in by the registration function */
+    0,                           /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE               /* NO mirroring */
 };
 
 static export_resource_t export_res = {
@@ -150,7 +151,12 @@ static uint8_t ethernetcart_read(uint16_t io_address)
     if (ethernetcart_mode == ETHERNETCART_MODE_RRNET) {
         if (io_address < 2) {
             return 0;
+            /* FIXME: is this a mistake with return 0; being too early, or is
+             *        the next line supposed to be commented out/deleted?
+             */
+#if 0
             ethernetcart_device.io_source_valid = 0;
+#endif
         }
         io_address ^= 8;
     }
@@ -369,18 +375,27 @@ int ethernetcart_disable(void)
 }
 
 
-static const resource_int_t resources_int[] = {
+static resource_int_t resources_int[] = {
     { "ETHERNETCART_ACTIVE", 0, RES_EVENT_STRICT, (resource_value_t)0,
       &ethernetcart_enabled, set_ethernetcart_enabled, NULL },
-    { "ETHERNETCARTBase", 0xffff, RES_EVENT_STRICT, (resource_value_t)0,
+    /* CAUTION: position is hardcoded below */
+    { "ETHERNETCARTBase", 0xffff, RES_EVENT_STRICT, (resource_value_t)0xffff,
       &ethernetcart_base, set_ethernetcart_base, NULL },
-    { "ETHERNETCARTMode", ETHERNETCART_MODE_TFE, RES_EVENT_STRICT, (resource_value_t)0,
+    { "ETHERNETCARTMode", ETHERNETCART_MODE_RRNET, RES_EVENT_STRICT, (resource_value_t)ETHERNETCART_MODE_RRNET,
       &ethernetcart_mode, set_ethernetcart_mode, NULL },
     RESOURCE_INT_LIST_END
 };
 
 int ethernetcart_resources_init(void)
 {
+    /* Set the default factory value depending on the machine. We do this
+       here so the default value will not end up in the config file. */
+    if (machine_class == VICE_MACHINE_VIC20) {
+        resources_int[1].factory_value = 0x9800;
+    } else {
+        resources_int[1].factory_value = 0xde00;
+    }
+
     if (cs8900io_resources_init() < 0) {
         return -1;
     }
@@ -460,7 +475,7 @@ int ethernetcart_cmdline_options_init(void)
     if (machine_class == VICE_MACHINE_VIC20) {
         temp1 = util_gen_hex_address_list(0x9800, 0x9900, 0x10);
         temp2 = util_gen_hex_address_list(0x9c00, 0x9d00, 0x10);
-        ethernetcart_address_list = util_concat("Base address of the Ethernet Cartridge. (", temp1, "/", temp2, ")", NULL);        
+        ethernetcart_address_list = util_concat("Base address of the Ethernet Cartridge. (", temp1, "/", temp2, ")", NULL);
         lib_free(temp2);
     } else {
         temp1 = util_gen_hex_address_list(0xde00, 0xe000, 0x10);

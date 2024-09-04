@@ -90,5 +90,31 @@ void X6502_DMW(uint32 A, uint8 V);
 void X6502_IRQBegin(int w);
 void X6502_IRQEnd(int w);
 
+int X6502_GetOpcodeCycles( int op );
+
+class X6502_MemHook
+{
+	public:
+		enum Type { Read = 0, Write, Exec } type;
+
+		static void Add(enum Type type, void (*func)(unsigned int address, unsigned int value, void *userData), void *userData = nullptr );
+		static void Remove(enum Type type, void (*func)(unsigned int address, unsigned int value, void *userData), void *userData = nullptr );
+
+		inline void call( unsigned int address, unsigned int value )
+		{
+			func(address, value, userData);
+
+			if (next != nullptr)
+			{
+				next->call(address, value);
+			}
+		}
+	private:
+		void (*func)(unsigned int address, unsigned int value, void *userData) = nullptr;
+		void  *userData = nullptr;
+		X6502_MemHook* next = nullptr;
+		int refCount = 0;
+};
+
 #define _X6502H
 #endif

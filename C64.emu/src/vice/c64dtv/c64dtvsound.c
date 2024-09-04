@@ -36,9 +36,19 @@
 
 /* ---------------------------------------------------------------------*/
 
+#ifdef SOUND_SYSTEM_FLOAT
+/* stereo mixing placement of the C64DTV SID sound */
+static sound_chip_mixing_spec_t sid_sound_mixing_spec[SOUND_CHIP_CHANNELS_MAX] = {
+    {
+        100, /* left channel volume % in case of stereo output, default output to both */
+        100  /* right channel volume % in case of stereo output, default output to both */
+    }
+};
+#endif
+
 /* C64DTV SID sound chip */
 static sound_chip_t sid_sound_chip = {
-    sid_sound_machine_open,              /* sound chip open function */ 
+    sid_sound_machine_open,              /* sound chip open function */
     sid_sound_machine_init,              /* sound chip init function */
     sid_sound_machine_close,             /* sound chip close function */
     sid_sound_machine_calculate_samples, /* sound chip calculate samples function */
@@ -47,6 +57,9 @@ static sound_chip_t sid_sound_chip = {
     sid_sound_machine_reset,             /* sound chip reset function */
     sid_sound_machine_cycle_based,       /* sound chip 'is_cycle_based()' function, RESID engine is cycle based, everything else is NOT */
     sid_sound_machine_channels,          /* sound chip 'get_amount_of_channels()' function, sound chip has 1 channel */
+#ifdef SOUND_SYSTEM_FLOAT
+    sid_sound_mixing_spec,               /* stereo mixing placement specs */
+#endif
     1                                    /* chip is always enabled */
 };
 
@@ -59,28 +72,43 @@ void sid_sound_chip_init(void)
 
 /* ---------------------------------------------------------------------*/
 
-int machine_sid2_check_range(unsigned int sid2_adr)
+int machine_sid2_check_range(unsigned int sid_adr)
 {
     return -1;
 }
 
-int machine_sid3_check_range(unsigned int sid3_adr)
+int machine_sid3_check_range(unsigned int sid_adr)
 {
     return -1;
 }
 
-int machine_sid4_check_range(unsigned int sid3_adr)
+int machine_sid4_check_range(unsigned int sid_adr)
+{
+    return -1;
+}
+
+int machine_sid5_check_range(unsigned int sid_adr)
+{
+    return -1;
+}
+
+int machine_sid6_check_range(unsigned int sid_adr)
+{
+    return -1;
+}
+
+int machine_sid7_check_range(unsigned int sid_adr)
+{
+    return -1;
+}
+
+int machine_sid8_check_range(unsigned int sid_adr)
 {
     return -1;
 }
 
 void machine_sid2_enable(int val)
 {
-}
-
-void sound_machine_prevent_clk_overflow(sound_t *psid, CLOCK sub)
-{
-    sid_sound_machine_prevent_clk_overflow(psid, sub);
 }
 
 char *sound_machine_dump_state(sound_t *psid)

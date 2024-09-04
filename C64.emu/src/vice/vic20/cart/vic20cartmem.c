@@ -24,6 +24,8 @@
  *
  */
 
+#define DEBUGCART
+
 #include "vice.h"
 
 #include <stdio.h>
@@ -60,6 +62,11 @@
 #include "vic20-midi.h"
 #include "vic-fp.h"
 
+#ifdef DEBUGCART
+#define DBG(x)  printf x
+#else
+#define DBG(x)
+#endif
 
 /* ------------------------------------------------------------------------- */
 
@@ -463,11 +470,31 @@ void cartridge_reset(void)
     }
 }
 
+void cartridge_powerup(void)
+{
+    switch (mem_cartridge_type) {
+        case CARTRIDGE_VIC20_UM:
+            vic_um_powerup();
+            break;
+        case CARTRIDGE_VIC20_FP:
+            vic_fp_powerup();
+            break;
+        case CARTRIDGE_VIC20_MEGACART:
+            megacart_powerup();
+            break;
+        case CARTRIDGE_VIC20_FINAL_EXPANSION:
+            finalexpansion_powerup();
+            break;
+    }
+}
+
 void cartridge_attach(int type, uint8_t *rawcart)
 {
     int cartridge_reset;
 
     mem_cartridge_type = type;
+
+    DBG(("cartridge_attach type: %d\n", type));
 #if 0
     switch (type) {
         case CARTRIDGE_VIC20_GENERIC:
@@ -494,7 +521,7 @@ void cartridge_attach(int type, uint8_t *rawcart)
 
     if (cartridge_reset != 0) {
         /* "Turn off machine before inserting cartridge" */
-        machine_trigger_reset(MACHINE_RESET_MODE_HARD);
+        machine_trigger_reset(MACHINE_RESET_MODE_POWER_CYCLE);
     }
 }
 
@@ -564,7 +591,7 @@ void cartridge_detach(int type)
 
     if (cartridge_reset != 0) {
         /* "Turn off machine before removing cartridge" */
-        machine_trigger_reset(MACHINE_RESET_MODE_HARD);
+        machine_trigger_reset(MACHINE_RESET_MODE_POWER_CYCLE);
     }
 }
 

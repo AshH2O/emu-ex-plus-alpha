@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -26,7 +26,7 @@ string Bankswitch::typeToName(Bankswitch::Type type)
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 Bankswitch::Type Bankswitch::nameToType(const string& name)
 {
-  auto it = ourNameToTypes.find(name);
+  const auto it = ourNameToTypes.find(name);
   if(it != ourNameToTypes.end())
     return it->second;
 
@@ -43,10 +43,10 @@ string Bankswitch::typeToDesc(Bankswitch::Type type)
 Bankswitch::Type Bankswitch::typeFromExtension(const FilesystemNode& file)
 {
   const string& name = file.getPath();
-  string::size_type idx = name.find_last_of('.');
+  const string::size_type idx = name.find_last_of('.');
   if(idx != string::npos)
   {
-    auto it = ourExtensions.find(name.c_str() + idx + 1);
+    const auto it = ourExtensions.find(name.c_str() + idx + 1);
     if(it != ourExtensions.end())
       return it->second;
   }
@@ -57,11 +57,11 @@ Bankswitch::Type Bankswitch::typeFromExtension(const FilesystemNode& file)
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 bool Bankswitch::isValidRomName(const string& name, string& ext)
 {
-  string::size_type idx = name.find_last_of('.');
+  const string::size_type idx = name.find_last_of('.');
   if(idx != string::npos)
   {
     const char* const e = name.c_str() + idx + 1;
-    auto it = ourExtensions.find(e);
+    const auto it = ourExtensions.find(e);
     if(it != ourExtensions.end())
     {
       ext = e;
@@ -95,17 +95,19 @@ bool Bankswitch::isValidRomName(const string& name)
 const std::array<Bankswitch::Description, static_cast<int>(Bankswitch::Type::NumSchemes)>
 Bankswitch::BSList = {{
   { "AUTO"    , "Auto-detect"                 },
-  { "0840"    , "0840 (8K ECONObank)"         },
-  { "2IN1"    , "2IN1 Multicart (4-32K)"      },
-  { "4IN1"    , "4IN1 Multicart (8-32K)"      },
+  { "0840"    , "0840 (8K EconoBanking)"      },
+  { "0FA0"    , "0FA0 (8K Fotomania)"         },
+  { "2IN1"    , "2IN1 Multicart (4-64K)"      },
+  { "4IN1"    , "4IN1 Multicart (8-64K)"      },
   { "8IN1"    , "8IN1 Multicart (16-64K)"     },
   { "16IN1"   , "16IN1 Multicart (32-128K)"   },
   { "32IN1"   , "32IN1 Multicart (64/128K)"   },
   { "64IN1"   , "64IN1 Multicart (128/256K)"  },
   { "128IN1"  , "128IN1 Multicart (256/512K)" },
   { "2K"      , "2K (32-2048 bytes Atari)"    },
-  { "3E"      , "3E (32K Tigervision)"        },
-  { "3E+"     , "3E+ (TJ modified DASH)"      },
+  { "3E"      , "3E (Tigervision, 32K RAM)"   },
+  { "3EX"     , "3EX (Tigervision, 256K RAM)" },
+  { "3E+"     , "3E+ (TJ modified 3E)"        },
   { "3F"      , "3F (512K Tigervision)"       },
   { "4A50"    , "4A50 (64K 4A50 + RAM)"       },
   { "4K"      , "4K (4K Atari)"               },
@@ -118,15 +120,12 @@ Bankswitch::BSList = {{
   { "CM"      , "CM (SpectraVideo CompuMate)" },
   { "CTY"     , "CTY (CDW - Chetiry)"         },
   { "CV"      , "CV (Commavid extra RAM)"     },
-  { "CV+"     , "CV+ (Extended Commavid)"     },
-  { "DASH"    , "DASH (Experimental)"         },
   { "DF"      , "DF (CPUWIZ 128K)"            },
   { "DFSC"    , "DFSC (CPUWIZ 128K + RAM)"    },
   { "DPC"     , "DPC (Pitfall II)"            },
   { "DPC+"    , "DPC+ (Enhanced DPC)"         },
   { "E0"      , "E0 (8K Parker Bros)"         },
-  { "E7"      , "E7 (16K M-network)"          },
-  { "E78K"    , "E78K (8K M-network)"         },
+  { "E7"      , "E7 (8-16K M Network)"        },
   { "EF"      , "EF (64K H. Runner)"          },
   { "EFSC"    , "EFSC (64K H. Runner + RAM)"  },
   { "F0"      , "F0 (Dynacom Megaboy)"        },
@@ -139,9 +138,11 @@ Bankswitch::BSList = {{
   { "FA"      , "FA (CBS RAM Plus)"           },
   { "FA2"     , "FA2 (CBS RAM Plus 24/28K)"   },
   { "FC"      , "FC (32K Amiga)"              },
-  { "FE"      , "FE (8K Decathlon)"           },
+  { "FE"      , "FE (8K Activision)"          },
   { "MDM"     , "MDM (Menu Driven Megacart)"  },
+  { "MVC"     , "MVC (Movie Cart)"            },
   { "SB"      , "SB (128-256K SUPERbank)"     },
+  { "TVBOY"   , "TV Boy (512K)"               },
   { "UA"      , "UA (8K UA Ltd.)"             },
   { "UASW"    , "UASW (8K UA swapped banks)"  },
   { "WD"      , "WD (Pink Panther)"           },
@@ -167,6 +168,8 @@ Bankswitch::ExtensionMap Bankswitch::ourExtensions = {
   // All bankswitch types (those that UnoCart and HarmonyCart support have the same name)
   { "084"   , Bankswitch::Type::_0840   },
   { "0840"  , Bankswitch::Type::_0840   },
+  { "0FA"   , Bankswitch::Type::_0FA0   },
+  { "0FA0"  , Bankswitch::Type::_0FA0   },
   { "2N1"   , Bankswitch::Type::_2IN1   },
   { "4N1"   , Bankswitch::Type::_4IN1   },
   { "8N1"   , Bankswitch::Type::_8IN1   },
@@ -180,6 +183,7 @@ Bankswitch::ExtensionMap Bankswitch::ourExtensions = {
   { "128N1" , Bankswitch::Type::_128IN1 },
   { "2K"    , Bankswitch::Type::_2K     },
   { "3E"    , Bankswitch::Type::_3E     },
+  { "3EX"   , Bankswitch::Type::_3EX    },
   { "3EP"   , Bankswitch::Type::_3EP    },
   { "3E+"   , Bankswitch::Type::_3EP    },
   { "3F"    , Bankswitch::Type::_3F     },
@@ -197,9 +201,6 @@ Bankswitch::ExtensionMap Bankswitch::ourExtensions = {
   { "CM"    , Bankswitch::Type::_CM     },
   { "CTY"   , Bankswitch::Type::_CTY    },
   { "CV"    , Bankswitch::Type::_CV     },
-  { "CVP"   , Bankswitch::Type::_CVP    },
-  { "DAS"   , Bankswitch::Type::_DASH   },
-  { "DASH"  , Bankswitch::Type::_DASH   },
   { "DF"    , Bankswitch::Type::_DF     },
   { "DFS"   , Bankswitch::Type::_DFSC   },
   { "DFSC"  , Bankswitch::Type::_DFSC   },
@@ -208,8 +209,8 @@ Bankswitch::ExtensionMap Bankswitch::ourExtensions = {
   { "DPCP"  , Bankswitch::Type::_DPCP   },
   { "E0"    , Bankswitch::Type::_E0     },
   { "E7"    , Bankswitch::Type::_E7     },
-  { "E78"   , Bankswitch::Type::_E78K   },
-  { "E78K"  , Bankswitch::Type::_E78K   },
+  { "E78"   , Bankswitch::Type::_E7     },
+  { "E78K"  , Bankswitch::Type::_E7     },
   { "EF"    , Bankswitch::Type::_EF     },
   { "EFS"   , Bankswitch::Type::_EFSC   },
   { "EFSC"  , Bankswitch::Type::_EFSC   },
@@ -228,7 +229,10 @@ Bankswitch::ExtensionMap Bankswitch::ourExtensions = {
   { "FC"    , Bankswitch::Type::_FC     },
   { "FE"    , Bankswitch::Type::_FE     },
   { "MDM"   , Bankswitch::Type::_MDM    },
+  { "MVC"   , Bankswitch::Type::_MVC    },
   { "SB"    , Bankswitch::Type::_SB     },
+  { "TVB"   , Bankswitch::Type::_TVBOY  },
+  { "TVBOY" , Bankswitch::Type::_TVBOY  },
   { "UA"    , Bankswitch::Type::_UA     },
   { "UASW"  , Bankswitch::Type::_UASW   },
   { "WD"    , Bankswitch::Type::_WD     },
@@ -240,6 +244,7 @@ Bankswitch::ExtensionMap Bankswitch::ourExtensions = {
 Bankswitch::NameToTypeMap Bankswitch::ourNameToTypes = {
   { "AUTO"    , Bankswitch::Type::_AUTO   },
   { "0840"    , Bankswitch::Type::_0840   },
+  { "0FA0"    , Bankswitch::Type::_0FA0   },
   { "2IN1"    , Bankswitch::Type::_2IN1   },
   { "4IN1"    , Bankswitch::Type::_4IN1   },
   { "8IN1"    , Bankswitch::Type::_8IN1   },
@@ -250,6 +255,7 @@ Bankswitch::NameToTypeMap Bankswitch::ourNameToTypes = {
   { "2K"      , Bankswitch::Type::_2K     },
   { "3E"      , Bankswitch::Type::_3E     },
   { "3E+"     , Bankswitch::Type::_3EP    },
+  { "3EX"     , Bankswitch::Type::_3EX    },
   { "3F"      , Bankswitch::Type::_3F     },
   { "4A50"    , Bankswitch::Type::_4A50   },
   { "4K"      , Bankswitch::Type::_4K     },
@@ -262,15 +268,12 @@ Bankswitch::NameToTypeMap Bankswitch::ourNameToTypes = {
   { "CM"      , Bankswitch::Type::_CM     },
   { "CTY"     , Bankswitch::Type::_CTY    },
   { "CV"      , Bankswitch::Type::_CV     },
-  { "CV+"     , Bankswitch::Type::_CVP    },
-  { "DASH"    , Bankswitch::Type::_DASH   },
   { "DF"      , Bankswitch::Type::_DF     },
   { "DFSC"    , Bankswitch::Type::_DFSC   },
   { "DPC"     , Bankswitch::Type::_DPC    },
   { "DPC+"    , Bankswitch::Type::_DPCP   },
   { "E0"      , Bankswitch::Type::_E0     },
   { "E7"      , Bankswitch::Type::_E7     },
-  { "E78K"    , Bankswitch::Type::_E78K   },
   { "EF"      , Bankswitch::Type::_EF     },
   { "EFSC"    , Bankswitch::Type::_EFSC   },
   { "F0"      , Bankswitch::Type::_F0     },
@@ -285,7 +288,9 @@ Bankswitch::NameToTypeMap Bankswitch::ourNameToTypes = {
   { "FC"      , Bankswitch::Type::_FC     },
   { "FE"      , Bankswitch::Type::_FE     },
   { "MDM"     , Bankswitch::Type::_MDM    },
+  { "MVC"     , Bankswitch::Type::_MVC    },
   { "SB"      , Bankswitch::Type::_SB     },
+  { "TVBOY"   , Bankswitch::Type::_TVBOY  },
   { "UA"      , Bankswitch::Type::_UA     },
   { "UASW"    , Bankswitch::Type::_UASW   },
   { "WD"      , Bankswitch::Type::_WD     },

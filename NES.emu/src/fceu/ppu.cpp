@@ -59,6 +59,7 @@
 
 #define PPU_status  (PPU[2])
 
+#define READPALNOGS(ofs)    (PALRAM[(ofs)])
 #define READPAL(ofs)    (PALRAM[(ofs)] & (GRAYSCALE ? 0x30 : 0xFF))
 #define READUPAL(ofs)   (UPALRAM[(ofs)] & (GRAYSCALE ? 0x30 : 0xFF))
 
@@ -457,13 +458,24 @@ volatile int rendercount, vromreadcount, undefinedvromcount, LogAddress = -1;
 unsigned char *cdloggervdata = NULL;
 unsigned int cdloggerVideoDataSize = 0;
 
-int GetCHRAddress(int A) {
-	if (cdloggerVideoDataSize) {
-		int result = &VPage[A >> 10][A] - CHRptr[0];
+int GetCHRAddress(int A)
+{
+	if (cdloggerVideoDataSize)
+	{
+		int result = -1;
+		if ( (A >= 0) && (A < 0x2000) )
+		{
+			result = &VPage[A >> 10][A] - CHRptr[0];
+		}
 		if ((result >= 0) && (result < (int)cdloggerVideoDataSize))
+		{
 			return result;
-	} else
-		if(A < 0x2000) return A;
+		}
+	}
+	else
+	{
+		if ( (A >= 0) && (A < 0x2000) ) return A;
+	}
 	return -1;
 }
 
@@ -1090,7 +1102,7 @@ static void RefreshLine(int lastpixel) {
 	uint32 vofs;
 	int X1;
 
-	register uint8 *P = Pline;
+	uint8 *P = Pline;
 	int lasttile = lastpixel >> 3;
 	int numtiles;
 	static int norecurse = 0;	// Yeah, recursion would be bad.
@@ -1724,10 +1736,17 @@ void FCEUPPU_Reset(void) {
 void FCEUPPU_Power(void) {
 	int x;
 
-	memset(NTARAM, 0x00, 0x800);
-	memset(PALRAM, 0x00, 0x20);
-	memset(UPALRAM, 0x00, 0x03);
-	memset(SPRAM, 0x00, 0x100);
+	// initialize PPU memory regions according to settings
+	FCEU_MemoryRand(NTARAM, 0x800, true);
+	FCEU_MemoryRand(PALRAM, 0x20, true);
+	FCEU_MemoryRand(SPRAM, 0x100, true);
+	// palettes can only store values up to $3F, and PALRAM X4/X8/XC are mirrors of X0 for rendering purposes (UPALRAM is used for $2007 readback)
+	for (x = 0; x < 0x20; ++x) PALRAM[x] &= 0x3F;
+	UPALRAM[0] = PALRAM[0x04];
+	UPALRAM[1] = PALRAM[0x08];
+	UPALRAM[2] = PALRAM[0x0C];
+	PALRAM[0x0C] = PALRAM[0x08] = PALRAM[0x04] = PALRAM[0x00];
+	PALRAM[0x1C] = PALRAM[0x18] = PALRAM[0x14] = PALRAM[0x10];
 	FCEUPPU_Reset();
 
 	for (x = 0x2000; x < 0x4000; x += 8) {
@@ -1751,7 +1770,12 @@ void FCEUPPU_Power(void) {
 	BWrite[0x4014] = B4014;
 }
 
-int FCEUPPU_Loop(EmuSystemTask *task, EmuVideo *video, int skip) {
+namespace EmuEx
+{
+void emulateSound(EmuAudio *audio);
+}
+
+int FCEUPPU_Loop(EmuEx::EmuSystemTaskContext taskCtx, EmuEx::NesSystem &sys, EmuEx::EmuVideo *video, EmuEx::EmuAudio *audio, int skip) {
 	if ((newppu) && (GameInfo->type != GIT_NSF)) {
 		int FCEUX_PPU_Loop(int skip);
 		return FCEUX_PPU_Loop(skip);
@@ -1763,7 +1787,7 @@ int FCEUPPU_Loop(EmuSystemTask *task, EmuVideo *video, int skip) {
 		X6502_Run(scanlines_per_frame * (256 + 85));
 		ppudead--;
 		if(!skip)
-			FCEUPPU_FrameReady(task, video, nullptr);
+			FCEUPPU_FrameReady(taskCtx, sys, video, nullptr);
 	} else {
 		X6502_Run(256 + 85);
 		PPU_status |= 0x80;
@@ -1819,7 +1843,10 @@ int FCEUPPU_Loop(EmuSystemTask *task, EmuVideo *video, int skip) {
 			kook ^= 1;
 		}
 		if (GameInfo->type == GIT_NSF)
+		{
 			X6502_Run((256 + 85) * normalscanlines);
+			FCEUPPU_FrameReady(taskCtx, sys, video, nullptr);
+		}
 		#ifdef FRAMESKIP
 		else if (skip) {
 			int y;
@@ -1855,10 +1882,11 @@ int FCEUPPU_Loop(EmuSystemTask *task, EmuVideo *video, int skip) {
 
 			for (scanline = 0; scanline < totalscanlines; ) {	//scanline is incremented in  DoLine.  Evil. :/
 				deempcnt[deemp]++;
-				if (scanline < 240)
-				{
+
+				if (scanline < 240) {
 					DEBUG(FCEUD_UpdatePPUView(scanline, 1));
 				}
+
 				DoLine();
 
 				if (scanline < normalscanlines || scanline == totalscanlines)
@@ -1868,8 +1896,12 @@ int FCEUPPU_Loop(EmuSystemTask *task, EmuVideo *video, int skip) {
 						break;
 					overclocking = 1;
 				}
+				if(soundtimestamp > 8000)
+				{
+					emulateSound(audio);
+				}
 			}
-			FCEUPPU_FrameReady(task, video, XBuf);
+			FCEUPPU_FrameReady(taskCtx, sys, video, XBuf);
 			DMC_7bit = 0;
 
 			if (MMC5Hack) MMC5_hb(scanline);
@@ -1898,7 +1930,7 @@ int FCEUPPU_Loop(EmuSystemTask *task, EmuVideo *video, int skip) {
 	}
 }
 
-int (*PPU_MASTER)(EmuSystemTask *task, EmuVideo *video, int skip) = FCEUPPU_Loop;
+int (*PPU_MASTER)(EmuEx::EmuSystemTaskContext, EmuEx::NesSystem &, EmuEx::EmuVideo *, EmuEx::EmuAudio *, int skip) = FCEUPPU_Loop;
 
 static uint16 TempAddrT, RefreshAddrT;
 
@@ -1921,7 +1953,7 @@ SFORMAT FCEUPPU_STATEINFO[] = {
 	{ &TempAddrT, 2 | FCEUSTATE_RLSB, "TADD" },
 	{ &VRAMBuffer, 1, "VBUF" },
 	{ &PPUGenLatch, 1, "PGEN" },
-	{ }
+	{ 0 }
 };
 
 SFORMAT FCEU_NEWPPU_STATEINFO[] = {
@@ -1956,7 +1988,7 @@ SFORMAT FCEU_NEWPPU_STATEINFO[] = {
 	{ &ppur.status.sl, 4 | FCEUSTATE_RLSB, "PST0" },
 	{ &ppur.status.cycle, 4 | FCEUSTATE_RLSB, "PST1" },
 	{ &ppur.status.end_cycle, 4 | FCEUSTATE_RLSB, "PST2" },
-	{ }
+	{ 0 }
 };
 
 void FCEUPPU_SaveState(void) {
@@ -1992,6 +2024,7 @@ void runppu(int x) {
 struct BGData {
 	struct Record {
 		uint8 nt, pecnt, at, pt[2], qtnt;
+		uint8 ppu1[8];
 
 		INLINE void Read() {
 			NTRefreshAddr = RefreshAddr = ppur.get_ntread();
@@ -2003,7 +2036,12 @@ struct BGData {
 			}
 			pecnt = (RefreshAddr & 1) << 3;
 			nt = CALL_PPUREAD(RefreshAddr);
-			runppu(kFetchTime);
+			ppu1[0] = PPU[1];
+			runppu(1);
+			ppu1[1] = PPU[1];
+			runppu(1);
+
+
 
 			RefreshAddr = ppur.get_atread();
 			at = CALL_PPUREAD(RefreshAddr);
@@ -2015,37 +2053,57 @@ struct BGData {
 			at <<= 2;
 			//horizontal scroll clocked at cycle 3 and then
 			//vertical scroll at 251
+			ppu1[2] = PPU[1];
 			runppu(1);
 			if (PPUON) {
 				ppur.increment_hsc();
 				if (ppur.status.cycle == 251)
 					ppur.increment_vs();
 			}
+			ppu1[3] = PPU[1];
 			runppu(1);
 
 			ppur.par = nt;
 			RefreshAddr = ppur.get_ptread();
 			if (PEC586Hack) {
 				pt[0] = CALL_PPUREAD(RefreshAddr | pecnt);
-				runppu(kFetchTime);
+				ppu1[4] = PPU[1];
+				runppu(1);
+				ppu1[5] = PPU[1];
+				runppu(1);
 				pt[1] = CALL_PPUREAD(RefreshAddr | pecnt);
-				runppu(kFetchTime);
+				ppu1[6] = PPU[1];
+				runppu(1);
+				ppu1[7] = PPU[1];
+				runppu(1);
 			} else if (QTAIHack && (qtnt & 0x40)) {
 				pt[0] = *(CHRptr[0] + RefreshAddr);
-				runppu(kFetchTime);
+				ppu1[4] = PPU[1];
+				runppu(1);
+				ppu1[5] = PPU[1];
+				runppu(1);
 				RefreshAddr |= 8;
 				pt[1] = *(CHRptr[0] + RefreshAddr);
-				runppu(kFetchTime);
+				ppu1[6] = PPU[1];
+				runppu(1);
+				ppu1[7] = PPU[1];
+				runppu(1);
 			} else {
 				if (ScreenON)
 					RENDER_LOG(RefreshAddr);
 				pt[0] = CALL_PPUREAD(RefreshAddr);
-				runppu(kFetchTime);
+				ppu1[4] = PPU[1];
+				runppu(1);
+				ppu1[5] = PPU[1];
+				runppu(1);
 				RefreshAddr |= 8;
 				if (ScreenON)
 					RENDER_LOG(RefreshAddr);
 				pt[1] = CALL_PPUREAD(RefreshAddr);
-				runppu(kFetchTime);
+				ppu1[6] = PPU[1];
+				runppu(1);
+				ppu1[7] = PPU[1];
+				runppu(1);
 			}
 		}
 	};
@@ -2140,7 +2198,8 @@ int FCEUX_PPU_Loop(int skip) {
 		//int xscroll = ppur.fh;
 		//render 241/291 scanlines (1 dummy at beginning, dendy's 50 at the end)
 		//ignore overclocking!
-		for (int sl = 0; sl < normalscanlines; sl++) {
+		for (int sl = 0; sl < normalscanlines; sl++)
+		{
 			spr_read.start_scanline();
 
 			g_rasterpos = 0;
@@ -2151,7 +2210,8 @@ int FCEUX_PPU_Loop(int skip) {
 			const int yp = sl - 1;
 			ppuphase = PPUPHASE_BG;
 
-			if (sl != 0 && sl < 241) { // ignore the invisible
+			if (sl != 0 && sl < 241)  // ignore the invisible
+			{
 				DEBUG(FCEUD_UpdatePPUView(scanline = yp, 1));
 				DEBUG(FCEUD_UpdateNTView(scanline = yp, 1));
 			}
@@ -2219,7 +2279,7 @@ int FCEUX_PPU_Loop(int skip) {
 							pixel = ((pt[0] >> (7 - bgpx)) & 1) | (((pt[1] >> (7 - bgpx)) & 1) << 1) | bgdata.main[bgtile].at;
 						}
 						if (renderbg)
-							pixelcolor = READPAL(pixel);
+							pixelcolor = READPALNOGS(pixel);
 
 						//look for a sprite to be drawn
 						bool havepixel = false;
@@ -2264,12 +2324,25 @@ int FCEUX_PPU_Loop(int skip) {
 								spixel |= (oam[2] & 3) << 2;
 
 								if (rendersprites)
-									pixelcolor = READPAL(0x10 + spixel);
+									pixelcolor = READPALNOGS(0x10 + spixel);
 							}
 						}
 
-						*ptr++ = PaletteAdjustPixel(pixelcolor);
-						*dptr++= PPU[1]>>5; //grab deemph
+						//apply grayscale.. kind of clunky
+						//really we need to read the entire palette instead of just ppu1
+						//this will be needed for special color effects probably (very fine rainbows and whatnot?)
+						//are you allowed to chang the palette mid-line anyway? well you can definitely change the grayscale flag as we know from the FF1 "polygon" effect
+						if(bgdata.main[xt+2].ppu1[xp]&1)
+							pixelcolor &= 0x30;
+
+						//this does deemph stuff inside it.. which is probably wrong...
+						*ptr = PaletteAdjustPixel(pixelcolor);
+
+						ptr++;
+
+						//grab deemph..
+						//I guess this works the same way as the grayscale, ideally?
+						*dptr++ = bgdata.main[xt+2].ppu1[xp]>>5;
 					}
 				}
 			}

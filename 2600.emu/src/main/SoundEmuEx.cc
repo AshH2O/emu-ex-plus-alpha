@@ -18,8 +18,8 @@
 #include <stella/common/AudioQueue.hxx>
 #include <stella/common/audio/SimpleResampler.hxx>
 #include <stella/common/audio/LanczosResampler.hxx>
+#include <OSystem.hxx>
 #include <SoundEmuEx.hh>
-#include "internal.hh"
 // TODO: Some Stella types collide with MacTypes.h
 #define Debugger DebuggerMac
 #include <emuframework/EmuSystem.hh>
@@ -27,8 +27,9 @@
 #include <imagine/logger/logger.h>
 #undef Debugger
 
-SoundEmuEx::SoundEmuEx(OSystem& osystem): Sound(osystem)
-{}
+using namespace EmuEx;
+
+SoundEmuEx::SoundEmuEx(OSystem& osystem): Sound(osystem) {}
 
 void SoundEmuEx::open(shared_ptr<AudioQueue> audioQueue, EmulationTiming* emulationTiming)
 {
@@ -36,7 +37,6 @@ void SoundEmuEx::open(shared_ptr<AudioQueue> audioQueue, EmulationTiming* emulat
 	this->audioQueue = audioQueue;
 	this->emulationTiming = emulationTiming;
 	currentFragment = nullptr;
-	configuredVideoFrameRate = 0;
 }
 
 void SoundEmuEx::close()
@@ -46,18 +46,16 @@ void SoundEmuEx::close()
 	audioQueue->closeSink(currentFragment);
   audioQueue.reset();
   myResampler.reset();
+  mixRate = {};
 }
 
-void SoundEmuEx::configForVideoFrameRate(double frameRate)
+void SoundEmuEx::updateResampler()
 {
-	assumeExpr(soundRate);
-	assumeExpr(frameTime);
-	auto tiaSoundRate = std::round(soundRate * (frameRate * frameTime));
-	emulationTiming->updatePlaybackRate(tiaSoundRate);
+	emulationTiming->updatePlaybackRate(mixRate);
 	Resampler::Format formatFrom =
 		Resampler::Format(emulationTiming->audioSampleRate(), audioQueue->fragmentSize(), audioQueue->isStereo());
 	Resampler::Format formatTo =
-		Resampler::Format(tiaSoundRate, audioQueue->fragmentSize(), false);
+		Resampler::Format(mixRate, audioQueue->fragmentSize(), false);
 	Resampler::NextFragmentCallback fragCallback =
 		[this]()
 		{
@@ -78,24 +76,21 @@ void SoundEmuEx::configForVideoFrameRate(double frameRate)
 			myResampler = make_unique<LanczosResampler>(formatFrom, formatTo, fragCallback, 3);
 		break;
 	}
-	logMsg("set sound rate:%.2f resampler type:%d", tiaSoundRate, (int)resampleQuality);
+	logMsg("set sound mix rate:%d resampler type:%d", mixRate, (int)resampleQuality);
 }
 
-void SoundEmuEx::setFrameTime(OSystem &osystem, double frameTime, unsigned int soundRate)
+void SoundEmuEx::setMixRate(int mixRate_, AudioSettings::ResamplingQuality resampleQ)
 {
-	this->soundRate = soundRate;
-	this->frameTime = frameTime;
-	resampleQuality = (AudioSettings::ResamplingQuality)optionAudioResampleQuality.val;
+	resampleQuality = resampleQ;
 	if(!audioQueue)
 	{
-		logWarn("called setFrameTime() without audio queue");
+		logWarn("called setRate() without audio queue");
 		return;
 	}
-	if(!configuredVideoFrameRate)
-	{
-		configuredVideoFrameRate = osystem.console().timing() == ConsoleTiming::ntsc ? 60. : 50.;
-	}
-	configForVideoFrameRate(configuredVideoFrameRate);
+	if(mixRate_ == mixRate)
+		return;
+	mixRate = mixRate_;
+	updateResampler();
 }
 
 void SoundEmuEx::setResampleQuality(AudioSettings::ResamplingQuality quality)
@@ -105,37 +100,33 @@ void SoundEmuEx::setResampleQuality(AudioSettings::ResamplingQuality quality)
 		return;
 	}
 	resampleQuality = quality;
-	if(!configuredVideoFrameRate)
+	if(!mixRate)
 		return;
-	configForVideoFrameRate(configuredVideoFrameRate);
+	updateResampler();
 }
 
-void SoundEmuEx::processAudio(OSystem &osystem, EmuAudio *audio)
+void SoundEmuEx::setEmuAudio(EmuEx::EmuAudio *audio)
 {
-	auto videoFrameRate = osystem.console().getFramerate();
-	if(configuredVideoFrameRate != videoFrameRate &&
-		(videoFrameRate >= 50.0 && videoFrameRate <= 60.0))
+	audioQueue->onFragmentEnqueued =
+	[this, audio](AudioQueue &queue, uInt32 fragFrames)
 	{
-		logMsg("reconfiguring for new video frame rate:%.2f", videoFrameRate);
-		configuredVideoFrameRate = videoFrameRate;
-		configForVideoFrameRate(videoFrameRate);
-	}
-	const auto fragFrames = audioQueue->fragmentSize();
-	const uint32_t samplesPerFrame = 1; //audioQueue->isStereo() ? 2 : 1;
-	const uint32_t fragSamples = fragFrames * samplesPerFrame;
-	uint32_t wroteFrames = 0;
-	//logDMsg("%d fragments of %d size ready", audioQueue->size(), fragFrames);
-	while(audioQueue->size())
-	{
-		float buffF[fragSamples];
-		myResampler->fillFragment(buffF, fragFrames);
-		if(audio)
+		const int samplesPerFrame = 1; //audioQueue->isStereo() ? 2 : 1;
+		[[maybe_unused]] const int fragSamples = fragFrames * samplesPerFrame;
+		[[maybe_unused]] int wroteFrames = 0;
+		//logDMsg("%d fragments of %d size ready", audioQueue->size(), fragFrames);
+		while(queue.size())
 		{
-			audio->writeFrames(buffF, fragFrames);
-			wroteFrames += fragFrames;
+			float buffF[512];
+			assert(fragSamples <= std::ssize(buffF));
+			myResampler->fillFragment(buffF, fragFrames);
+			if(audio)
+			{
+				audio->writeFrames(buffF, fragFrames);
+				wroteFrames += fragFrames;
+			}
 		}
-	}
-	//logDMsg("wrote %d frames, video frame rate:%.2f", (int)wroteFrames, osystem.console().getFramerate());
+		//logDMsg("wrote %d audio frames", (int)wroteFrames);
+	};
 }
 
 void SoundEmuEx::setEnabled(bool enable) {}
@@ -146,6 +137,8 @@ bool SoundEmuEx::toggleMute() { return false; }
 
 void SoundEmuEx::setVolume(uInt32 percent) {}
 
-void SoundEmuEx::adjustVolume(Int8 direction) {}
+void SoundEmuEx::adjustVolume(int direction) {}
 
 string SoundEmuEx::about() const { return ""; }
+
+void SoundEmuEx::queryHardware(VariantList& devices) {}

@@ -14,36 +14,30 @@
 	along with NES.emu.  If not, see <http://www.gnu.org/licenses/> */
 
 #include "EmuFileIO.hh"
-#include <imagine/io/api/stdio.hh>
+#include <imagine/io/stdioWrapper.hh>
+#include <imagine/io/IO.hh>
 
-EmuFileIO::EmuFileIO(IO &srcIO)
+namespace EmuEx
 {
-	auto size = srcIO.size();
-	auto mmapData = srcIO.mmapConst();
-	if(mmapData)
+
+EmuFileIO::EmuFileIO(IG::IO &srcIO):
+	EmuFileIO{IG::MapIO{srcIO}} {}
+
+EmuFileIO::EmuFileIO(IG::MapIO srcIO):
+	io{std::move(srcIO)}
+{
+	if(!io) [[unlikely]]
 	{
-		io.open(mmapData, size);
-	}
-	else
-	{
-		auto romData = new char[size]();
-		if(srcIO.read(romData, size) != (ssize_t)size)
-		{
-			failbit = true;
-			return;
-		}
-		io.open(romData, size, [romData](BufferMapIO &){ delete[] romData; });
+		failbit = true;
 	}
 }
 
-void EmuFileIO::truncate(s32 length)
-{
-	io.truncate(length);
-}
+int EmuFileIO::fgetc() { return IG::fgetc(io); }
 
-int EmuFileIO::fgetc()
+int EmuFileIO::fputc(int c)
 {
-	return ::fgetc(io);
+	io.put(c);
+	return c;
 }
 
 size_t EmuFileIO::_fread(const void *ptr, size_t bytes)
@@ -54,17 +48,20 @@ size_t EmuFileIO::_fread(const void *ptr, size_t bytes)
 	return ret;
 }
 
-int EmuFileIO::fseek(int offset, int origin)
+void EmuFileIO::fwrite(const void *ptr, size_t bytes)
 {
-	return ::fseek(io, offset, origin);
+	if(io.write(ptr, bytes) == (ssize_t)bytes)
+		failbit = true;
 }
 
-int EmuFileIO::ftell()
+int EmuFileIO::fseek(long int offset, int origin)
 {
-	return (int)::ftell(io);
+	return IG::fseek(io, offset, origin);
 }
 
-int EmuFileIO::size()
+long int EmuFileIO::ftell()
 {
-	return io.size();
+	return IG::ftell(io);
+}
+
 }

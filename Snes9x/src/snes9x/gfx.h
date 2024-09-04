@@ -8,6 +8,7 @@
 #define _GFX_H_
 
 #include "port.h"
+#include <vector>
 
 struct SLineData
 {
@@ -32,16 +33,17 @@ struct SLineMatrixData
 
 struct SGFX
 {
+	static constexpr uint32 Pitch = sizeof(uint16) * MAX_SNES_WIDTH;
+	static constexpr uint32 RealPPL = MAX_SNES_WIDTH; // true PPL of Screen buffer
+	static constexpr uint32 ScreenSize =  MAX_SNES_WIDTH * MAX_SNES_HEIGHT;
+	std::vector<uint16> ScreenBuffer;
 	uint16	*Screen;
 	uint16	*SubScreen;
 	uint8	*ZBuffer;
 	uint8	*SubZBuffer;
-	static constexpr uint32	Pitch = MAX_SNES_WIDTH * 2;
-	static constexpr uint32	ScreenSize = Pitch / 2 * SNES_HEIGHT_EXTENDED * (Settings.SupportHiRes ? 2 : 1);
 	uint16	*S;
 	uint8	*DB;
 	uint16	*ZERO;
-	uint32	RealPPL;			// true PPL of Screen buffer
 	uint32	PPL;				// number of pixels on each of Screen buffer
 	uint32	LinesPerTile;		// number of lines in 1 tile (4 or 8 due to interlace)
 	const uint16	*ScreenColors;		// screen colors for rendering main
@@ -50,7 +52,6 @@ struct SGFX
 	uint8	Z2;					// depth to save
 	uint32	FixedColour;
 	uint8	DoInterlace;
-	uint8	InterlaceFrame;
 	uint32	StartY;
 	uint32	EndY;
 	bool8	ClipColors;
@@ -84,7 +85,7 @@ struct SGFX
 	void	(*DrawMode7BG2Math) (uint32, uint32, int);
 	void	(*DrawMode7BG2Nomath) (uint32, uint32, int);
 
-	static const char	*InfoString;
+	static std::string InfoString;
 	static uint32	InfoStringTimeout;
 	static char	FrameDisplayString[256];
 
@@ -222,5 +223,6 @@ void S9xSyncSpeed (void);
 
 // called instead of S9xDisplayString if set to non-NULL
 extern void (*S9xCustomDisplayString) (const char *, int, int, bool, int type);
+void S9xVariableDisplayString(const char* string, int linesFromBottom, int pixelsFromLeft, bool allowWrap, int type);
 
 #endif

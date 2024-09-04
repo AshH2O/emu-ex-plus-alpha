@@ -16,11 +16,10 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/config/defs.hh>
-#include <compare>
 
 #import <QuartzCore/CVDisplayLink.h>
 
-namespace Base
+namespace IG
 {
 
 class CocoaScreen

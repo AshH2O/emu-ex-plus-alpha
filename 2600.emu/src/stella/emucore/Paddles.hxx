@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -44,14 +44,26 @@ class Paddles : public Controller
                         resistance to decrease instead of increase)
     */
     Paddles(Jack jack, const Event& event, const System& system,
-            bool swappaddle, bool swapaxis, bool swapdir);
-    virtual ~Paddles() = default;
+            bool swappaddle, bool swapaxis, bool swapdir, bool altmap = false);
+    ~Paddles() override = default;
 
   public:
+    static constexpr int ANALOG_MIN_VALUE = -32768;
+    static constexpr int ANALOG_MAX_VALUE = 32767;
+    static constexpr int ANALOG_RANGE = ANALOG_MAX_VALUE - ANALOG_MIN_VALUE + 1;
+    static constexpr float BASE_ANALOG_SENSE = 0.148643628F;
+    static constexpr int MIN_ANALOG_SENSE = 0;
+    static constexpr int MAX_ANALOG_SENSE = 30;
+    static constexpr int MIN_ANALOG_LINEARITY = 25;
+    static constexpr int MAX_ANALOG_LINEARITY = 100;
+    static constexpr int MIN_ANALOG_CENTER = -10;
+    static constexpr int MAX_ANALOG_CENTER = 30;
+    static constexpr int MIN_DIGITAL_SENSE = 1;
     static constexpr int MAX_DIGITAL_SENSE = 20;
-    static constexpr int MAX_MOUSE_SENSE = 20;
     static constexpr int MIN_DEJITTER = 0;
     static constexpr int MAX_DEJITTER = 10;
+    static constexpr int MIN_MOUSE_RANGE = 1;
+    static constexpr int MAX_MOUSE_RANGE = 100;
 
     /**
       Update the entire digital and analog pin state according to the
@@ -89,6 +101,38 @@ class Paddles : public Controller
                          Controller::Type ytype, int yid) override;
 
     /**
+      Sets the x-center for analog paddles.
+
+      @param xcenter  Value from -10 to 30, representing the center offset/860
+    */
+    static void setAnalogXCenter(int xcenter);
+
+    /**
+      Sets the y-center for analog paddles.
+
+      @param ycenter  Value from -10 to 30, representing the center offset/860
+    */
+    static void setAnalogYCenter(int ycenter);
+
+    /**
+      Sets the linearity of analog paddles.
+
+      @param linearity Value from 25 to 100
+    */
+    static void setAnalogLinearity(int linearity);
+
+    /**
+      Sets the sensitivity for analog paddles.
+
+      @param sensitivity  Value from 0 to 30, where 20 equals 1
+      @return  Resulting sensitivity
+    */
+    static float setAnalogSensitivity(int sensitivity);
+
+    static float analogSensitivityValue(int sensitivity);
+
+
+    /**
       @param strength  Value from 0 to 10
     */
     static void setDejitterBase(int strength);
@@ -110,15 +154,6 @@ class Paddles : public Controller
     static void setDigitalSensitivity(int sensitivity);
 
     /**
-      Sets the sensitivity for analog emulation of paddle movement
-      using a mouse.
-
-      @param sensitivity  Value from 1 to MAX_MOUSE_SENSE, with larger
-                          values causing more movement
-    */
-    static void setMouseSensitivity(int sensitivity);
-
-    /**
       Sets the maximum upper range for digital/mouse emulation of paddle
       movement (ie, a value of 50 means to only use 50% of the possible
       range of movement).  Note that this specfically does not apply to
@@ -127,9 +162,10 @@ class Paddles : public Controller
       @param range  Value from 1 to 100, representing the percentage
                     of the range to use
     */
-    static void setPaddleRange(int range);
+    static void setDigitalPaddleRange(int range);
 
-    static constexpr double MAX_RESISTANCE = 1400000.0;
+    // The maximum value of the paddle pot = 1MOhm
+    static constexpr uInt32 MAX_RESISTANCE = 1000000;
 
   private:
     // Range of values over which digital and mouse movement is scaled
@@ -140,29 +176,56 @@ class Paddles : public Controller
 
     // Pre-compute the events we care about based on given port
     // This will eliminate test for left or right port in update()
-    Event::Type myP0AxisValue, myP1AxisValue,
-                myP0DecEvent, myP0IncEvent,
-                myP1DecEvent, myP1IncEvent,
-                myP0FireEvent, myP1FireEvent,
+    Event::Type myAAxisValue, myBAxisValue,
+                myLeftADecEvent, myLeftAIncEvent,
+                myLeftBDecEvent, myLeftBIncEvent,
+                myLeftAFireEvent, myLeftBFireEvent,
                 myAxisMouseMotion;
 
     // The following are used for the various mouse-axis modes
     int myMPaddleID{-1};                    // paddle to emulate in 'automatic' mode
     int myMPaddleIDX{-1}, myMPaddleIDY{-1}; // paddles to emulate in 'specific axis' mode
 
-    bool myKeyRepeat0{false}, myKeyRepeat1{false};
-    int myPaddleRepeat0{0}, myPaddleRepeat1{0};
+    bool myKeyRepeatA{false}, myKeyRepeatB{false};
+    int myPaddleRepeatA{0}, myPaddleRepeatB{0};
     std::array<int, 2> myCharge{TRIGRANGE/2, TRIGRANGE/2}, myLastCharge{0};
     int myLastAxisX{0}, myLastAxisY{0};
     int myAxisDigitalZero{0}, myAxisDigitalOne{0};
 
+    static int XCENTER;
+    static int YCENTER;
+    static float SENSITIVITY, LINEARITY;
+
     static int DIGITAL_SENSITIVITY, DIGITAL_DISTANCE;
     static int DEJITTER_BASE, DEJITTER_DIFF;
-    static int MOUSE_SENSITIVITY;
 
-    // Lookup table for associating paddle buttons with controller pins
-    // Yes, this is hideously complex
-    static const std::array<Controller::DigitalPin, 2> ourButtonPin;
+    /**
+      Swap two events.
+    */
+    void swapEvents(Event::Type& event1, Event::Type& event2);
+
+    AnalogReadout::Connection getReadOut(int lastAxis, int& newAxis, int center);
+
+    void updateA();
+    void updateB();
+
+    /**
+      Update the axes pin state according to the events currently set.
+    */
+    bool updateAnalogAxesA();
+    bool updateAnalogAxesB();
+
+    /**
+      Update the entire state according to mouse events currently set.
+    */
+    void updateMouseA(bool& firePressedA);
+    void updateMouseB(bool& firePressedB);
+
+    /**
+      Update the axes pin state according to the keyboard events currently set.
+    */
+    void updateDigitalAxesA();
+    void updateDigitalAxesB();
 
   private:
     // Following constructors and assignment operators not supported

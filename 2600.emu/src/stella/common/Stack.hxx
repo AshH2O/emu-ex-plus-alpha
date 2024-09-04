@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -27,7 +27,7 @@
  */
 namespace Common {
 
-template <class T, uInt32 CAPACITY = 50>
+template <typename T, uInt32 CAPACITY = 50>
 class FixedStack
 {
   private:
@@ -43,7 +43,7 @@ class FixedStack
     bool full() const  { return _size >= CAPACITY; }
 
     T top() const { return _stack[_size - 1];    }
-    T get(uInt32 pos) { return _stack[pos]; }
+    T get(uInt32 pos) const { return _stack[pos]; }
     void push(const T& x) { _stack[_size++] = x; }
     T pop() { return std::move(_stack[--_size]); }
     uInt32 size() const { return _size; }

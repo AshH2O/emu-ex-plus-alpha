@@ -29,6 +29,7 @@
 #ifdef GP2X
 #include "ym2610-940/940shared.h"
 #endif
+#include <imagine/logger/logger.h>
 
 AudioTime timer_count = 0;
 //Uint32 timer_count;
@@ -138,7 +139,7 @@ void init_timer()
 	  timers[i].del_it = 1;
 }
 
-void timer_mkstate(gzFile gzf,int mode) {
+void timer_mkstate(Stream *gzf,int mode) {
 	mkstate_data(gzf, &timer_count, sizeof(timer_count), mode);
 	mkstate_data(gzf, timers, sizeof(timers), mode);
 }

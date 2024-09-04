@@ -18,13 +18,11 @@ static_assert(__has_feature(objc_arc), "This file requires ARC");
 #import <CoreFoundation/CoreFoundation.h>
 #include <dlfcn.h>
 #include <imagine/base/Application.hh>
-#include <imagine/input/Input.hh>
+#include <imagine/input/Event.hh>
 #include <imagine/input/TextField.hh>
 #include <imagine/input/Device.hh>
 #include <imagine/time/Time.hh>
 #include <imagine/logger/logger.h>
-#include <imagine/util/string.h>
-#include "../../input/apple/AppleGameDevice.hh"
 #include "ios.hh"
 
 @interface UIEvent ()
@@ -33,8 +31,8 @@ static_assert(__has_feature(objc_arc), "This file requires ARC");
 
 @interface IGAppTextField : NSObject <UITextFieldDelegate>
 @property (nonatomic, retain) UITextField *uiTextField;
-@property (nonatomic) Input::TextFieldDelegate textDelegate;
--(id)initWithTextField:(UITextField*)field textDelegate:(Input::TextFieldDelegate)del;
+@property (nonatomic) IG::TextFieldDelegate textDelegate;
+-(id)initWithTextField:(UITextField*)field textDelegate:(IG::TextFieldDelegate)del;
 @end
 
 @implementation IGAppTextField
@@ -42,7 +40,7 @@ static_assert(__has_feature(objc_arc), "This file requires ARC");
 @synthesize uiTextField;
 @synthesize textDelegate;
 
--(id)initWithTextField:(UITextField*)field textDelegate:(Input::TextFieldDelegate)del
+-(id)initWithTextField:(UITextField*)field textDelegate:(IG::TextFieldDelegate)del
 {
 	self = [super init];
 	uiTextField = field;
@@ -61,91 +59,65 @@ static_assert(__has_feature(objc_arc), "This file requires ARC");
 {
 	logMsg("editing ended");
 	auto delegate = std::exchange(textDelegate, {});
-	char text[256];
-	string_copy(text, [textField.text UTF8String]);
+	std::string text{[textField.text UTF8String]};
 	[textField removeFromSuperview];
 	uiTextField = nil;
 	if(delegate)
 	{
 		logMsg("running text entry callback");
-		delegate(text);
+		delegate(text.data());
 	}
 }
 
 @end
 
-namespace Input
+namespace IG::Input
 {
 
-static constexpr int GSEVENT_TYPE = 2;
-static constexpr int GSEVENT_FLAGS = 12;
-static constexpr int GSEVENT_TYPE_KEYDOWN = 10;
-static constexpr int GSEVENT_TYPE_KEYUP = 11;
+constexpr inline int GSEVENT_TYPE = 2;
+constexpr inline int GSEVENT_FLAGS = 12;
+constexpr inline int GSEVENT_TYPE_KEYDOWN = 10;
+constexpr inline int GSEVENT_TYPE_KEYUP = 11;
 
-static constexpr double MSEC_PER_SEC = 1000;
-
-struct KeyboardDevice : public Device
-{
-	bool iCadeMode_ = false;
-
-	KeyboardDevice(): Device{0, Map::SYSTEM,
-		Device::TYPE_BIT_VIRTUAL | Device::TYPE_BIT_KEYBOARD | Device::TYPE_BIT_KEY_MISC, "Keyboard/iCade"}
-	{}
-
-	void setICadeMode(bool on) final
-	{
-		logMsg("set iCade mode %s", on ? "on" : "off");
-		iCadeMode_ = on;
-	}
-
-	bool iCadeMode() const final
-	{
-		return iCadeMode_;
-	}
-};
-
-static KeyboardDevice keyDev;
+static Input::Device *keyDevPtr;
 static bool hardwareKBAttached = false;
 
 using GSEventIsHardwareKeyboardAttachedProto = BOOL(*)();
 static GSEventIsHardwareKeyboardAttachedProto GSEventIsHardwareKeyboardAttached{};
 
-static CGAffineTransform makeTransformForOrientation(Base::Orientation orientation)
+static CGAffineTransform makeTransformForOrientation(Rotation orientation)
 {
-	using namespace Base;
 	switch(orientation)
 	{
 		default: return CGAffineTransformIdentity;
-		case VIEW_ROTATE_270: return CGAffineTransformMakeRotation(3*M_PI / 2.0);
-		case VIEW_ROTATE_90: return CGAffineTransformMakeRotation(M_PI / 2.0);
-		case VIEW_ROTATE_180: return CGAffineTransformMakeRotation(M_PI);
+		case Rotation::LEFT: return CGAffineTransformMakeRotation(3 * M_PI / 2.0);
+		case Rotation::RIGHT: return CGAffineTransformMakeRotation(M_PI / 2.0);
+		case Rotation::DOWN: return CGAffineTransformMakeRotation(M_PI);
 	}
 }
 
-static CGRect toCGRect(const Base::Window &win, const IG::WindowRect &rect)
+static CGRect toCGRect(const Window &win, const IG::WindowRect &rect)
 {
-	using namespace Base;
 	int x = rect.x, y = rect.y;
-	if(win.softOrientation() == VIEW_ROTATE_90 || win.softOrientation() == VIEW_ROTATE_270)
+	if(win.softOrientation() == Rotation::RIGHT || win.softOrientation() == Rotation::LEFT)
 	{
 		std::swap(x, y);
 	}
-	if(win.softOrientation() == VIEW_ROTATE_90)
+	if(win.softOrientation() == Rotation::RIGHT)
 	{
 		x = (win.height() - x) - rect.ySize();
 	}
 	int x2 = rect.xSize(), y2 = rect.ySize();
-	if(win.softOrientation() == VIEW_ROTATE_90 || win.softOrientation() == VIEW_ROTATE_270)
+	if(win.softOrientation() == Rotation::RIGHT || win.softOrientation() == Rotation::LEFT)
 		std::swap(x2, y2);
 	logMsg("made CGRect %f,%f size %f,%f", x / win.pointScale, y / win.pointScale,
 			x2 / win.pointScale, y2 / win.pointScale);
 	return CGRectMake(x / win.pointScale, y / win.pointScale, x2 / win.pointScale, y2 / win.pointScale);
 }
 
-static void setupTextView(Base::ApplicationContext ctx, UITextField *vkbdField, NSString *text)
+static void setupTextView(ApplicationContext ctx, UITextField *vkbdField, NSString *text)
 {
 	// init input text field
-	using namespace Base;
 
 	/*vkbdField = [ [ UITextView alloc ] initWithFrame: CGRectMake(12, 24, 286, 24*4) ];
 	vkbdField.backgroundColor = [UIColor whiteColor];
@@ -176,7 +148,8 @@ static void setupTextView(Base::ApplicationContext ctx, UITextField *vkbdField, 
 	logMsg("init vkeyboard");
 }
 
-UIKitTextField::UIKitTextField(Base::ApplicationContext ctx, TextFieldDelegate del, const char *initialText, const char *promptText, int fontSizePixels):
+UIKitTextField::UIKitTextField(ApplicationContext ctx, TextFieldDelegate del, CStringView initialText,
+	[[maybe_unused]] CStringView promptText, [[maybe_unused]] int fontSizePixels):
 	ctx{ctx}
 {
 	auto uiTextField = [[UITextField alloc] initWithFrame: toCGRect(*ctx.deviceWindow(), textRect)];
@@ -223,21 +196,21 @@ void TextField::finish()
 	[textField().uiTextField resignFirstResponder];
 }
 
-bool Device::anyTypeBitsPresent(Base::ApplicationContext ctx, uint32_t typeBits)
+bool Device::anyTypeFlagsPresent(ApplicationContext ctx, DeviceTypeFlags typeFlags)
 {
-	if((typeBits & TYPE_BIT_KEYBOARD) && hardwareKBAttached)
+	if((typeFlags.keyboard) && hardwareKBAttached)
 		return true;
-	if(typeBits & TYPE_BIT_GAMEPAD)
+	if(typeFlags.gamepad)
 	{
 		// A gamepad is present if iCade mode is in use on the iCade device (always first device)
 		// or the device list size is not 1 due to BTstack connections from other controllers
-		auto &devList = ctx.application().systemInputDevices();
+		auto &devList = ctx.application().inputDevices();
 		return (hardwareKBAttached && devList.front()->iCadeMode()) || devList.size() != 1;
 	}
 	return false;
 }
 
-void handleKeyEvent(Base::ApplicationContext ctx, UIEvent *event)
+void handleKeyEvent(ApplicationContext ctx, UIEvent *event)
 {
 	const auto *eventMem = [event _gsEvent];
 	if(!eventMem)
@@ -247,38 +220,35 @@ void handleKeyEvent(Base::ApplicationContext ctx, UIEvent *event)
 		return;
 	auto action = eventType == GSEVENT_TYPE_KEYDOWN ? Input::Action::PUSHED : Input::Action::RELEASED;
 	Key key = eventMem[GSEVENTKEY_KEYCODE] & 0xFF; // only using key codes up to 255
-	auto time = IG::FloatSeconds((double)[event timestamp]);
+	auto time = fromSeconds<SteadyClockTime>([event timestamp]);
 	auto &app = ctx.application();
-	if(!keyDev.iCadeMode()
-		|| (keyDev.iCadeMode() && !app.processICadeKey(key, action, time, keyDev, *ctx.deviceWindow())))
-	{
-		auto src = keyDev.iCadeMode() ? Input::Source::GAMEPAD : Input::Source::KEYBOARD;
-		app.dispatchKeyInputEvent({0, Map::SYSTEM, key, key, action, 0, 0, src, time, &keyDev});
-	}
+	auto &keyDev = *keyDevPtr;
+	auto src = Input::Source::KEYBOARD;
+	app.dispatchKeyInputEvent({Map::SYSTEM, key, action, 0, 0, src, SteadyClockTimePoint{time}, &keyDev});
 }
 
-Event::KeyString Event::keyString(Base::ApplicationContext) const
+std::string KeyEvent::keyString(ApplicationContext) const
 {
 	return {}; // TODO
 }
 
-void init(Base::ApplicationContext ctx)
+void init(ApplicationContext ctx)
 {
-	ctx.application().addSystemInputDevice(keyDev);
+	keyDevPtr = &ctx.application().addInputDevice(ctx, std::make_unique<Input::Device>(std::in_place_type<Input::KeyboardDevice>));
 	GSEventIsHardwareKeyboardAttached = (GSEventIsHardwareKeyboardAttachedProto)dlsym(RTLD_DEFAULT, "GSEventIsHardwareKeyboardAttached");
 	if(GSEventIsHardwareKeyboardAttached)
 	{
 		hardwareKBAttached = GSEventIsHardwareKeyboardAttached();
 		if(hardwareKBAttached)
 			logMsg("hardware keyboard present");
-		CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), &ctx.application(),
+		CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(), std::bit_cast<void*>(ctx),
 			[](CFNotificationCenterRef, void *observer, CFStringRef, const void *, CFDictionaryRef)
 			{
 				hardwareKBAttached = GSEventIsHardwareKeyboardAttached();
 				logMsg("hardware keyboard %s", hardwareKBAttached ? "attached" : "detached");
-				DeviceAction change{hardwareKBAttached ? DeviceAction::SHOWN : DeviceAction::HIDDEN};
-				auto &app = *((Base::Application*)observer);
-				app.dispatchInputDeviceChange(keyDev, change);
+				auto change = hardwareKBAttached ? DeviceChange::shown : DeviceChange::hidden;
+				auto ctx = std::bit_cast<ApplicationContext>(observer);
+				ctx.application().dispatchInputDeviceChange(ctx, *keyDevPtr, change);
 			},
 			(__bridge CFStringRef)@"GSEventHardwareKeyboardAttached",
 			nullptr, CFNotificationSuspensionBehaviorCoalesce);

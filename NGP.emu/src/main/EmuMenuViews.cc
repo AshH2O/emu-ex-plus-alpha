@@ -13,28 +13,38 @@
 	You should have received a copy of the GNU General Public License
 	along with NGP.emu.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <neopop.h>
-#include <emuframework/OptionView.hh>
-#include <emuframework/EmuApp.hh>
+#include <emuframework/SystemOptionView.hh>
+#include <mednafen-emuex/MDFNUtils.hh>
+#include "MainApp.hh"
 
-class CustomSystemOptionView : public SystemOptionView
+namespace EmuEx
 {
+
+using MainAppHelper = EmuAppHelperBase<MainApp>;
+
+class CustomSystemOptionView : public SystemOptionView, public MainAppHelper
+{
+	using MainAppHelper::system;
+
 	BoolMenuItem ngpLanguage
 	{
-		"NGP Language", &defaultFace(),
-		language_english,
+		"NGP Language", attachParams(),
+		system().optionNGPLanguage,
 		"Japanese", "English",
 		[this](BoolMenuItem &item, View &, Input::Event e)
 		{
-			language_english = item.flipBoolValue(*this);
+			system().optionNGPLanguage = item.flipBoolValue(*this);
 		}
 	};
+
+	BoolMenuItem saveFilenameType = saveFilenameTypeMenuItem(*this, system());
 
 public:
 	CustomSystemOptionView(ViewAttachParams attach): SystemOptionView{attach, true}
 	{
 		loadStockItems();
 		item.emplace_back(&ngpLanguage);
+		item.emplace_back(&saveFilenameType);
 	}
 };
 
@@ -45,4 +55,6 @@ std::unique_ptr<View> EmuApp::makeCustomView(ViewAttachParams attach, ViewID id)
 		case ViewID::SYSTEM_OPTIONS: return std::make_unique<CustomSystemOptionView>(attach);
 		default: return nullptr;
 	}
+}
+
 }

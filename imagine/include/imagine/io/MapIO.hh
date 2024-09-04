@@ -15,44 +15,49 @@
 
 #pragma once
 
-#include <imagine/config/defs.hh>
-#include <imagine/io/IO.hh>
+#include <imagine/io/IOUtils.hh>
+#include <span>
 
-class MapIO : public IO
+namespace IG
+{
+
+class MapIO : public IOUtils<MapIO>
 {
 public:
-	using IO::read;
-	using IO::readAtPos;
-	using IO::write;
-	using IO::seek;
-	using IO::seekS;
-	using IO::seekE;
-	using IO::seekC;
-	using IO::tell;
-	using IO::send;
-	using IO::constBufferView;
-	using IO::get;
+	using IOUtilsBase = IOUtils<MapIO>;
+	using IOUtilsBase::read;
+	using IOUtilsBase::write;
+	using IOUtilsBase::seek;
+	using IOUtilsBase::tell;
+	using IOUtilsBase::send;
+	using IOUtilsBase::buffer;
+	using IOUtilsBase::get;
+	using IOUtilsBase::toFileStream;
 
-	constexpr MapIO() {}
-	ssize_t read(void *buff, size_t bytes, std::error_code *ecOut) override;
-	ssize_t readAtPos(void *buff, size_t bytes, off_t offset, std::error_code *ecOut) override;
-	const uint8_t *mmapConst() override;
-	ssize_t write(const void *buff, size_t bytes, std::error_code *ecOut) override;
-	off_t seek(off_t offset, IO::SeekMode mode, std::error_code *ecOut) override;
-	size_t size() override;
-	bool eof() override;
-	explicit operator bool() const override;
-	#if defined __linux__ || defined __APPLE__
-	void advise(off_t offset, size_t bytes, Advice advice) override;
-	#endif
+	constexpr MapIO() = default;
+	MapIO(IOBuffer buff): buff{std::move(buff)} {}
+	MapIO(std::span<uint8_t> buff): MapIO{IOBuffer{buff}} {}
+	explicit MapIO(Readable auto &&io): MapIO{io.buffer(BufferMode::Release)} {}
+	explicit MapIO(Readable auto &io): MapIO{io.buffer(BufferMode::Direct)} {}
+	ssize_t read(void *buff, size_t bytes, std::optional<off_t> offset = {});
+	ssize_t write(const void *buff, size_t bytes, std::optional<off_t> offset = {});
+	off_t seek(off_t offset, SeekMode mode);
+	size_t size() const { return buff.size(); }
+	bool eof() const { return currPos == size(); }
+	void sync();
+	void advise(off_t offset, size_t bytes, Advice advice);
+	auto data(this auto&& self) { return self.buff.data(); }
+	std::span<uint8_t> map() { return {data(), size()}; }
+	explicit operator bool() const { return data(); }
+	IOBuffer releaseBuffer() { return std::move(buff); }
+	std::span<uint8_t> subSpan(off_t offset, size_t maxBytes) const;
+	MapIO subView(off_t offset, size_t maxBytes) const { return IOBuffer{subSpan(offset, maxBytes), 0}; }
 
-protected:
-	const uint8_t *data{};
-	const uint8_t *currPos{};
-	size_t dataSize = 0;
+private:
+	size_t currPos{};
+	IOBuffer buff{};
 
-	void setData(const void* buff, size_t size);
-	void resetData();
-	const uint8_t *dataEnd();
-	ssize_t readAtAddr(void* buff, size_t bytes, const uint8_t *readPos, std::error_code *ecOut);
+	ssize_t copyBuffer(auto *buff, size_t bytes, std::optional<off_t> offset);
 };
+
+}

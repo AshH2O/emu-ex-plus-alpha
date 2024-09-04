@@ -41,6 +41,7 @@
 #include "log.h"
 #include "maincpu.h"
 #include "monitor.h"
+#include "ram.h"
 #include "snapshot.h"
 #include "types.h"
 #include "util.h"
@@ -95,6 +96,8 @@
  *      !EXROM Q3 <- D3  74LS02 pin13
  *
  */
+
+#define CART_RAM_SIZE 128
 
 static int config;
 
@@ -165,7 +168,8 @@ static io_source_t kcs_io1_device = {
     kcs_io1_dump,             /* device state information dump function */
     CARTRIDGE_KCS_POWER,      /* cartridge ID */
     IO_PRIO_NORMAL,           /* normal priority, device read needs to be checked for collisions */
-    0                         /* insertion order, gets filled in by the registration function */
+    0,                        /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE            /* NO mirroring */
 };
 
 static io_source_t kcs_io2_device = {
@@ -181,7 +185,8 @@ static io_source_t kcs_io2_device = {
     NULL,                     /* TODO: device state information dump function */
     CARTRIDGE_KCS_POWER,      /* cartridge ID */
     IO_PRIO_NORMAL,           /* normal priority, device read needs to be checked for collisions */
-    0                         /* insertion order, gets filled in by the registration function */
+    0,                        /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE            /* NO mirroring */
 };
 
 static io_source_list_t *kcs_io1_list_item = NULL;
@@ -214,6 +219,25 @@ void kcs_config_setup(uint8_t *rawcart)
 }
 
 /* ---------------------------------------------------------------------*/
+
+/* FIXME: this still needs to be tweaked to match the hardware */
+static RAMINITPARAM ramparam = {
+    .start_value = 255,
+    .value_invert = 2,
+    .value_offset = 1,
+
+    .pattern_invert = 0x100,
+    .pattern_invert_value = 255,
+
+    .random_start = 0,
+    .random_repeat = 0,
+    .random_chance = 0,
+};
+
+void kcs_powerup(void)
+{
+    ram_init_with_pattern(export_ram0, CART_RAM_SIZE, &ramparam);
+}
 
 static int kcs_common_attach(void)
 {
@@ -279,7 +303,7 @@ void kcs_detach(void)
 Note: in snapshots before 0.3 the RAM size was 8192.
  */
 
-static char snap_module_name[] = "CARTKCS";
+static const char snap_module_name[] = "CARTKCS";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   3
 

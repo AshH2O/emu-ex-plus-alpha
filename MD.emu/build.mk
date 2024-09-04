@@ -9,7 +9,12 @@ CPPFLAGS += -DLSB_FIRST \
  -DNO_SYSTEM_PICO
 # -DNO_SVP -DNO_SYSTEM_PBC
 
-CFLAGS_WARN += -Wno-missing-field-initializers
+CFLAGS_WARN += -Wno-missing-field-initializers -Wno-unused-parameter -Wno-unused-function
+
+ifeq ($(config_compiler),clang)
+ # needed for Z80CPU::makeFlagTables()
+ CFLAGS_CODEGEN += -fconstexpr-steps=10000000
+endif
 
 # Genesis Plus includes
 CPPFLAGS += -I$(projectPath)/src \
@@ -70,11 +75,11 @@ input_hw/paddle.cc
 
 # Sega CD support
 
-ifneq ($(SUBARCH), armv6)
- hasSCD := 1
-endif
+hasSCD := 1
 
 ifdef hasSCD
+ include $(EMUFRAMEWORK_PATH)/make/mednafenCommon.mk
+
  SRC += scd/scd.cc \
  scd/LC89510.cc \
  scd/cd_sys.cc \
@@ -82,44 +87,17 @@ ifdef hasSCD
  scd/pcm.cc \
  scd/cd_file.cc \
  scd/memMain.cc \
- scd/memSub.cc
+ scd/memSub.cc \
+ $(MDFN_CDROM_STANDALONE_SRC)
 
- CPPFLAGS += -I$(EMUFRAMEWORK_PATH)/../PCE.emu/src/include -I$(EMUFRAMEWORK_PATH)/../PCE.emu/src
- VPATH += $(EMUFRAMEWORK_PATH)/../PCE.emu/src/mednafen $(EMUFRAMEWORK_PATH)/../PCE.emu/src/common
- CPPFLAGS += -DHAVE_MKDIR \
- -DHAVE_CONFIG_H \
- -DMDFN_CD_SUPPORTS_BINARY_IMAGES \
- -DMDFN_CD_NO_CCD \
- -DHAVE_LIBSNDFILE \
- -DPSS_STYLE=1
+ VPATH += $(EMUFRAMEWORK_PATH)/src/shared
 
- SRC += MDFNApi.cc \
- CDImpl.cc \
- error.cpp \
- endian.cpp \
- general.cpp \
- MemoryStream.cpp \
- NativeVFS.cpp \
- Stream.cpp \
- StreamImpl.cc \
- VirtualFS.cpp \
- cdrom/CDAFReader.cpp \
- cdrom/CDAFReader_SF.cpp \
- cdrom/CDAFReader_Vorbis.cpp \
- cdrom/lec.cpp \
- cdrom/recover-raw.cpp \
- cdrom/galois.cpp \
- cdrom/crc32.cpp \
- cdrom/l-ec.cpp \
- cdrom/CDUtility.cpp \
- cdrom/CDAccess_Image.cpp \
- cdrom/CDAccess.cpp \
- hash/crc.cpp \
- string/string.cpp
+ CPPFLAGS += $(MDFN_COMMON_CPPFLAGS) \
+  $(MDFN_CDROM_CPPFLAGS) \
+  -DMDFN_CD_NO_CCD
 
- cxxExceptions := 1
  include $(IMAGINE_PATH)/make/package/libvorbis.mk
- include $(IMAGINE_PATH)/make/package/libsndfile.mk
+ include $(IMAGINE_PATH)/make/package/flac.mk
 else
  CPPFLAGS += -DNO_SCD
 endif
@@ -127,10 +105,8 @@ endif
 SRC += main/Main.cc \
 main/options.cc \
 main/input.cc \
-main/EmuControls.cc \
 main/EmuMenuViews.cc \
 main/Cheats.cc \
-fileio/fileio.cc \
 $(addprefix $(gplusPath)/,$(gplusSrc))
 
 include $(EMUFRAMEWORK_PATH)/package/emuframework.mk

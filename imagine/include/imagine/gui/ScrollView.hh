@@ -18,49 +18,55 @@
 #include <imagine/config/defs.hh>
 #include <imagine/input/DragTracker.hh>
 #include <imagine/input/VelocityTracker.hh>
+#include <imagine/gfx/Quads.hh>
 #include <imagine/util/rectangle2.h>
 #include <imagine/gui/View.hh>
 
-namespace Gfx
+namespace IG::Gfx
 {
 class RendererCommands;
 }
+
+namespace IG
+{
 
 class ScrollView : public View
 {
 public:
 	ScrollView(ViewAttachParams attach);
-	ScrollView(NameString name, ViewAttachParams attach);
 	~ScrollView();
 	void onShow() override;
 	void onHide() override;
 	bool isDoingScrollGesture() const;
 	bool isOverScrolled() const;
 	int overScroll() const;
+	void setScrollOffset(int);
+	int scrollOffset() const { return offset; }
 
 protected:
 	using VelocityTrackerType = Input::VelocityTracker<float, 1>;
 
-	Base::OnFrameDelegate animate;
-	Input::SingleDragTracker<> dragTracker{};
-	VelocityTrackerType velTracker{}; // tracks y velocity as pixels/sec
-	IG::WindowRect scrollBarRect{};
-	IG::FrameTime lastFrameTimestamp{};
-	float scrollVel = 0;
-	float scrollAccel = 0;
-	float offsetAsDec = 0;
-	float overScrollVelScale = 0;
-	int offset = 0;
-	int offsetMax = 0;
-	int onDragOffset = 0;
-	bool contentIsBiggerThanView = false;
-	bool scrollWholeArea_ = false;
-	bool allowScrollWholeArea_ = false;
+	OnFrameDelegate animate;
+	Input::SingleDragTracker<> dragTracker;
+	VelocityTrackerType velTracker; // tracks y velocity as pixels/sec
+	Gfx::IQuads scrollBarQuads;
+	SteadyClockTimePoint lastFrameTimestamp;
+	float scrollVel{};
+	float scrollAccel{};
+	float offsetAsDec{};
+	float overScrollVelScale{};
+	int offset{};
+	int offsetMax{};
+	int onDragOffset{};
+	int scrollBarYSize{};
+	bool contentIsBiggerThanView{};
+	bool scrollWholeArea_{};
+	bool allowScrollWholeArea_{};
 
-	void setContentSize(IG::WP size);
-	void drawScrollContent(Gfx::RendererCommands &cmds);
-	bool scrollInputEvent(Input::Event e);
-	void setScrollOffset(int o);
-	int scrollOffset() const;
+	void setContentSize(WSize size);
+	void drawScrollContent(Gfx::RendererCommands &cmds) const;
+	bool scrollInputEvent(const Input::MotionEvent &);
 	void stopScrollAnimation();
 };
+
+}

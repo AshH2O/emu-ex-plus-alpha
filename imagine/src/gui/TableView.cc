@@ -13,39 +13,37 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "TableView"
-
 #include <imagine/gui/TableView.hh>
+#include <imagine/gui/ViewManager.hh>
 #include <imagine/gui/MenuItem.hh>
-#include <imagine/gfx/GeomRect.hh>
 #include <imagine/gfx/RendererCommands.hh>
-#include <imagine/input/Input.hh>
+#include <imagine/gfx/Renderer.hh>
+#include <imagine/gfx/Mat4.hh>
+#include <imagine/input/Event.hh>
 #include <imagine/base/Window.hh>
 #include <imagine/util/algorithm.h>
-#include <imagine/util/math/int.hh>
+#include <imagine/util/variant.hh>
+#include <imagine/util/math.hh>
 #include <imagine/logger/logger.h>
 
-TableView::TableView(ViewAttachParams attach, ItemsDelegate items, ItemDelegate item):
-	ScrollView{attach}, items{items}, item{item}
-{}
-
-TableView::TableView(NameString name, ViewAttachParams attach, ItemsDelegate items, ItemDelegate item):
-	ScrollView{std::move(name), attach}, items{items}, item{item}
-{}
-
-uint32_t TableView::cells() const
+namespace IG
 {
-	return items(*this);
+
+constexpr SystemLogger log{"TableView"};
+
+size_t TableView::cells() const
+{
+	return getAs<size_t>(itemSrc(ItemsMessage{*this}));
 }
 
-IG::WP TableView::cellSize() const
+WSize TableView::cellSize() const
 {
 	return {viewRect().x, yCellSize};
 }
 
 void TableView::highlightCell(int idx)
 {
-	auto cells_ = items(*this);
+	auto cells_ = cells();
 	if(!cells_)
 		return;
 	if(idx >= 0)
@@ -62,55 +60,58 @@ void TableView::setAlign(_2DOrigin align)
 
 void TableView::prepareDraw()
 {
-	if(!yCellSize)
-		return;
-	auto cells_ = items(*this);
-	if(!cells_)
-		return;
-	int startYCell = std::min(scrollOffset() / yCellSize, cells_);
-	int endYCell = std::clamp(startYCell + visibleCells, 0, cells_);
-	if(startYCell < 0)
+	auto src = itemSrc;
+	for(auto i : iotaCount(cells()))
 	{
-		// skip non-existent cells
-		startYCell = 0;
-	}
-	for(int i = startYCell; i < endYCell; i++)
-	{
-		item(*this, i).prepareDraw(renderer());
+		item(src, i).prepareDraw();
 	}
 }
 
-void TableView::draw(Gfx::RendererCommands &cmds)
+void TableView::draw(Gfx::RendererCommands &__restrict__ cmds, ViewDrawParams) const
 {
-	auto cells_ = items(*this);
+	ssize_t cells_ = cells();
 	if(!cells_)
 		return;
-	using namespace Gfx;
+	auto src = itemSrc;
+	using namespace IG::Gfx;
+	auto visibleRect = viewRect() + WindowRect{{}, {0, displayRect().y2 - viewRect().y2}};
+	cmds.setClipRect(renderer().makeClipRect(window(), visibleRect));
+	cmds.setClipTest(true);
 	auto y = viewRect().yPos(LT2DO);
 	auto x = viewRect().xPos(LT2DO);
-	int startYCell = std::min(scrollOffset() / yCellSize, cells_);
-	int endYCell = std::clamp(startYCell + visibleCells, 0, cells_);
+	ssize_t startYCell = std::min(ssize_t(scrollOffset() / yCellSize), cells_);
+	ssize_t endYCell = std::clamp(startYCell + visibleCells, 0z, cells_);
 	if(startYCell < 0)
 	{
 		// skip non-existent cells
 		y += -startYCell * yCellSize;
 		startYCell = 0;
 	}
-	//logMsg("draw cells [%d,%d)", startYCell, endYCell);
+	//log.debug("draw cells:[{},{})", startYCell, endYCell);
 	y -= scrollOffset() % yCellSize;
 
 	// draw separators
 	int yStart = y;
-	cmds.setCommonProgram(CommonProgram::NO_TEX, projP.makeTranslate());
-	int selectedCellY = INT_MAX;
+	cmds.basicEffect().disableTexture(cmds);
+	int selectedCellY = selected == 0 ? y : INT_MAX;
+	if(cells_ > 1)
 	{
-		StaticArrayList<std::array<ColVertex, 4>, 80> vRect;
-		StaticArrayList<std::array<VertexIndex, 6>, vRect.maxSize()> vRectIdx;
-		auto headingColor = VertexColorPixelFormat.build(.4, .4, .4, 1.);
-		auto regularColor = VertexColorPixelFormat.build(.2, .2, .2, 1.);
+		cmds.basicEffect().setModelView(cmds, Gfx::Mat4::ident());
+		cmds.set(BlendMode::OFF);
+		cmds.setColor(ColorName::WHITE);
+		cmds.setVertexArray(separatorQuads);
+		cmds.setVertexBuffer(separatorQuads);
+		StaticArrayList<IColQuad, maxSeparators> vRect;
+		const auto headingColor = PackedColor::format.build(.4, .4, .4, 1.);
+		const auto regularColor = PackedColor::format.build(.2, .2, .2, 1.);
 		auto regularYSize = std::max(1, window().heightMMInPixels(.2));
 		auto headingYSize = std::max(2, window().heightMMInPixels(.4));
-		for(int i = startYCell; i < endYCell; i++)
+		auto drawSeparators = [](Gfx::RendererCommands &__restrict__ cmds, const auto &vRect)
+		{
+			cmds.vertexBufferData(0, vRect.data(), vRect.size() * sizeof(IColQuad));
+			cmds.drawQuads(0, vRect.size());
+		};
+		for(ssize_t i = startYCell; i < endYCell; i++)
 		{
 			if(i == selected)
 			{
@@ -120,24 +121,24 @@ void TableView::draw(Gfx::RendererCommands &cmds)
 			{
 				int ySize = regularYSize;
 				auto color = regularColor;
-				if(!elementIsSelectable(item(*this, i - 1)))
+				if(!item(src, i - 1).selectable())
 				{
 					ySize = headingYSize;
 					color = headingColor;
 				}
-				vRectIdx.emplace_back(makeRectIndexArray(vRect.size()));
-				auto rect = IG::makeWindowRectRel({x, y-1}, {viewRect().xSize(), ySize});
-				vRect.emplace_back(makeColVertArray(projP.unProjectRect(rect), color));
+				auto rect = makeWindowRectRel({x, y-1}, {viewRect().xSize(), ySize}).as<int16_t>();
+				vRect.emplace_back(IColQuad::InitParams{.bounds = rect, .color = color});
 			}
 			y += yCellSize;
-			if(vRect.size() == vRect.maxSize()) [[unlikely]]
-				break;
+			if(vRect.size() == vRect.capacity())
+			{
+				drawSeparators(cmds, vRect);
+				vRect.clear();
+			}
 		}
 		if(vRect.size())
 		{
-			cmds.setBlendMode(0);
-			cmds.set(ColorName::WHITE);
-			drawQuads(cmds, &vRect[0], vRect.size(), &vRectIdx[0], vRectIdx.size());
+			drawSeparators(cmds, vRect);
 		}
 	}
 
@@ -147,39 +148,42 @@ void TableView::draw(Gfx::RendererCommands &cmds)
 	// draw selected rectangle
 	if(selectedCellY != INT_MAX)
 	{
-		cmds.setBlendMode(BLEND_MODE_ALPHA);
+		cmds.set(BlendMode::ALPHA);
 		if(hasFocus)
-			cmds.setColor(.2, .71, .9, 1./3.);
+			cmds.setColor({.2, .71, .9, 1./3.});
 		else
-			cmds.setColor(.2 / 3., .71 / 3., .9 / 3., 1./3.);
-		auto rect = IG::makeWindowRectRel({x, selectedCellY}, {viewRect().xSize(), yCellSize-1});
-		GeomRect::draw(cmds, rect, projP);
+			cmds.setColor({.2 / 3., .71 / 3., .9 / 3., 1./3.});
+		cmds.basicEffect().setModelView(cmds, Mat4::makeTranslate({x, selectedCellY}));
+		cmds.drawQuad(selectQuads, 0);
 	}
 
 	// draw elements
 	y = yStart;
-	auto xIndent = manager().tableXIndent();
-	for(int i = startYCell; i < endYCell; i++)
+	auto xIndent = manager().tableXIndentPx;
+	for(ssize_t i = startYCell; i < endYCell; i++)
 	{
 		auto rect = IG::makeWindowRectRel({x, y}, {viewRect().xSize(), yCellSize});
-		drawElement(cmds, i, item(*this, i), projP.unProjectRect(rect), xIndent);
+		drawElement(cmds, i, item(src, i), rect, xIndent);
 		y += yCellSize;
 	}
+	cmds.setClipTest(false);
 }
 
 void TableView::place()
 {
-	auto cells_ = items(*this);
-	iterateTimes(cells_, i)
+	auto cells_ = cells();
+	auto src = itemSrc;
+	for(auto i : iotaCount(cells_))
 	{
-		//logMsg("compile item %d", i);
-		item(*this, i).compile(renderer(), projP);
+		//log.debug("place item:{}", i);
+		item(src, i).place();
 	}
 	if(cells_)
 	{
-		setYCellSize(IG::makeEvenRoundedUp(item(*this, 0).ySize()*2));
-		visibleCells = IG::divRoundUp(viewRect().ySize(), yCellSize) + 1;
+		setYCellSize(IG::makeEvenRoundedUp(item(0).ySize()*2));
+		visibleCells = IG::divRoundUp(displayRect().ySize(), yCellSize) + 1;
 		scrollToFocusRect();
+		selectQuads.write(0, {.bounds = WRect{{}, {viewRect().xSize(), yCellSize-1}}.as<int16_t>()});
 	}
 	else
 		visibleCells = 0;
@@ -195,14 +199,14 @@ void TableView::onHide()
 	ScrollView::onHide();
 }
 
-void TableView::onAddedToController(ViewController *, Input::Event e)
+void TableView::onAddedToController(ViewController *, const Input::Event &e)
 {
-	if((!Config::Input::POINTING_DEVICES || !e.isPointer()))
+	if(e.keyEvent())
 	{
-		auto cells = items(*this);
-		if(!cells)
+		auto cells_ = cells();
+		if(!cells_)
 			return;
-		selected = nextSelectableElement(0, cells);
+		selected = nextSelectableElement(0, cells_);
 	}
 }
 
@@ -242,10 +246,11 @@ void TableView::resetScroll()
 	setScrollOffset(0);
 }
 
-bool TableView::inputEvent(Input::Event e)
+bool TableView::inputEvent(const Input::Event& e, ViewInputEventParams)
 {
 	bool handleScroll = !onlyScrollIfNeeded || contentIsBiggerThanView;
-	if(handleScroll && scrollInputEvent(e))
+	auto motionEv = e.motionEvent();
+	if(motionEv && handleScroll && scrollInputEvent(*motionEv))
 	{
 		selected = -1;
 		return true;
@@ -253,7 +258,7 @@ bool TableView::inputEvent(Input::Event e)
 	bool movedSelected = false;
 	if(handleTableInput(e, movedSelected))
 	{
-		if(movedSelected && handleScroll && !e.isPointer())
+		if(movedSelected && handleScroll && !motionEv)
 		{
 			scrollToFocusRect();
 		}
@@ -270,24 +275,24 @@ void TableView::clearSelection()
 void TableView::setYCellSize(int s)
 {
 	yCellSize = s;
-	ScrollView::setContentSize({viewRect().xSize(), items(*this) * s});
+	ScrollView::setContentSize({viewRect().xSize(), (int)cells() * s});
 }
 
 IG::WindowRect TableView::focusRect()
 {
 	if(selected >= 0)
-		return IG::makeWindowRectRel(viewRect().pos(LT2DO) + IG::WP{0, yCellSize*selected}, {viewRect().xSize(), yCellSize});
+		return makeWindowRectRel(viewRect().pos(LT2DO) + WPt{0, yCellSize*selected}, {viewRect().xSize(), yCellSize});
 	else
 		return {};
 }
 
 int TableView::nextSelectableElement(int start, int items)
 {
-	using namespace IG;
 	int elem = wrapMinMax(start, 0, items);
-	iterateTimes(items, i)
+	auto src = itemSrc;
+	for([[maybe_unused]] auto i : iotaCount(items))
 	{
-		if(elementIsSelectable(item(*this, elem)))
+		if(item(src, elem).selectable())
 		{
 			return elem;
 		}
@@ -298,11 +303,11 @@ int TableView::nextSelectableElement(int start, int items)
 
 int TableView::prevSelectableElement(int start, int items)
 {
-	using namespace IG;
 	int elem = wrapMinMax(start, 0, items);
-	iterateTimes(items, i)
+	auto src = itemSrc;
+	for([[maybe_unused]] auto i : iotaCount(items))
 	{
-		if(elementIsSelectable(item(*this, elem)))
+		if(item(src, elem).selectable())
 		{
 			return elem;
 		}
@@ -311,198 +316,214 @@ int TableView::prevSelectableElement(int start, int items)
 	return -1;
 }
 
-bool TableView::handleTableInput(Input::Event e, bool &movedSelected)
+bool TableView::handleTableInput(const Input::Event &e, bool &movedSelected)
 {
-	using namespace IG;
-	auto cells_ = items(*this);
-	if(!cells_)
+	ssize_t cells_ = cells();
+	return e.visit(overloaded
 	{
-		if(e.pushed() && e.isDefaultUpButton() && moveFocusToNextView(e, CT2DO))
+		[&](const Input::KeyEvent &keyEv)
 		{
-			return true;
-		}
-		else if(e.pushed() && e.isDefaultDownButton() && moveFocusToNextView(e, CB2DO))
-		{
-			return true;
-		}
-		else
-		{
-			return false;
-		}
-	}
-	if(e.isPointer())
-	{
-		if(!pointIsInView(e.pos()) || e.mapKey() != Input::Pointer::LBUTTON)
-		{
-			//logMsg("cursor not in table");
-			return false;
-		}
-		int i = ((e.pos().y + scrollOffset()) - viewRect().y) / yCellSize;
-		if(i < 0 || i >= cells_)
-		{
-			//logMsg("pushed outside of item bounds");
-			return false;
-		}
-		auto &it = item(*this, i);
-		if(e.pushed())
-		{
-			logMsg("input pushed on cell %d", i);
-			hasFocus = true;
-			if(i >= 0 && i < cells_ && elementIsSelectable(it))
+			if(!cells_)
 			{
-				selected = i;
-				postDraw();
-			}
-		}
-		else if(e.isOff()) // TODO, need to check that Input::PUSHED was sent on entry
-		{
-			//logMsg("input released on cell %d", i);
-			if(i >= 0 && i < cells_ && selected == i && elementIsSelectable(it))
-			{
-				postDraw();
-				selected = -1;
-				if(!e.canceled())
+				if(keyEv.pushed(Input::DefaultKey::UP) && moveFocusToNextView(e, CT2DO))
 				{
-					logDMsg("entry %d pushed", i);
+					return true;
+				}
+				else if(keyEv.pushed(Input::DefaultKey::DOWN) && moveFocusToNextView(e, CB2DO))
+				{
+					return true;
+				}
+				else
+				{
+					return false;
+				}
+			}
+			if(keyEv.pushed(Input::DefaultKey::UP))
+			{
+				if(!hasFocus)
+				{
+					log.info("gained focus from key input");
+					hasFocus = true;
+					if(selected != -1)
+					{
+						postDraw();
+						return true;
+					}
+				}
+				//log.debug("move up:{}", selected);
+				if(selected == -1)
+					selected = prevSelectableElement(cells_ - 1, cells_);
+				else
+				{
+					auto prevSelected = selected;
+					selected = prevSelectableElement(selected - 1, cells_);
+					if(selected > prevSelected || cells_ == 1)
+					{
+						if(keyEv.repeated())
+						{
+							selected = prevSelected;
+							return true;
+						}
+						else if(moveFocusToNextView(e, CT2DO))
+						{
+							selected = -1;
+							return true;
+						}
+					}
+				}
+				log.info("up, selected:{}", selected);
+				postDraw();
+				movedSelected = true;
+				return true;
+			}
+			else if(keyEv.pushed(Input::DefaultKey::DOWN))
+			{
+				if(!hasFocus)
+				{
+					logMsg("gained focus from key input");
+					hasFocus = true;
+					if(selected != -1)
+					{
+						postDraw();
+						return true;
+					}
+				}
+				if(selected == -1)
+					selected = nextSelectableElement(0, cells_);
+				else
+				{
+					auto prevSelected = selected;
+					selected = nextSelectableElement(selected + 1, cells_);
+					if(selected < prevSelected || cells_ == 1)
+					{
+						if(keyEv.repeated())
+						{
+							selected = prevSelected;
+							return true;
+						}
+						else if(moveFocusToNextView(e, CB2DO))
+						{
+							selected = -1;
+							return true;
+						}
+					}
+				}
+				log.info("down, selected:{}", selected);
+				postDraw();
+				movedSelected = true;
+				return true;
+			}
+			else if(keyEv.pushed(Input::DefaultKey::CONFIRM))
+			{
+				if(selected != -1)
+				{
+					//log.debug("entry:{} pushed", selected);
 					selectedIsActivated = true;
-					onSelectElement(e, i, it);
+					onSelectElement(e, selected, item(selected));
+				}
+				return true;
+			}
+			else if(keyEv.pushed(Input::DefaultKey::PAGE_UP))
+			{
+				if(selected == -1)
+					selected = cells_ - 1;
+				else
+					selected = std::clamp(selected - visibleCells, 0, (int)cells_ - 1);
+				log.info("selected:{}", selected);
+				postDraw();
+				movedSelected = true;
+				return true;
+			}
+			else if(keyEv.pushed(Input::DefaultKey::PAGE_DOWN))
+			{
+				if(selected == -1)
+					selected = 0;
+				else
+					selected = std::clamp(selected + visibleCells, 0, (int)cells_ - 1);
+				log.info("selected:{}", selected);
+				postDraw();
+				movedSelected = true;
+				return true;
+			}
+			return false;
+		},
+		[&](const Input::MotionEvent &motionEv)
+		{
+			if(!cells_ || !motionEv.isPointer())
+				return false;
+			if(!pointIsInView(motionEv.pos()) || !(motionEv.key() & Input::Pointer::LBUTTON))
+			{
+				//log.info("cursor not in table");
+				return false;
+			}
+			int i = ((motionEv.pos().y + scrollOffset()) - viewRect().y) / yCellSize;
+			if(i < 0 || i >= cells_)
+			{
+				//logMsg("pushed outside of item bounds");
+				return false;
+			}
+			auto &it = item(i);
+			if(motionEv.pushed())
+			{
+				//log.info("input pushed on cell:{}", i);
+				hasFocus = true;
+				if(i >= 0 && i < cells_ && it.selectable())
+				{
+					selected = i;
+					postDraw();
 				}
 			}
-		}
-		return true;
-	}
-	else // Key or Relative Pointer
-	{
-		if(e.isRelativePointer())
-			logMsg("got rel pointer %d", e.pos().y);
-
-		if((e.pushed() && e.isDefaultUpButton())
-			|| (e.isRelativePointer() && e.pos().y < 0))
-		{
-			if(!hasFocus)
+			else if(motionEv.isOff()) // TODO, need to check that Input::PUSHED was sent on entry
 			{
-				logMsg("gained focus from key input");
-				hasFocus = true;
-				if(selected != -1)
+				//log.info("input released on cell:{}", i);
+				if(i >= 0 && i < cells_ && selected == i && it.selectable())
 				{
 					postDraw();
-					return true;
-				}
-			}
-			//logMsg("move up %d", selected);
-			if(selected == -1)
-				selected = prevSelectableElement(cells_ - 1, cells_);
-			else
-			{
-				auto prevSelected = selected;
-				selected = prevSelectableElement(selected - 1, cells_);
-				if(selected > prevSelected || cells_ == 1)
-				{
-					if(e.repeated())
+					selected = -1;
+					if(!motionEv.canceled())
 					{
-						selected = prevSelected;
-						return true;
-					}
-					else if(moveFocusToNextView(e, CT2DO))
-					{
-						selected = -1;
-						return true;
+						//log.debug("entry:{} pushed", i);
+						selectedIsActivated = true;
+						onSelectElement(e, i, it);
 					}
 				}
 			}
-			logMsg("up, selected %d", selected);
-			postDraw();
-			movedSelected = true;
 			return true;
 		}
-		else if((e.pushed() && e.isDefaultDownButton())
-			|| (e.isRelativePointer() && e.pos().y > 0))
-		{
-			if(!hasFocus)
-			{
-				logMsg("gained focus from key input");
-				hasFocus = true;
-				if(selected != -1)
-				{
-					postDraw();
-					return true;
-				}
-			}
-			if(selected == -1)
-				selected = nextSelectableElement(0, cells_);
-			else
-			{
-				auto prevSelected = selected;
-				selected = nextSelectableElement(selected + 1, cells_);
-				if(selected < prevSelected || cells_ == 1)
-				{
-					if(e.repeated())
-					{
-						selected = prevSelected;
-						return true;
-					}
-					else if(moveFocusToNextView(e, CB2DO))
-					{
-						selected = -1;
-						return true;
-					}
-				}
-			}
-			logMsg("down, selected %d", selected);
-			postDraw();
-			movedSelected = true;
-			return true;
-		}
-		else if(e.pushed() && e.isDefaultConfirmButton())
-		{
-			if(selected != -1)
-			{
-				logDMsg("entry %d pushed", selected);
-				selectedIsActivated = true;
-				onSelectElement(e, selected, item(*this, selected));
-			}
-			return true;
-		}
-		else if(e.pushed() && e.isDefaultPageUpButton())
-		{
-			if(selected == -1)
-				selected = cells_ - 1;
-			else
-				selected = std::clamp(selected - visibleCells, 0, cells_ - 1);
-			logMsg("selected %d", selected);
-			postDraw();
-			movedSelected = true;
-			return true;
-		}
-		else if(e.pushed() && e.isDefaultPageDownButton())
-		{
-			if(selected == -1)
-				selected = 0;
-			else
-				selected = std::clamp(selected + visibleCells, 0, cells_ - 1);
-			logMsg("selected %d", selected);
-			postDraw();
-			movedSelected = true;
-			return true;
-		}
-	}
-	return false;
+	});
 }
 
-void TableView::drawElement(Gfx::RendererCommands &cmds, uint32_t i, MenuItem &item, Gfx::GCRect rect, Gfx::GC xIndent) const
+void TableView::drawElement(Gfx::RendererCommands &__restrict__ cmds, size_t, MenuItem &item, WRect rect, int xIndent) const
 {
-	item.draw(cmds, rect.x, rect.pos(C2DO).y, rect.xSize(), rect.ySize(), xIndent, align, projP, Gfx::color(Gfx::ColorName::WHITE));
+	static constexpr Gfx::Color highlightColor{0.f, .8f, 1.f};
+	MenuItemDrawAttrs attrs{.rect = rect, .xIndent = xIndent,
+		.color = item.highlighted() ? highlightColor : Gfx::Color(Gfx::ColorName::WHITE), .align = align};
+	item.draw(cmds, attrs);
 }
 
-void TableView::onSelectElement(Input::Event e, uint32_t i, MenuItem &item)
+void TableView::onSelectElement(const Input::Event &e, size_t i, MenuItem &item)
 {
 	if(selectElementDel)
 		selectElementDel(e, i, item);
 	else
-		item.select(*this, e);
+		item.inputEvent(e, {.parentPtr = this});
 }
 
-bool TableView::elementIsSelectable(MenuItem &item)
+std::u16string_view TableView::name() const
 {
-	return item.isSelectable;
+	return nameStr;
+}
+
+TableUIState TableView::saveUIState() const
+{
+	return {.highlightedCell = highlightedCell(), .scrollOffset = scrollOffset()};
+}
+
+void TableView::restoreUIState(TableUIState state)
+{
+	if(state.highlightedCell != -1)
+		highlightCell(state.highlightedCell);
+	setScrollOffset(state.scrollOffset);
+}
+
 }

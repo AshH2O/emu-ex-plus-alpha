@@ -15,44 +15,45 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/input/Input.hh>
+#include <imagine/input/Event.hh>
 #include <imagine/util/Point2D.hh>
 #include <imagine/util/container/ArrayList.hh>
 #include <imagine/util/algorithm.h>
+#include <concepts>
 
-namespace Input
+namespace IG::Input
 {
 
 class DragTrackerState
 {
 public:
-	constexpr DragTrackerState() {}
-	constexpr DragTrackerState(PointerId id, IG::WP pos)
+	constexpr DragTrackerState() = default;
+	constexpr DragTrackerState(PointerId id, WPt pos)
 	{
 		start(id, pos);
 	}
 
-	constexpr void start(PointerId id, IG::WP pos)
+	constexpr void start(PointerId id, WPt pos)
 	{
 		id_ = id;
 		downPos_ = pos_ = pos;
 		isDragging_ = false;
 	}
 
-	void update(IG::WP pos, int dragStartPixels);
+	void update(WPt pos, int dragStartPixels);
 	void finish();
 	constexpr PointerId id() const { return id_; }
-	constexpr IG::WP pos() const { return pos_; }
-	constexpr IG::WP downPos() const { return downPos_; }
-	constexpr IG::WP downPosDiff() const { return pos_ - downPos_; }
+	constexpr WPt pos() const { return pos_; }
+	constexpr WPt downPos() const { return downPos_; }
+	constexpr WPt downPosDiff() const { return pos_ - downPos_; }
 	constexpr bool isDragging() const { return isDragging_; }
 	constexpr bool isTracking() const { return id_ != NULL_POINTER_ID; }
 	constexpr bool isTracking(PointerId id) const { return id_ == id; }
 
 protected:
 	PointerId id_{NULL_POINTER_ID};
-	IG::WP pos_{};
-	IG::WP downPos_{};
+	WPt pos_{};
+	WPt downPos_{};
 	bool isDragging_ = false;
 };
 
@@ -72,10 +73,12 @@ public:
 			dragState{dragState}, data{data} {}
 	};
 
-	constexpr DragTracker() {}
+	constexpr DragTracker() = default;
 
-	template <class OnDown, class OnMove, class OnUp>
-	bool inputEvent(Event e, OnDown onDown, OnMove onMove, OnUp onUp)
+	bool inputEvent(const MotionEvent &e,
+		std::invocable<DragTrackerState, UserData&> auto &&onDown,
+		std::invocable<DragTrackerState, DragTrackerState, UserData&> auto &&onMove,
+		std::invocable<DragTrackerState, UserData&> auto &&onUp)
 	{
 		if(!e.isPointer())
 			return false;
@@ -136,17 +139,12 @@ public:
 	void setDragStartPixels(int p) { dragStartPixels = p; }
 
 protected:
-	StaticArrayList<State, MAX_POINTERS> state_{};
+	StaticArrayList<State, MAX_POINTERS> state_;
 	int dragStartPixels{};
 
-	State *state(PointerId id)
+	State* state(PointerId id)
 	{
-		auto s = IG::find_if(state_, [id](const auto &s){ return s.dragState.id() == id; });
-		if(s == state_.end())
-		{
-			return nullptr;
-		}
-		return s;
+		return find(state_, [id](const auto &s){ return s.dragState.id() == id; }).value_or(nullptr);
 	}
 };
 

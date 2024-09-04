@@ -16,22 +16,21 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <CoreGraphics/CGColorSpace.h>
-#include <imagine/base/iphone/config.h>
 #ifdef __OBJC__
 #import <UIKit/UIKit.h>
 #endif
 
-namespace Base
+namespace IG
 {
 
 class ApplicationContext;
 
 }
 
-namespace Input
+namespace IG::Input
 {
 
-void init(Base::ApplicationContext);
+void init(ApplicationContext);
 
 }
 

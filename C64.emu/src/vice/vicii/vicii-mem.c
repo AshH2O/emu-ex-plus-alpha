@@ -45,6 +45,7 @@
 #include "raster-sprite.h"
 #include "types.h"
 #include "vicii-badline.h"
+#include "vicii-colorram.h"
 #include "vicii-fetch.h"
 #include "vicii-irq.h"
 #include "vicii-resources.h"
@@ -56,7 +57,7 @@
 
 
 /* Unused bits in VIC-II registers: these are always 1 when read.  */
-static int unused_bits_in_registers[0x40] =
+static const uint8_t unused_bits_in_registers[0x40] =
 {
     0x00 /* $D000 */, 0x00 /* $D001 */, 0x00 /* $D002 */, 0x00 /* $D003 */,
     0x00 /* $D004 */, 0x00 /* $D005 */, 0x00 /* $D006 */, 0x00 /* $D007 */,
@@ -77,7 +78,7 @@ static int unused_bits_in_registers[0x40] =
 };
 
 /* Unused bits in VIC-II DTV registers: these are always 1 when read.  */
-static int unused_bits_in_registers_dtv[0x50] =
+static const uint8_t unused_bits_in_registers_dtv[0x50] =
 {
     0x00 /* $D000 */, 0x00 /* $D001 */, 0x00 /* $D002 */, 0x00 /* $D003 */,
     0x00 /* $D004 */, 0x00 /* $D005 */, 0x00 /* $D006 */, 0x00 /* $D007 */,
@@ -979,7 +980,7 @@ inline static void d030_store(uint8_t value)
     }
 }
 
-void viciidtv_update_colorram()
+void viciidtv_update_colorram(void)
 {
     vicii.color_ram_ptr = mem_ram
                           + (vicii.regs[0x36] << 10)
@@ -2052,6 +2053,12 @@ uint8_t vicii_peek(uint16_t addr)
             } else {
                 return /* vicii.regs[addr] | */ 0xff;
             }
+        case 0x30:            /* VIC-IIe extension */
+            if (vicii.viciie) {
+                return vicii.regs[addr] | 0xfc;
+            } else {
+                return /* vicii.regs[addr] | */ 0xff;
+            }
         default:
             if (!vicii.viciidtv) {
                 return vicii.regs[addr] | unused_bits_in_registers[addr];
@@ -2062,4 +2069,9 @@ uint8_t vicii_peek(uint16_t addr)
                 return vicii.regs[addr] | unused_bits_in_registers_dtv[addr];
             }
     }
+}
+
+void vicii_init_colorram(uint8_t *colorram)
+{
+    memcpy(colorram, colorram_data, 0x400);
 }

@@ -91,6 +91,7 @@
 #define _memmap_h_
 
 #include "snes9x.h"
+#include <string>
 
 #ifdef FAST_LSB_WORD_ACCESS
 #define READ_WORD(s) (*(uint16a *) (s))
@@ -144,7 +145,7 @@ enum file_formats { FILE_ZIP, FILE_RAR, FILE_JMA, FILE_DEFAULT };
 
 class CMemory {
 public:
-    bool8 LoadROMMem (const uint8 *source, uint32 sourceSize);
+    bool8 LoadROMMem (const uint8 *source, uint32 sourceSize, const char* optional_rom_filename = NULL);
     uint32 FileLoader (uint8* buffer, const char* filename, int32 maxsize);
     void  InitROM (bool8);
     bool8 LoadSRAM (const char *);
@@ -238,7 +239,7 @@ public:
     uint32 SDD1LoggedDataCountPrev;
     uint32 SDD1LoggedDataCount;
     uint8  SDD1LoggedData [MEMMAP_MAX_SDD1_LOGGED_ENTRIES];
-    char ROMFilename [_MAX_PATH];
+    std::string ROMFilename;
 	uint8 ROMRegion;
     uint32 ROMCRC32;
 	uint8 ExtendedFormat;

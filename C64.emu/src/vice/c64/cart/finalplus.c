@@ -94,7 +94,8 @@ static io_source_t final_plus_io2_device = {
     final_plus_dump,           /* device state information dump function */
     CARTRIDGE_FINAL_PLUS,      /* cartridge ID */
     IO_PRIO_NORMAL,            /* normal priority, device read needs to be checked for collisions */
-    0                          /* insertion order, gets filled in by the registration function */
+    0,                         /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE             /* NO mirroring */
 };
 
 static io_source_list_t *final_plus_io2_list_item = NULL;
@@ -216,7 +217,7 @@ int final_plus_peek_mem(export_t *ex, uint16_t addr, uint8_t *value)
 void final_plus_freeze(void)
 {
     DBG(("fc+ freeze\n"));
-    cart_config_changed_slotmain(0, 3, CMODE_READ | CMODE_RELEASE_FREEZE | CMODE_PHI2_RAM);
+    cart_config_changed_slotmain(CMODE_8KGAME, CMODE_ULTIMAX, CMODE_READ | CMODE_RELEASE_FREEZE | CMODE_PHI2_RAM);
     fcplus_enabled = 1;
     fcplus_roml = 1;
     fcplus_romh = 1;
@@ -225,7 +226,7 @@ void final_plus_freeze(void)
 void final_plus_config_init(void)
 {
     DBG(("fc+ config init\n"));
-    cart_config_changed_slotmain(0, 3, CMODE_READ | CMODE_PHI2_RAM);
+    cart_config_changed_slotmain(CMODE_8KGAME, CMODE_ULTIMAX, CMODE_READ | CMODE_PHI2_RAM);
     fcplus_enabled = 1;
     fcplus_roml = 1;
     fcplus_romh = 1;
@@ -240,7 +241,7 @@ void final_plus_config_setup(uint8_t *rawcart)
     DBG(("fc+ config setup\n"));
     memcpy(roml_banks, &rawcart[0x4000], 0x4000);
     memcpy(romh_banks, &rawcart[0x2000], 0x2000);
-    cart_config_changed_slotmain(0, 3, CMODE_READ | CMODE_PHI2_RAM);
+    cart_config_changed_slotmain(CMODE_8KGAME, CMODE_ULTIMAX, CMODE_READ | CMODE_PHI2_RAM);
 }
 
 /* ---------------------------------------------------------------------*/
@@ -312,7 +313,7 @@ void final_plus_detach(void)
    ARRAY | ROMH      | 8192 BYTES of ROMH data
  */
 
-static char snap_module_name[] = "CARTFCP";
+static const char snap_module_name[] = "CARTFCP";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   0
 

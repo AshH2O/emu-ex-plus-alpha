@@ -19,18 +19,26 @@
 #include <imagine/gui/View.hh>
 #include <imagine/util/Interpolator.hh>
 
+namespace EmuEx
+{
+
+using namespace IG;
+
 class CreditsView : public View
 {
 public:
-	CreditsView(ViewAttachParams attach, const char *str);
+	CreditsView(ViewAttachParams attach, UTF16String str);
 	~CreditsView();
 	void prepareDraw() final;
-	void draw(Gfx::RendererCommands &cmds) final;
+	void draw(Gfx::RendererCommands&__restrict__, ViewDrawParams p = {}) const final;
 	void place() final;
-	bool inputEvent(Input::Event e) final;
+	bool inputEvent(const Input::Event&, ViewInputEventParams p = {}) final;
+	std::u16string_view name() const final;
 
 private:
-	Gfx::Text text{};
-	IG::InterpolatorValue<float, IG::FrameTime, IG::InterpolatorType::LINEAR> fade{};
-	Base::OnFrameDelegate animate{};
+	Gfx::Text text;
+	InterpolatorValue<float, SteadyClockTimePoint, InterpolatorType::LINEAR> fade;
+	OnFrameDelegate animate;
 };
+
+}

@@ -23,7 +23,7 @@
 #include <imagine/gfx/opengl/GLTextureSampler.hh>
 #endif
 
-namespace Gfx
+namespace IG::Gfx
 {
 
 class Renderer;
@@ -33,8 +33,6 @@ class TextureSampler: public TextureSamplerImpl
 {
 public:
 	using TextureSamplerImpl::TextureSamplerImpl;
-	TextureSampler(TextureSampler &&o);
-	TextureSampler &operator=(TextureSampler &&o);
 	explicit operator bool() const;
 	Renderer &renderer() const;
 	RendererTask &task() const;

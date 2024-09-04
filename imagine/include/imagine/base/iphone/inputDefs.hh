@@ -15,22 +15,18 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <chrono>
-
 #if !defined __ARM_ARCH_6K__
-#define CONFIG_INPUT_APPLE_GAME_CONTROLLER
+#define CONFIG_INPUT_APPLE_GAME_CONTROLLER 1
 #endif
 
-namespace Input
+namespace IG::Input
 {
 
 using PointerIdImpl = void*;
 
-using Time = std::chrono::duration<double>;
-
 using Key = uint16_t;
 
-	namespace IOS
+	namespace Keycode
 	{
 
 	static constexpr Key
@@ -175,14 +171,14 @@ using Key = uint16_t;
 	JS3_YAXIS_POS = axisKeyBase+18, JS3_YAXIS_NEG = axisKeyBase+19,
 
 	JS_LTRIGGER_AXIS = axisKeyBase+20, JS_RTRIGGER_AXIS = axisKeyBase+21,
-	JS_GAS_AXIS = axisKeyBase+22, JS_BRAKE_AXIS = axisKeyBase+23;
+	JS_GAS_AXIS = axisKeyBase+22, JS_BRAKE_AXIS = axisKeyBase+23,
+
+	BACK_KEY = ESCAPE;
 
 	static constexpr Key LAST_KEY = JS_BRAKE_AXIS;
 	static constexpr uint32_t COUNT = LAST_KEY + 1;
 
 	}
-
-namespace Keycode = IOS;
 
 	namespace Pointer
 	{
@@ -190,30 +186,72 @@ namespace Keycode = IOS;
 	static constexpr Key
 	LBUTTON = 1,
 	MBUTTON = 2,
-	RBUTTON = 3,
-	WHEEL_UP = 4,
-	WHEEL_DOWN = 5,
-	DOWN_BUTTON = 6,
-	UP_BUTTON = 7;
+	RBUTTON = 4,
+	DOWN_BUTTON = 8,
+	UP_BUTTON = 16;
 	};
 
 	namespace AppleGC
 	{
 	static constexpr Key
-	A = 1,
-	B = 2,
-	X = 3,
-	Y = 4,
-	L1 = 5,
-	L2 = 6,
-	R1 = 7,
-	R2 = 8,
-	PAUSE = 9,
-	UP = 10, RIGHT = 11, DOWN = 12, LEFT = 13,
-	LSTICK_UP = 14, LSTICK_RIGHT = 15, LSTICK_DOWN = 16, LSTICK_LEFT = 17,
-	RSTICK_UP = 18, RSTICK_RIGHT = 19, RSTICK_DOWN = 20, RSTICK_LEFT = 21;
-
-	static const uint32_t COUNT = 22;
+	A = Keycode::GAME_A,
+	B = Keycode::GAME_B,
+	X = Keycode::GAME_X,
+	Y = Keycode::GAME_Y,
+	L1 = Keycode::GAME_L1,
+	L2 = Keycode::GAME_L2,
+	R1 = Keycode::GAME_R1,
+	R2 = Keycode::GAME_R2,
+	PAUSE = Keycode::GAME_MODE,
+	LEFT = Keycode::LEFT, RIGHT = Keycode::RIGHT,
+	UP = Keycode::UP, DOWN = Keycode::DOWN,
+	LSTICK_RIGHT = Keycode::JS1_XAXIS_POS, LSTICK_LEFT = Keycode::JS1_XAXIS_NEG,
+	LSTICK_DOWN =  Keycode::JS1_YAXIS_POS, LSTICK_UP =   Keycode::JS1_YAXIS_NEG,
+	RSTICK_RIGHT = Keycode::JS2_XAXIS_POS, RSTICK_LEFT = Keycode::JS2_XAXIS_NEG,
+	RSTICK_DOWN =  Keycode::JS2_YAXIS_POS, RSTICK_UP =   Keycode::JS2_YAXIS_NEG;
 	}
+
+	namespace Meta
+	{
+		// TODO
+		static constexpr uint32_t
+		ALT = 0x1,
+		ALT_L = 0x1,
+		ALT_R = 0x1,
+		SHIFT = 0x1,
+		SHIFT_L = 0x1,
+		SHIFT_R = 0x1,
+		CTRL = 0x1,
+		CTRL_L = 0x1,
+		CTRL_R = 0x1,
+		META = 0x1,
+		META_L = 0x1,
+		META_R = 0x1,
+		CAPS_LOCK = 0x1;
+	}
+
+enum class AxisId : uint8_t
+{
+	X,
+	Y,
+	Z,
+	RX,
+	RY,
+	RZ,
+	HAT0X,
+	HAT0Y,
+	HAT1X,
+	HAT1Y,
+	HAT2X,
+	HAT2Y,
+	HAT3X,
+	HAT3Y,
+	LTRIGGER,
+	RTRIGGER,
+	RUDDER,
+	WHEEL,
+	GAS,
+	BRAKE,
+};
 
 }

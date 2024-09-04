@@ -15,37 +15,40 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/config/defs.hh>
-#include <imagine/audio/OutputStream.hh>
+#include <imagine/audio/defs.hh>
+#include <imagine/audio/Format.hh>
 #include <alsa/asoundlib.h>
 #include <atomic>
+#include <thread>
 
 namespace IG::Audio
 {
 
-class ALSAOutputStream : public OutputStream
+class ALSAOutputStream
 {
 public:
-	ALSAOutputStream();
+	ALSAOutputStream() = default;
 	~ALSAOutputStream();
-	IG::ErrorCode open(OutputStreamConfig config) final;
-	void play() final;
-	void pause() final;
-	void close() final;
-	void flush() final;
-	bool isOpen() final;
-	bool isPlaying() final;
+	ALSAOutputStream &operator=(ALSAOutputStream &&) = delete;
+	StreamError open(OutputStreamConfig config);
+	void play();
+	void pause();
+	void close();
+	void flush();
+	bool isOpen();
+	bool isPlaying();
 	explicit operator bool() const;
 
 private:
 	snd_pcm_t *pcmHnd{};
 	OnSamplesNeededDelegate onSamplesNeeded{};
+	std::thread eventThread;
 	Format pcmFormat;
 	snd_pcm_uframes_t bufferSize, periodSize;
 	bool useMmap;
 	std::atomic_bool quitFlag{};
 
-	int setupPcm(Format format, snd_pcm_access_t access, IG::Microseconds wantedLatency);
+	int setupPcm(Format format, snd_pcm_access_t access, Microseconds wantedLatency);
 };
 
 }

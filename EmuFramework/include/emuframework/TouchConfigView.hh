@@ -18,63 +18,55 @@
 #include <emuframework/EmuAppHelper.hh>
 #include <imagine/gui/TableView.hh>
 #include <imagine/gui/MenuItem.hh>
-#include <imagine/util/container/ArrayList.hh>
+#include <imagine/util/memory/DynArray.hh>
 #include <emuframework/config.hh>
+#include <vector>
 
+namespace EmuEx
+{
+
+using namespace IG;
 class VController;
+enum class VControllerState : uint8_t;
+enum class VControllerVisibility : uint8_t;
 
-class TouchConfigView final: public TableView, public EmuAppHelper<TouchConfigView>
+class TouchConfigView final: public TableView, public EmuAppHelper
 {
 public:
-	TouchConfigView(ViewAttachParams attach, VController &vController, const char *faceBtnName, const char *centerBtnName);
+	TouchConfigView(ViewAttachParams attach, VController &vController);
 	void place() final;
-	void draw(Gfx::RendererCommands &cmds) final;
+	void draw(Gfx::RendererCommands&__restrict__, ViewDrawParams p = {}) const final;
+	void reloadItems();
+	void onShow() final;
 
 protected:
 	VController &vController;
 	TextMenuItem touchCtrlItem[3];
 	MultiChoiceMenuItem touchCtrl;
-	TextMenuItem pointerInputItem[5];
-	MultiChoiceMenuItem pointerInput;
+	DynArray<TextMenuItem> playerItems;
+	MultiChoiceMenuItem player;
 	TextMenuItem sizeItem[11];
 	MultiChoiceMenuItem size;
-	TextMenuItem deadzoneItem[3];
-	MultiChoiceMenuItem deadzone;
-	TextMenuItem diagonalSensitivityItem[5];
-	MultiChoiceMenuItem diagonalSensitivity;
-	TextMenuItem btnSpaceItem[4];
-	MultiChoiceMenuItem btnSpace;
-	TextMenuItem btnExtraXSizeItem[4];
-	MultiChoiceMenuItem btnExtraXSize;
-	TextMenuItem btnExtraYSizeItem[4];
-	MultiChoiceMenuItem btnExtraYSize;
-	BoolMenuItem triggerPos;
-	TextMenuItem btnStaggerItem[6];
-	MultiChoiceMenuItem btnStagger;
-	TextMenuItem dPadStateItem[3];
-	MultiChoiceMenuItem dPadState;
-	TextMenuItem faceBtnStateItem[3];
-	MultiChoiceMenuItem faceBtnState;
-	TextMenuItem centerBtnStateItem[3];
-	MultiChoiceMenuItem centerBtnState;
-	BoolMenuItem boundingBoxes;
 	BoolMenuItem vibrate;
 	BoolMenuItem showOnTouch;
+	BoolMenuItem highlightPushedButtons;
 	TextMenuItem alphaItem[6];
 	MultiChoiceMenuItem alpha;
 	TextMenuItem btnPlace;
-	TextMenuItem menuStateItem[3];
-	MultiChoiceMenuItem menuState;
-	TextMenuItem ffStateItem[3];
-	MultiChoiceMenuItem ffState;
-	TextMenuItem resetControls;
-	TextMenuItem resetAllControls;
-	TextHeadingMenuItem btnTogglesHeading;
-	TextHeadingMenuItem dpadtHeading;
-	TextHeadingMenuItem faceBtnHeading;
+	TextMenuItem placeVideo;
+	TextMenuItem addButton;
+	ConditionalMember<Config::DISPLAY_CUTOUT, BoolMenuItem> allowButtonsPastContentBounds;
+	TextMenuItem resetEmuPositions;
+	TextMenuItem resetEmuGroups;
+	TextMenuItem resetUIPositions;
+	TextMenuItem resetUIGroups;
+	TextHeadingMenuItem devButtonsHeading;
+	TextHeadingMenuItem uiButtonsHeading;
 	TextHeadingMenuItem otherHeading;
-	StaticArrayList<MenuItem*, 32> item{};
+	std::vector<TextMenuItem> elementItems;
+	std::vector<MenuItem*> item;
 
 	void refreshTouchConfigMenu();
-	void setSize(uint16_t val);
 };
+
+}

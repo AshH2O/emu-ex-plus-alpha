@@ -16,15 +16,20 @@
 #include <imagine/gui/TextEntry.hh>
 #include <imagine/fs/FS.hh>
 #include <imagine/util/string.h>
+#include <imagine/util/format.hh>
 #include <imagine/logger/logger.h>
 #include <emuframework/Cheats.hh>
 #include <emuframework/EmuApp.hh>
+#include <emuframework/viewUtils.hh>
+#include <emuframework/Option.hh>
 #include "EmuCheatViews.hh"
-#include <main/Cheats.hh>
+#include "MainSystem.hh"
 #include <gambatte.h>
-extern gambatte::GB gbEmu;
-StaticArrayList<GbcCheat, EmuCheats::MAX> cheatList;
-bool cheatsModified = 0;
+
+namespace EmuEx
+{
+
+constexpr SystemLogger log{"GBC.emu"};
 
 static bool strIsGGCode(const char *str)
 {
@@ -42,294 +47,276 @@ static bool strIsGSCode(const char *str)
 			&hex, &hex, &hex, &hex, &hex, &hex, &hex, &hex) == 8;
 }
 
-void applyCheats()
+static bool strIsCode(const char *str)
 {
-	if(EmuSystem::gameIsRunning())
-	{
-		std::string ggCodeStr, gsCodeStr;
-		for(auto &e : cheatList)
-		{
-			if(!e.isOn())
-				continue;
-			std::string &codeStr = strstr(e.code, "-") ? ggCodeStr : gsCodeStr;
-			if(codeStr.size())
-				codeStr += ";";
-			codeStr += e.code;
-		}
-		gbEmu.setGameGenie(ggCodeStr);
-		gbEmu.setGameShark(gsCodeStr);
-		if(ggCodeStr.size())
-			logMsg("set GG codes: %s", ggCodeStr.c_str());
-		if(gsCodeStr.size())
-			logMsg("set GS codes: %s", gsCodeStr.c_str());
-	}
+	return strIsGGCode(str) || strIsGSCode(str);
 }
 
-void writeCheatFile()
+void GbcSystem::applyCheats()
 {
-	if(!cheatsModified)
+	if(!hasContent())
 		return;
+	std::string ggCodeStr, gsCodeStr;
+	for(auto &e : cheatList)
+	{
+		if(!e.on)
+			continue;
+		for(const auto& c: e.codes)
+		{
+			std::string &codeStr = std::string_view{c}.contains('-') ? ggCodeStr : gsCodeStr;
+			if(codeStr.size())
+				codeStr += ';';
+			codeStr += c;
+		}
+	}
+	gbEmu.setGameGenie(ggCodeStr);
+	gbEmu.setGameShark(gsCodeStr);
+	if(ggCodeStr.size())
+		log.info("set GG codes:{}", ggCodeStr);
+	if(gsCodeStr.size())
+		log.info("set GS codes:{}", gsCodeStr);
+}
 
-	auto filename = FS::makePathStringPrintf("%s/%s.gbcht", EmuSystem::savePath(), EmuSystem::gameName().data());
+void GbcSystem::writeCheatFile()
+{
+	auto ctx = appContext();
+	auto path = userFilePath(cheatsDir, ".gbcht");
 
 	if(!cheatList.size())
 	{
-		logMsg("deleting cheats file %s", filename.data());
-		FS::remove(filename.data());
-		cheatsModified = 0;
+		log.info("deleting cheats file:{}", path);
+		ctx.removeFileUri(path);
 		return;
 	}
 
-	FileIO file;
-	file.create(filename.data());
+	auto file = ctx.openFileUri(path, OpenFlags::testNewFile());
 	if(!file)
 	{
-		logMsg("error creating cheats file %s", filename.data());
+		log.error("error creating cheats file:{}", path);
 		return;
 	}
-	logMsg("writing cheats file %s", filename.data());
+	log.info("writing cheats file:{}", path);
 
-	int version = 0;
-	file.write((uint8_t)version);
-	file.write((uint16_t)cheatList.size());
+	int version = 1;
+	file.put(int8_t(version));
+	file.put(uint16_t(cheatList.size()));
 	for(auto &e : cheatList)
 	{
-		file.write((uint8_t)e.flags);
-		file.write((uint16_t)strlen(e.name));
-		file.write(e.name, strlen(e.name));
-		file.write((uint8_t)strlen(e.code));
-		file.write(e.code, strlen(e.code));
+		file.put(uint8_t(e.on));
+		writeSizedData<uint16_t>(file, e.name);
+		file.put(uint16_t(e.codes.size()));
+		for(auto& code: e.codes)
+		{
+			writeSizedData<uint8_t>(file, code);
+		}
 	}
-	cheatsModified = 0;
 }
 
-void readCheatFile()
+void GbcSystem::readCheatFile()
 {
-	auto filename = FS::makePathStringPrintf("%s/%s.gbcht", EmuSystem::savePath(), EmuSystem::gameName().data());
-	FileIO file;
-	file.open(filename.data(), IO::AccessHint::ALL);
+	auto path = userFilePath(cheatsDir, ".gbcht");
+	auto file = appContext().openFileUri(path, {.test = true, .accessHint = IOAccessHint::All});
 	if(!file)
 	{
 		return;
 	}
-	logMsg("reading cheats file %s", filename.data());
+	logMsg("reading cheats file:%s", path.data());
 
-	auto version = file.get<uint8_t>();
-	if(version != 0)
+	const auto version = file.get<int8_t>();
+	if(version > 1)
 	{
 		logMsg("skipping due to version code %d", version);
 		return;
 	}
 	auto size = file.get<uint16_t>();
-	iterateTimes(size, i)
+	cheatList.reserve(size);
+	for(auto _: iotaCount(size))
 	{
-		if(cheatList.isFull())
+		Cheat cheat;
+		cheat.on = file.get<uint8_t>();
+		readSizedData<uint16_t>(file, cheat.name);
+		if(version == 0)
 		{
-			logMsg("cheat list full while reading from file");
-			break;
+			cheat.codes.resize(1);
+			readSizedData<uint8_t>(file, cheat.codes[0]);
 		}
-		GbcCheat cheat;
-		auto flags = file.get<uint8_t>();
-		cheat.flags = flags;
-		auto nameLen = file.get<uint16_t>();
-		file.read(cheat.name, std::min(uint16_t(sizeof(cheat.name)-1), nameLen));
-		auto codeLen = file.get<uint8_t>();
-		file.read(cheat.code, std::min(uint8_t(sizeof(cheat.code)-1), codeLen));
-		cheatList.push_back(cheat);
+		else
+		{
+			auto codes = file.get<uint16_t>();
+			cheat.codes.resize(codes);
+			for(auto& c: cheat.codes)
+			{
+				readSizedData<uint8_t>(file, c);
+			}
+		}
+		if(cheat.codes.size()) // ignore codes with blank names
+		{
+			cheatList.push_back(cheat);
+		}
 	}
 }
 
-EmuEditCheatView::EmuEditCheatView(ViewAttachParams attach, GbcCheat &cheat_, RefreshCheatsDelegate onCheatListChanged_):
+Cheat* GbcSystem::newCheat(EmuApp& app, const char* name, CheatCodeDesc desc)
+{
+	if(!strIsCode(desc.str))
+	{
+		app.postMessage(true, "Invalid format");
+		return {};
+	}
+	auto& c = cheatList.emplace_back(Cheat{.name = name});
+	c.codes.emplace_back(toUpperCase<CheatCode>(desc.str));
+	log.info("added new cheat, {} total", cheatList.size());
+	applyCheats();
+	writeCheatFile();
+	return &c;
+}
+
+bool GbcSystem::setCheatName(Cheat& c, const char* name)
+{
+	c.name = name;
+	writeCheatFile();
+	return true;
+}
+
+std::string_view GbcSystem::cheatName(const Cheat& c) const { return c.name; }
+
+void GbcSystem::setCheatEnabled(Cheat& c, bool on)
+{
+	c.on = on;
+	writeCheatFile();
+	applyCheats();
+}
+
+bool GbcSystem::isCheatEnabled(const Cheat& c) const { return c.on; }
+
+bool GbcSystem::addCheatCode(EmuApp& app, Cheat*& cheatPtr, CheatCodeDesc desc)
+{
+	if(!strIsCode(desc.str))
+	{
+		app.postMessage(true, "Invalid format");
+		return false;
+	}
+	cheatPtr->codes.emplace_back(toUpperCase<CheatCode>(desc.str));
+	writeCheatFile();
+	applyCheats();
+	return true;
+}
+
+bool GbcSystem::modifyCheatCode(EmuApp& app, Cheat&, CheatCode& code, CheatCodeDesc desc)
+{
+	if(!strIsCode(desc.str))
+	{
+		app.postMessage(true, "Invalid format");
+		return false;
+	}
+	code = toUpperCase<CheatCode>(desc.str);
+	writeCheatFile();
+	applyCheats();
+	return true;
+}
+
+Cheat* GbcSystem::removeCheatCode(Cheat& c, CheatCode& code)
+{
+	eraseFirst(c.codes, code);
+	bool removedAllCodes = c.codes.empty();
+	if(removedAllCodes)
+		eraseFirst(cheatList, c);
+	writeCheatFile();
+	applyCheats();
+	return removedAllCodes ? nullptr : &c;
+}
+
+bool GbcSystem::removeCheat(Cheat& c)
+{
+	eraseFirst(cheatList, c);
+	writeCheatFile();
+	applyCheats();
+	return true;
+}
+
+void GbcSystem::forEachCheat(DelegateFunc<bool(Cheat&, std::string_view)> del)
+{
+	for(auto& c: cheatList)
+	{
+		if(!del(c, std::string_view{c.name}))
+			break;
+	}
+}
+
+void GbcSystem::forEachCheatCode(Cheat& cheat, DelegateFunc<bool(CheatCode&, std::string_view)> del)
+{
+	for(auto& c: cheat.codes)
+	{
+		if(!del(c, std::string_view{c}))
+			break;
+	}
+}
+
+EditCheatView::EditCheatView(ViewAttachParams attach, Cheat& cheat, BaseEditCheatsView& editCheatsView):
 	BaseEditCheatView
 	{
-		"Edit Code",
+		"Edit Cheat",
 		attach,
-		cheat_.name,
-		[this](const TableView &)
-		{
-			return 3;
-		},
-		[this](const TableView &, unsigned idx) -> MenuItem&
-		{
-			switch(idx)
-			{
-				case 0: return name;
-				case 1: return ggCode;
-				default: return remove;
-			}
-		},
-		[this](TextMenuItem &, View &, Input::Event)
-		{
-			IG::eraseFirst(cheatList, *cheat);
-			cheatsModified = 1;
-			onCheatListChanged();
-			applyCheats();
-			dismiss();
-			return true;
-		},
-		onCheatListChanged_
+		cheat,
+		editCheatsView,
+		items
 	},
-	ggCode
+	addGGGS
 	{
-		"Code",
-		cheat_.code,
-		&defaultFace(),
-		[this](DualTextMenuItem &item, View &, Input::Event e)
+		"Add Another Game Genie / GameShark Code", attach,
+		[this](const Input::Event& e) { addNewCheatCode("Input xxxxxxxx (GS) or xxx-xxx-xxx (GG) code", e); }
+	}
+{
+	loadItems();
+}
+
+void EditCheatView::loadItems()
+{
+	codes.clear();
+	for(auto& c: cheatPtr->codes)
+	{
+		codes.emplace_back("Code", c, attachParams(), [this, &c](const Input::Event& e)
 		{
-			app().pushAndShowNewCollectValueInputView<const char*>(attachParams(), e,
-				"Input xxxxxxxx (GS) or xxx-xxx-xxx (GG) code", cheat->code,
-				[this](EmuApp &app, auto str)
+			pushAndShowNewCollectValueInputView<const char*, ScanValueMode::AllowBlank>(attachParams(), e,
+				"Input xxxxxxxx (GS) or xxx-xxx-xxx (GG) code, or blank to delete", c,
+				[this, &c](CollectTextInputView&, auto str) { return modifyCheatCode(c, {str}); });
+		});
+	};
+	items.clear();
+	items.emplace_back(&name);
+	for(auto& c: codes)
+	{
+		items.emplace_back(&c);
+	}
+	items.emplace_back(&addGGGS);
+	items.emplace_back(&remove);
+}
+
+EditCheatsView::EditCheatsView(ViewAttachParams attach, CheatsView& cheatsView):
+	BaseEditCheatsView
+	{
+		attach,
+		cheatsView,
+		[this](ItemMessage msg) -> ItemReply
+		{
+			return msg.visit(overloaded
+			{
+				[&](const ItemsMessage&) -> ItemReply { return 1 + cheats.size(); },
+				[&](const GetItemMessage& m) -> ItemReply
 				{
-					if(!strIsGGCode(str) && !strIsGSCode(str))
+					switch(m.idx)
 					{
-						app.postMessage(true, "Invalid format");
-						postDraw();
-						return false;
+						case 0: return &addGGGS;
+						default: return &cheats[m.idx - 1];
 					}
-					string_copy(cheat->code, str);
-					string_toUpper(cheat->code);
-					cheatsModified = 1;
-					applyCheats();
-					ggCode.set2ndName(str);
-					ggCode.compile(renderer(), projP);
-					postDraw();
-					return true;
-				});
-		}
-	},
-	cheat{&cheat_}
-{}
-
-const char *EmuEditCheatView::cheatNameString() const
-{
-	return cheat->name;
-}
-
-void EmuEditCheatView::renamed(const char *str)
-{
-	string_copy(cheat->name, str);
-	cheatsModified = 1;
-}
-
-EmuEditCheatListView::EmuEditCheatListView(ViewAttachParams attach):
-	BaseEditCheatListView
-	{
-		attach,
-		[this](const TableView &)
-		{
-			return 1 + cheat.size();
-		},
-		[this](const TableView &, unsigned idx) -> MenuItem&
-		{
-			switch(idx)
-			{
-				case 0: return addGGGS;
-				default: return cheat[idx - 1];
-			}
+				},
+			});
 		}
 	},
 	addGGGS
 	{
-		"Add Game Genie / GameShark Code", &defaultFace(),
-		[this](TextMenuItem &item, View &, Input::Event e)
-		{
-			app().pushAndShowNewCollectTextInputView(attachParams(), e,
-				"Input xxxxxxxx (GS) or xxx-xxx-xxx (GG) code", "",
-				[this](CollectTextInputView &view, const char *str)
-				{
-					if(str)
-					{
-						if(cheatList.isFull())
-						{
-							app().postMessage(true, "Cheat list is full");
-							view.dismiss();
-							return 0;
-						}
-						if(!strIsGGCode(str) && !strIsGSCode(str))
-						{
-							app().postMessage(true, "Invalid format");
-							return 1;
-						}
-						GbcCheat c;
-						string_copy(c.code, str);
-						string_toUpper(c.code);
-						string_copy(c.name, "Unnamed Cheat");
-						cheatList.push_back(c);
-						logMsg("added new cheat, %zu total", cheatList.size());
-						cheatsModified = 1;
-						applyCheats();
-						onCheatListChanged();
-						view.dismiss();
-						app().pushAndShowNewCollectTextInputView(attachParams(), {}, "Input description", "",
-							[this](CollectTextInputView &view, const char *str)
-							{
-								if(str)
-								{
-									string_copy(cheatList.back().name, str);
-									onCheatListChanged();
-									view.dismiss();
-								}
-								else
-								{
-									view.dismiss();
-								}
-								return 0;
-							});
-					}
-					else
-					{
-						view.dismiss();
-					}
-					return 0;
-				});
-		}
-	}
-{
-	loadCheatItems();
-}
+		"Add Game Genie / GameShark Code", attach,
+		[this](const Input::Event& e) { addNewCheat("Input xxxxxxxx (GS) or xxx-xxx-xxx (GG) code", e); }
+	} {}
 
-void EmuEditCheatListView::loadCheatItems()
-{
-	unsigned cheats = cheatList.size();
-	cheat.clear();
-	cheat.reserve(cheats);
-	auto it = cheatList.begin();
-	iterateTimes(cheats, c)
-	{
-		auto &thisCheat = *it;
-		cheat.emplace_back(thisCheat.name, &defaultFace(),
-			[this, c](TextMenuItem &, View &, Input::Event e)
-			{
-				pushAndShow(makeView<EmuEditCheatView>(cheatList[c], [this](){ onCheatListChanged(); }), e);
-			});
-		++it;
-	}
-}
-
-EmuCheatsView::EmuCheatsView(ViewAttachParams attach): BaseCheatsView{attach}
-{
-	loadCheatItems();
-}
-
-void EmuCheatsView::loadCheatItems()
-{
-	unsigned cheats = cheatList.size();
-	cheat.clear();
-	cheat.reserve(cheats);
-	auto it = cheatList.begin();
-	iterateTimes(cheats, cIdx)
-	{
-		auto &thisCheat = *it;
-		cheat.emplace_back(thisCheat.name, &defaultFace(), thisCheat.isOn(),
-			[this, cIdx](BoolMenuItem &item, View &, Input::Event e)
-			{
-				item.flipBoolValue(*this);
-				auto &c = cheatList[cIdx];
-				c.toggleOn();
-				cheatsModified = 1;
-				applyCheats();
-			});
-		logMsg("added cheat %s : %s", thisCheat.name, thisCheat.code);
-		++it;
-	}
 }

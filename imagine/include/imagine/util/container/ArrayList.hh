@@ -15,46 +15,20 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <assert.h>
+#include <imagine/util/utility.h>
+#include <cassert>
 #include <cstddef>
 #include <iterator>
-#include <cstring>
+#include <span>
+#include <algorithm>
 
-template <class T, size_t SIZE>
-class StaticStorageBase
+namespace IG
+{
+
+template<class T, size_t SIZE>
+class StaticArrayList
 {
 public:
-	constexpr size_t maxSize() const { return SIZE; }
-
-protected:
-	T arr[SIZE];
-
-	constexpr StaticStorageBase() {}
-	constexpr T *storage() { return arr; }
-	constexpr const T *storage() const { return arr; }
-};
-
-template <class T>
-class PointerStorageBase
-{
-public:
-	constexpr size_t maxSize() const { return size; }
-
-protected:
-	T *arr{};
-	size_t size{};
-
-	constexpr PointerStorageBase() {}
-	constexpr T *storage() { return arr; }
-	constexpr const T *storage() const { return arr; }
-	constexpr void setStorage(T *s, size_t size) { arr = s; this->size = size;}
-};
-
-template<class T, class STORAGE_BASE>
-class ArrayListBase : public STORAGE_BASE
-{
-public:
-	using STORAGE_BASE::storage;
 	using value_type = T;
 	using size_type = size_t;
 	using iterator = T*;
@@ -62,27 +36,23 @@ public:
 	using reverse_iterator = std::reverse_iterator<iterator>;
 	using const_reverse_iterator = std::reverse_iterator<const_iterator>;
 
-	constexpr ArrayListBase() {}
+	constexpr StaticArrayList() = default;
 
 	// Iterators (STL API)
-	constexpr iterator begin() { return data(); }
-	constexpr iterator end() { return data() + size(); }
-	constexpr const_iterator begin() const { return data(); }
-	constexpr const_iterator end() const { return data() + size(); }
+	constexpr auto begin(this auto&& self) { return self.data(); }
+	constexpr auto end(this auto&& self) { return self.data() + self.size(); }
 	constexpr const_iterator cbegin() const { return begin(); }
 	constexpr const_iterator cend() const { return end(); }
-	constexpr reverse_iterator rbegin() { return reverse_iterator(end()); }
-	constexpr reverse_iterator rend() { return reverse_iterator(begin()); }
-	constexpr const_reverse_iterator rbegin() const { return const_reverse_iterator(end()); }
-	constexpr const_reverse_iterator rend() const { return const_reverse_iterator(begin()); }
+	constexpr auto rbegin(this auto&& self) { return std::reverse_iterator(self.end()); }
+	constexpr auto rend(this auto&& self) { return std::reverse_iterator(self.begin()); }
 	constexpr const_reverse_iterator crbegin() const { return rbegin(); }
 	constexpr const_reverse_iterator crend() const { return rend(); }
 
 	// Capacity (STL API)
 	constexpr size_t size() const { return size_; }
 	constexpr bool empty() const { return !size(); };
-	constexpr size_t capacity() const { return STORAGE_BASE::maxSize(); }
-	constexpr size_t max_size() const { return STORAGE_BASE::maxSize(); }
+	constexpr size_t capacity() const { return SIZE; }
+	constexpr size_t max_size() const { return SIZE; }
 
 	constexpr void resize(size_t size)
 	{
@@ -111,11 +81,8 @@ public:
 		return (*this)[idx];
 	}
 
-	constexpr T *data() { return storage(); }
-	constexpr const T *data() const { return storage(); }
-
-	constexpr T& operator[] (int idx) { return data()[idx]; }
-	constexpr const T& operator[] (int idx) const { return data()[idx]; }
+	constexpr auto* data(this auto&& self) { return self.storage(); }
+	constexpr auto& operator[] (this auto&& self, int idx) { return self.data()[idx]; }
 
 	// Modifiers (STL API)
 	constexpr void clear()
@@ -137,29 +104,30 @@ public:
 		size_++;
 	}
 
-	template <class... ARGS>
-	constexpr T &emplace_back(ARGS&&... args)
+	constexpr T &emplace_back(auto &&...args)
 	{
 		assert(size_ < max_size());
 		auto newAddr = &data()[size_];
-		new(newAddr) T(std::forward<ARGS>(args)...);
+		new(newAddr) T(IG_forward(args)...);
 		size_++;
 		return *newAddr;
 	}
 
 	constexpr iterator insert(const_iterator position, const T& val)
 	{
-		// TODO: re-write using std::move
-		uintptr_t idx = position - data();
-		assert(idx <= size());
-		uintptr_t elemsAfterInsertIdx = size()-idx;
-		if(elemsAfterInsertIdx)
+		assert(size_ < max_size());
+		iterator p = data() + (position - begin());
+		if(p == end())
 		{
-			std::memmove(&data()[idx+1], &data()[idx], sizeof(T)*elemsAfterInsertIdx);
+			push_back(val);
 		}
-		data()[idx] = val;
-		size_++;
-		return &data()[idx];
+		else
+		{
+			std::move_backward(p, end(), end() + 1);
+			*p = val;
+			size_++;
+		}
+		return p;
 	}
 
 	constexpr iterator erase(iterator position)
@@ -181,19 +149,39 @@ public:
 		return first;
 	}
 
+	constexpr bool tryPushBack(const T &d)
+	{
+		if(isFull())
+			return false;
+		push_back(d);
+		return true;
+	}
+
+	constexpr operator std::span<T>() const
+	{
+		return {data(), size()};
+	}
+
 private:
 	size_t size_{};
+	T arr[SIZE];
+
+	constexpr auto* storage(this auto&& self) { return self.arr; }
 };
 
 template<class T, size_t SIZE>
-using StaticArrayList = ArrayListBase<T, StaticStorageBase<T, SIZE> >;
-
-namespace IG
-{
-
-template<class T, size_t SIZE, class Pred>
 static constexpr typename StaticArrayList<T,SIZE>::size_type
-	erase_if(StaticArrayList<T,SIZE>& c, Pred pred)
+	erase(StaticArrayList<T,SIZE>& c, const auto &val)
+{
+	auto it = std::remove(c.begin(), c.end(), val);
+	auto r = std::distance(it, c.end());
+	c.erase(it, c.end());
+	return r;
+}
+
+template<class T, size_t SIZE>
+static constexpr typename StaticArrayList<T,SIZE>::size_type
+	erase_if(StaticArrayList<T,SIZE>& c, auto pred)
 {
 	auto it = std::remove_if(c.begin(), c.end(), pred);
 	auto r = std::distance(it, c.end());

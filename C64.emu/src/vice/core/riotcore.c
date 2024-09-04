@@ -1,5 +1,5 @@
 /*
- * riotcore.c - Core functions for RIOT emulation.
+ * riotcore.c - Core functions for 6532 RAM Input/Output Timer (RIOT) emulation.
  *
  * Written by
  *  Andre Fachat <fachat@physik.tu-chemnitz.de>
@@ -30,9 +30,9 @@
 #include <stdio.h>
 
 #include "alarm.h"
-#include "clkguard.h"
 #include "lib.h"
 #include "log.h"
+#include "monitor.h"
 #include "riot.h"
 #include "snapshot.h"
 #include "types.h"
@@ -79,7 +79,7 @@ void riotcore_signal(riot_context_t *riot_context, int sig, int type)
 
 static void update_timer(riot_context_t *riot_context)
 {
-    int underfl = (*(riot_context->clk_ptr) - riot_context->r_write_clk)
+    CLOCK underfl = (*(riot_context->clk_ptr) - riot_context->r_write_clk)
                   / riot_context->r_divider;
 
     if (underfl > riot_context->r_N) {
@@ -90,27 +90,6 @@ static void update_timer(riot_context_t *riot_context)
     }
     riot_context->r_write_clk += (*(riot_context->clk_ptr)
                                   - riot_context->r_write_clk) & 0xff00;
-}
-
-static void riotcore_clk_overflow_callback(CLOCK sub, void *data)
-{
-    riot_context_t *riot_context;
-
-    riot_context = (riot_context_t *)data;
-
-    if (riot_context->enabled == 0) {
-        return;
-    }
-
-    update_timer(riot_context);
-
-    riot_context->r_write_clk -= sub;
-
-    if (riot_context->read_clk > sub) {
-        riot_context->read_clk -= sub;
-    } else {
-        riot_context->read_clk = 0;
-    }
 }
 
 void riotcore_disable(riot_context_t *riot_context)
@@ -333,13 +312,13 @@ uint8_t riotcore_peek(riot_context_t *riot_context, uint16_t addr)
     if ((addr & 0x04) == 0) {           /* I/O */
         switch (addr & 3) {
             case 0:       /* ORA */
-                ret = riot_context->read_pra(riot_context); /* FIXME */
+                ret = riot_context->riot_io[0]; /* FIXME */
                 break;
             case 1:       /* DDRA */
                 ret = riot_context->riot_io[1];
                 break;
             case 2:       /* ORB */
-                ret = riot_context->read_prb(riot_context); /* FIXME */
+                ret = riot_context->riot_io[2]; /* FIXME */
                 break;
             case 3:       /* DDRB */
                 ret = riot_context->riot_io[3];
@@ -355,7 +334,12 @@ uint8_t riotcore_peek(riot_context_t *riot_context, uint16_t addr)
 
 void riotcore_dump(riot_context_t *riot_context)
 {
-    /* TODO: implement dump feature */
+    CLOCK rclk = *(riot_context->clk_ptr); /* FIXME */
+    unsigned int timer = (uint8_t)(riot_context->r_N - (rclk - riot_context->r_write_clk) / riot_context->r_divider);
+    mon_out("ORA: $%02x DDRA: $%02x\n", riot_context->riot_io[0], riot_context->riot_io[1]);
+    mon_out("ORB: $%02x DDRB: $%02x\n", riot_context->riot_io[2], riot_context->riot_io[3]);
+    mon_out("Timer: $%04x\n", timer);
+    mon_out("IRQ Flags: $%02x\n", riot_context->r_irqfl);
 }
 
 static void riotcore_int_riot(CLOCK offset, void *data)
@@ -381,7 +365,7 @@ void riotcore_setup_context(riot_context_t *riot_context)
 }
 
 void riotcore_init(riot_context_t *riot_context,
-                   alarm_context_t *alarm_context, clk_guard_t *clk_guard,
+                   alarm_context_t *alarm_context,
                    unsigned int number)
 {
     char *buffer;
@@ -392,9 +376,6 @@ void riotcore_init(riot_context_t *riot_context,
     riot_context->alarm = alarm_new(alarm_context, buffer, riotcore_int_riot,
                                     riot_context);
     lib_free(buffer);
-
-    clk_guard_add_callback(clk_guard, riotcore_clk_overflow_callback,
-                           riot_context);
 }
 
 void riotcore_shutdown(riot_context_t *riot_context)

@@ -19,7 +19,7 @@
 #include <X11/XF86keysym.h>
 #include <imagine/input/evdev/inputDefs.hh>
 
-namespace Input
+namespace IG::Input
 {
 
 using PointerIdImpl = int;
@@ -27,7 +27,7 @@ using PointerIdImpl = int;
 // Note: only first 15-bits of XF86XK_* values are used
 // so they fit in 2 bytes and don't conflict with other keys
 
-	namespace X
+	namespace Keycode
 	{
 	static constexpr Key
 	ESCAPE = XK_Escape,
@@ -200,7 +200,9 @@ using PointerIdImpl = int;
 	JS3_YAXIS_POS = 0xfe32, JS3_YAXIS_NEG = 0xfe33,
 
 	JS_LTRIGGER_AXIS = 0xfe34, JS_RTRIGGER_AXIS = 0xfe35,
-	JS_GAS_AXIS = 0xfe36, JS_BRAKE_AXIS = 0xfe37;
+	JS_GAS_AXIS = 0xfe36, JS_BRAKE_AXIS = 0xfe37,
+
+	BACK_KEY = ESCAPE;
 
 	static constexpr uint32_t COUNT = 0xffff + 1;
 
@@ -216,22 +218,35 @@ using PointerIdImpl = int;
 		SELECT = LCTRL,
 		START = LALT,
 		LOGO = UNDO,
-		UP = X::UP, RIGHT = X::RIGHT, DOWN = X::DOWN, LEFT = X::LEFT;
+		UP = Keycode::UP, RIGHT = Keycode::RIGHT, DOWN = Keycode::DOWN, LEFT = Keycode::LEFT;
 		}
 	}
-
-namespace Keycode = X;
 
 	namespace Pointer
 	{
 	static constexpr Key
 	LBUTTON = 1,
 	MBUTTON = 2,
-	RBUTTON = 3,
-	WHEEL_UP = 4,
-	WHEEL_DOWN = 5,
-	DOWN_BUTTON = 8,
-	UP_BUTTON = 9;
+	RBUTTON = 4,
+	DOWN_BUTTON = 128,
+	UP_BUTTON = 256;
 	}
 
+	namespace Meta
+	{
+	static constexpr uint32_t
+	ALT = 0x8,
+	ALT_L = 0x8,
+	ALT_R = 0x8,
+	SHIFT = 0x1,
+	SHIFT_L = 0x1,
+	SHIFT_R = 0x1,
+	CTRL = 0x4,
+	CTRL_L = 0x4,
+	CTRL_R = 0x4,
+	META = 0x40,
+	META_L = 0x40,
+	META_R = 0x40,
+	CAPS_LOCK = 0x2;
+	}
 }

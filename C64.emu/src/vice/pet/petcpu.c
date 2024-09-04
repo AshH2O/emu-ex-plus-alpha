@@ -54,19 +54,19 @@
 
 #define DMA_FUNC h6809_mainloop(CPU_INT_STATUS, ALARM_CONTEXT)
 
-#define DMA_ON_RESET                                                             \
-    while (petres.superpet && petres.superpet_cpu_switch == SUPERPET_CPU_6809) { \
-        EXPORT_REGISTERS();                                                      \
-        cpu6809_reset();                                                         \
-        DMA_FUNC;                                                                \
-        interrupt_ack_dma(CPU_INT_STATUS);                                       \
-        IMPORT_REGISTERS();                                                      \
+#define DMA_ON_RESET                                                         \
+    while (petres.model.superpet &&                                          \
+           petres.superpet_cpu_switch == SUPERPET_CPU_6809) {                \
+        EXPORT_REGISTERS();                                                  \
+        cpu6809_reset();                                                     \
+        DMA_FUNC;                                                            \
+        interrupt_ack_dma(CPU_INT_STATUS);                                   \
+        IMPORT_REGISTERS();                                                  \
     }
 
 #define HAVE_6809_REGS
 
 #ifdef FEATURE_CPUMEMHISTORY
-#warning "CPUMEMHISTORY implementation for xpet is incomplete"
 static void memmap_mem_store(unsigned int addr, unsigned int value)
 {
     monitor_memmap_store(addr, MEMMAP_RAM_W);
@@ -83,6 +83,18 @@ static uint8_t memmap_mem_read(unsigned int addr)
 {
     memmap_mark_read(addr);
     return (*_mem_read_tab_ptr[(addr) >> 8])((uint16_t)(addr));
+}
+
+static uint8_t memmap_mem_read_dummy(unsigned int addr)
+{
+    memmap_mark_read(addr);
+    return (*_mem_read_tab_ptr_dummy[(addr) >> 8])((uint16_t)(addr));
+}
+
+static void memmap_mem_store_dummy(unsigned int addr, unsigned int value)
+{
+    monitor_memmap_store(addr, MEMMAP_RAM_W);
+    (*_mem_write_tab_ptr_dummy[(addr) >> 8])((uint16_t)(addr), (uint8_t)(value));
 }
 #endif
 

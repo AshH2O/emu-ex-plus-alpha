@@ -15,18 +15,21 @@
 
 #define LOGTAG "ArchFS"
 #include <imagine/fs/ArchiveFS.hh>
+#include <imagine/io/IO.hh>
+#include <imagine/io/FileIO.hh>
+#include <imagine/util/utility.h>
 #include <imagine/util/string.h>
 
-namespace FS
+namespace IG::FS
 {
 
 template <class... Args>
-static std::shared_ptr<ArchiveEntry> makeArchiveEntryPtr(Args&& ...args)
+static std::shared_ptr<ArchiveIO> makeArchiveEntryPtr(Args&& ...args)
 {
-	ArchiveEntry entry{std::forward<Args>(args)...};
+	ArchiveIO entry{std::forward<Args>(args)...};
 	if(entry.hasEntry())
 	{
-		return std::make_shared<ArchiveEntry>(std::move(entry));
+		return std::make_shared<ArchiveIO>(std::move(entry));
 	}
 	else
 	{
@@ -35,46 +38,32 @@ static std::shared_ptr<ArchiveEntry> makeArchiveEntryPtr(Args&& ...args)
 	}
 }
 
-ArchiveIterator::ArchiveIterator(const char *path):
-	impl{makeArchiveEntryPtr(path)}
-{}
+ArchiveIterator::ArchiveIterator(CStringView path):
+	impl{makeArchiveEntryPtr(path)} {}
 
-ArchiveIterator::ArchiveIterator(const char *path, std::error_code &ec):
-	impl{makeArchiveEntryPtr(path, ec)}
-{}
+ArchiveIterator::ArchiveIterator(IO io):
+	impl{makeArchiveEntryPtr(std::move(io))} {}
 
-ArchiveIterator::ArchiveIterator(GenericIO io):
-	impl{makeArchiveEntryPtr(std::move(io))}
-{}
+ArchiveIterator::ArchiveIterator(FileIO io):
+	impl{makeArchiveEntryPtr(std::move(io))} {}
 
-ArchiveIterator::ArchiveIterator(GenericIO io, std::error_code &ec):
-	impl{makeArchiveEntryPtr(std::move(io), ec)}
-{}
+ArchiveIterator::ArchiveIterator(ArchiveIO entry):
+	impl{entry.hasEntry() ? std::make_shared<ArchiveIO>(std::move(entry)) : std::shared_ptr<ArchiveIO>{}} {}
 
-ArchiveIterator::ArchiveIterator(ArchiveEntry entry):
-	impl{entry.hasEntry() ? std::make_shared<ArchiveEntry>(std::move(entry)) : std::shared_ptr<ArchiveEntry>{}}
-{}
-
-ArchiveEntry& ArchiveIterator::operator*()
+ArchiveIO& ArchiveIterator::operator*()
 {
 	return *impl;
 }
 
-ArchiveEntry* ArchiveIterator::operator->()
+ArchiveIO* ArchiveIterator::operator->()
 {
 	return impl.get();
 }
 
 void ArchiveIterator::operator++()
 {
-	assumeExpr(impl); // incrementing end-iterator is undefined
-	if(!impl->readNextEntry())
-		impl.reset();
-}
-
-bool ArchiveIterator::operator==(ArchiveIterator const &rhs) const
-{
-	return impl == rhs.impl;
+	assumeExpr(impl->hasEntry()); // incrementing end-iterator is undefined
+	impl->readNextEntry();
 }
 
 void ArchiveIterator::rewind()
@@ -82,20 +71,9 @@ void ArchiveIterator::rewind()
 	impl->rewind();
 }
 
-ArchiveIO fileFromArchive(const char *archivePath, const char *filePath)
+bool hasArchiveExtension(std::string_view name)
 {
-	for(auto &entry : FS::ArchiveIterator{archivePath})
-	{
-		if(entry.type() == FS::file_type::directory)
-		{
-			continue;
-		}
-		if(string_equal(entry.name(), filePath))
-		{
-			return entry.moveIO();
-		}
-	}
-	return {};
+	return endsWithAnyCaseless(name, ".7z", ".rar", ".zip");
 }
 
 }

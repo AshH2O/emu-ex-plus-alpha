@@ -78,7 +78,8 @@ static io_source_t h256k_device = {
     h256k_dump,           /* chip state information dump function */
     IO_CART_ID_NONE,      /* not a cartridge */
     IO_PRIO_NORMAL,       /* normal priority, device read needs to be checked for collisions */
-    0                     /* insertion order, gets filled in by the registration function */
+    0,                    /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE        /* NO mirroring */
 };
 
 static io_source_list_t *h256k_list_item = NULL;
@@ -143,15 +144,15 @@ static int h256k_activate(int type)
     switch (type) {
         case 1:
             h256k_ram = lib_realloc((void *)h256k_ram, (size_t)0x30000);
-            log_message(h256k_log, "HANNES 256K expansion installed.");
+            log_message(h256k_log, "HANNES 256KiB expansion installed.");
             break;
         case 2:
             h256k_ram = lib_realloc((void *)h256k_ram, (size_t)0xf0000);
-            log_message(h256k_log, "HANNES 1024K expansion installed.");
+            log_message(h256k_log, "HANNES 1MiB expansion installed.");
             break;
         case 3:
             h256k_ram = lib_realloc((void *)h256k_ram, (size_t)0x3f0000);
-            log_message(h256k_log, "HANNES 4096K expansion installed.");
+            log_message(h256k_log, "HANNES 4MiB expansion installed.");
             break;
     }
     h256k_reset();

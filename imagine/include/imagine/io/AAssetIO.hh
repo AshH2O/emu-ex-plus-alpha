@@ -15,44 +15,46 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/config/defs.hh>
-#include <imagine/io/BufferMapIO.hh>
+#include <imagine/io/IOUtils.hh>
+#include <imagine/io/MapIO.hh>
+#include <imagine/util/string/CStringView.hh>
 #include <memory>
+#include <span>
 
 struct AAsset;
 
-namespace Base
+namespace IG
 {
 class ApplicationContext;
 }
 
-class AAssetIO : public IO
+namespace IG
+{
+
+class AAssetIO : public IOUtils<AAssetIO>
 {
 public:
-	using IO::read;
-	using IO::readAtPos;
-	using IO::write;
-	using IO::seek;
-	using IO::seekS;
-	using IO::seekE;
-	using IO::seekC;
-	using IO::tell;
-	using IO::send;
-	using IO::constBufferView;
-	using IO::get;
+	using IOUtilsBase = IOUtils<AAssetIO>;
+	using IOUtilsBase::read;
+	using IOUtilsBase::write;
+	using IOUtilsBase::seek;
+	using IOUtilsBase::tell;
+	using IOUtilsBase::send;
+	using IOUtilsBase::buffer;
+	using IOUtilsBase::get;
+	using IOUtilsBase::toFileStream;
 
-	constexpr AAssetIO() {}
-	GenericIO makeGeneric();
-	std::error_code open(Base::ApplicationContext, const char *name, AccessHint);
-	ssize_t read(void *buff, size_t bytes, std::error_code *ecOut) final;
-	const uint8_t *mmapConst() final;
-	ssize_t write(const void *buff, size_t bytes, std::error_code *ecOut) final;
-	off_t seek(off_t offset, SeekMode mode, std::error_code *ecOut) final;
-	void close() final;
-	size_t size() final;
-	bool eof() final;
-	explicit operator bool() const final;
-	void advise(off_t offset, size_t bytes, Advice advice) final;
+	constexpr AAssetIO() = default;
+	AAssetIO(ApplicationContext, CStringView name, OpenFlags oFlags = {});
+	ssize_t read(void *buff, size_t bytes, std::optional<off_t> offset = {});
+	ssize_t write(const void *buff, size_t bytes, std::optional<off_t> offset = {});
+	std::span<uint8_t> map();
+	off_t seek(off_t offset, SeekMode mode);
+	size_t size();
+	bool eof();
+	explicit operator bool() const;
+	void advise(off_t offset, size_t bytes, Advice advice);
+	IOBuffer releaseBuffer();
 
 protected:
 	struct AAssetDeleter
@@ -65,8 +67,10 @@ protected:
 	using UniqueAAsset = std::unique_ptr<AAsset, AAssetDeleter>;
 
 	UniqueAAsset asset{};
-	BufferMapIO mapIO{};
+	MapIO mapIO{};
 
 	bool makeMapIO();
 	static void closeAAsset(AAsset *);
 };
+
+}

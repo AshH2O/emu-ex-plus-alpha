@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -120,11 +120,19 @@ class DialogContainer
     void handleJoyHatEvent(int stick, int hat, JoyHatDir hdir, int button);
 
     /**
-      Draw the stack of menus (full indicates to redraw all items).
-
-      @return  Answers whether any drawing actually occurred.
+      Tick the dialog and all its widgets.
     */
-    bool draw(bool full = false);
+    void tick();
+
+    /**
+      Draw the stack of menus (full indicates to redraw all items).
+    */
+    void draw(bool full = false);
+
+    /**
+      Render the stack of menus.
+    */
+    void render();
 
     /**
       Answers whether a full redraw is required.

@@ -17,58 +17,50 @@
 
 #include <imagine/config/defs.hh>
 #include <imagine/font/Font.hh>
-#include <imagine/gfx/PixmapTexture.hh>
+#include <imagine/gfx/Texture.hh>
 #include <imagine/util/container/VMemArray.hh>
-#include <system_error>
+#include <string_view>
 
-class GenericIO;
-
-namespace Gfx
+namespace IG::Gfx
 {
 
-class Renderer;
-
-static constexpr auto glyphCommonTextureSampler = CommonTextureSampler::NO_MIP_CLAMP;
+constexpr auto glyphSamplerConfig = SamplerConfigs::noMipClamp;
 
 struct GlyphEntry
 {
-	Gfx::PixmapTexture glyph_{};
-	IG::GlyphMetrics metrics{};
-
-	constexpr GlyphEntry() {}
-	constexpr const Gfx::PixmapTexture &glyph() const { return glyph_; }
+	Texture glyph;
+	GlyphMetrics metrics;
 };
 
 class GlyphTextureSet
 {
 public:
-	static constexpr bool supportsUnicode = Config::UNICODE_CHARS;
-
-	constexpr GlyphTextureSet() {}
-	GlyphTextureSet(Renderer &, IG::Font, IG::FontSettings);
-	IG::FontSettings fontSettings() const;
-	bool setFontSettings(Renderer &r, IG::FontSettings set);
-	unsigned precache(Renderer &r, const char *string);
-	unsigned precacheAlphaNum(Renderer &r)
+	constexpr GlyphTextureSet() = default;
+	GlyphTextureSet(Renderer &, Font, FontSettings settings = {});
+	FontSettings fontSettings() const;
+	bool setFontSettings(Renderer &r, FontSettings set);
+	int precache(Renderer &r, std::string_view string);
+	int precacheAlphaNum(Renderer &r)
 	{
 		return precache(r, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
 	}
-	GlyphEntry *glyphEntry(Renderer &r, int c, bool allowCache = true);
-	uint32_t nominalHeight() const;
+	const GlyphEntry *glyphEntry(Renderer &r, int c, bool allowCache = true);
+	GlyphSetMetrics metrics() const { return metrics_; }
+	int nominalHeight() const { return metrics().nominalHeight; }
 	void freeCaches(uint32_t rangeToFreeBits);
 	void freeCaches() { freeCaches(~0); }
 
 private:
-	IG::Font font{};
-	IG::VMemArray<GlyphEntry> glyphTable{};
-	IG::FontSettings settings{};
-	IG::FontSize faceSize{};
-	uint32_t nominalHeight_ = 0;
-	uint32_t usedGlyphTableBits = 0;
+	Font font;
+	VMemArray<GlyphEntry> glyphTable;
+	FontSettings settings;
+	FontSize faceSize;
+	GlyphSetMetrics metrics_;
+	uint32_t usedGlyphTableBits{};
 
-	void calcNominalHeight(Renderer &r);
+	void calcMetrics(Renderer &r);
 	void resetGlyphTable();
-	std::errc cacheChar(Renderer &r, int c, int tableIdx);
+	bool cacheChar(Renderer &r, int c, int tableIdx);
 };
 
 }

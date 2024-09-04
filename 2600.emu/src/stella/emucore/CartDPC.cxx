@@ -8,59 +8,68 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
 // this file, and for a DISCLAIMER OF ALL WARRANTIES.
 //============================================================================
 
+#include "Settings.hxx"
 #include "System.hxx"
 #include "AudioSettings.hxx"
 #include "CartDPC.hxx"
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 CartridgeDPC::CartridgeDPC(const ByteBuffer& image, size_t size,
-                           const string& md5, const Settings& settings)
-  : Cartridge(settings, md5),
-    mySize(size)
+                           const string& md5, const Settings& settings,
+                           size_t bsSize)
+  : CartridgeF8(image, size, md5, settings, bsSize)
 {
-  // Make a copy of the entire image
-  std::copy_n(image.get(), std::min(myImage.size(), size), myImage.begin());
-  createCodeAccessBase(8_KB);
-
-  // Pointer to the program ROM (8K @ 0 byte offset)
-  myProgramImage = myImage.data();
-
-  // Pointer to the display ROM (2K @ 8K offset)
-  myDisplayImage = myProgramImage + 8_KB;
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 void CartridgeDPC::reset()
 {
+  CartridgeEnhanced::reset();
+
   myAudioCycles = 0;
   myFractionalClocks = 0.0;
-
-  // Upon reset we switch to the startup bank
-  initializeStartBank(1);
-  bank(startBank());
-
   myDpcPitch = mySettings.getInt(AudioSettings::SETTING_DPC_PITCH);
+}
+
+// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+void CartridgeDPC::consoleChanged(ConsoleTiming timing)
+{
+  constexpr double NTSC  = 1193191.66666667;  // NTSC  6507 clock rate
+  constexpr double PAL   = 1182298.0;         // PAL   6507 clock rate
+  constexpr double SECAM = 1187500.0;         // SECAM 6507 clock rate
+
+  switch(timing)
+  {
+    case ConsoleTiming::ntsc:   myClockRate = NTSC;   break;
+    case ConsoleTiming::pal:    myClockRate = PAL;    break;
+    case ConsoleTiming::secam:  myClockRate = SECAM;  break;
+    default:  break;  // satisfy compiler
+  }
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 void CartridgeDPC::install(System& system)
 {
-  mySystem = &system;
+  CartridgeEnhanced::install(system);
+
+  myRomOffset = 0x80;
+
+  // Pointer to the display ROM (2K @ 8K offset)
+  myDisplayImage = myImage.get() + 8_KB;
+
+  createRomAccessArrays(8_KB);
 
   // Set the page accessing method for the DPC reading & writing pages
-  System::PageAccess access(this, System::PageAccessType::READWRITE);
+  const System::PageAccess access(this, System::PageAccessType::READWRITE);
   for(uInt16 addr = 0x1000; addr < 0x1080; addr += System::PAGE_SIZE)
     mySystem->setPageAccess(addr, access);
-
-  // Install pages for the startup bank
-  bank(startBank());
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
@@ -74,7 +83,7 @@ inline void CartridgeDPC::clockRandomNumberGenerator()
 
   // Using bits 7, 5, 4, & 3 of the shift register compute the input
   // bit for the shift register
-  uInt8 bit = f[((myRandomNumber >> 3) & 0x07) |
+  const uInt8 bit = f[((myRandomNumber >> 3) & 0x07) |
       ((myRandomNumber & 0x80) ? 0x08 : 0x00)];
 
   // Update the shift register
@@ -85,15 +94,15 @@ inline void CartridgeDPC::clockRandomNumberGenerator()
 inline void CartridgeDPC::updateMusicModeDataFetchers()
 {
   // Calculate the number of cycles since the last update
-  uInt32 cycles = uInt32(mySystem->cycles() - myAudioCycles);
+  const uInt32 cycles = static_cast<uInt32>(mySystem->cycles() - myAudioCycles);
   myAudioCycles = mySystem->cycles();
 
   // Calculate the number of DPC OSC clocks since the last update
-  double clocks = ((myDpcPitch * cycles) / 1193191.66666667) + myFractionalClocks;
-  uInt32 wholeClocks = uInt32(clocks);
-  myFractionalClocks = clocks - double(wholeClocks);
+  const double clocks = ((myDpcPitch * cycles) / myClockRate) + myFractionalClocks;
+  const uInt32 wholeClocks = static_cast<uInt32>(clocks);
+  myFractionalClocks = clocks - static_cast<double>(wholeClocks);
 
-  if(wholeClocks <= 0)
+  if(wholeClocks == 0)
     return;
 
   // Let's update counters and flags of the music mode data fetchers
@@ -102,8 +111,8 @@ inline void CartridgeDPC::updateMusicModeDataFetchers()
     // Update only if the data fetcher is in music mode
     if(myMusicMode[x - 5])
     {
-      Int32 top = myTops[x] + 1;
-      Int32 newLow = Int32(myCounters[x] & 0x00ff);
+      const Int32 top = myTops[x] + 1;
+      Int32 newLow = static_cast<Int32>(myCounters[x] & 0x00ff);
 
       if(myTops[x] != 0)
       {
@@ -120,7 +129,7 @@ inline void CartridgeDPC::updateMusicModeDataFetchers()
       else if(newLow <= myTops[x])
         myFlags[x] = 0xff;
 
-      myCounters[x] = (myCounters[x] & 0x0700) | uInt16(newLow);
+      myCounters[x] = (myCounters[x] & 0x0700) | static_cast<uInt16>(newLow);
     }
   }
 }
@@ -128,12 +137,14 @@ inline void CartridgeDPC::updateMusicModeDataFetchers()
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 uInt8 CartridgeDPC::peek(uInt16 address)
 {
+  const uInt16 peekAddress = address;
+
   address &= 0x0FFF;
 
   // In debugger/bank-locked mode, we ignore all hotspots and in general
   // anything that can change the internal state of the cart
-  if(bankLocked())
-    return myProgramImage[myBankOffset + address];
+  if(hotspotsLocked())
+    return myImage[myCurrentSegOffset[0] + address];
 
   // Clock the random number generator.  This should be done for every
   // cartridge access, however, we're only doing it for the DPC and
@@ -145,8 +156,8 @@ uInt8 CartridgeDPC::peek(uInt16 address)
     uInt8 result = 0;
 
     // Get the index of the data fetcher that's being accessed
-    uInt32 index = address & 0x07;
-    uInt32 function = (address >> 3) & 0x07;
+    const uInt32 index = address & 0x07;
+    const uInt32 function = (address >> 3) & 0x07;
 
     // Update flag register for selected data fetcher
     if((myCounters[index] & 0x00ff) == myTops[index])
@@ -232,30 +243,14 @@ uInt8 CartridgeDPC::peek(uInt16 address)
     return result;
   }
   else
-  {
-    // Switch banks if necessary
-    switch(address)
-    {
-      case 0x0FF8:
-        // Set the current bank to the lower 4k bank
-        bank(0);
-        break;
-
-      case 0x0FF9:
-        // Set the current bank to the upper 4k bank
-        bank(1);
-        break;
-
-      default:
-        break;
-    }
-    return myProgramImage[myBankOffset + address];
-  }
+    return CartridgeEnhanced::peek(peekAddress);
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 bool CartridgeDPC::poke(uInt16 address, uInt8 value)
 {
+  const uInt16 pokeAddress = address;
+
   address &= 0x0FFF;
 
   // Clock the random number generator.  This should be done for every
@@ -266,8 +261,8 @@ bool CartridgeDPC::poke(uInt16 address, uInt8 value)
   if((address >= 0x0040) && (address < 0x0080))
   {
     // Get the index of the data fetcher that's being accessed
-    uInt32 index = address & 0x07;
-    uInt32 function = (address >> 3) & 0x07;
+    const uInt32 index = address & 0x07;
+    const uInt32 function = (address >> 3) & 0x07;
 
     switch(function)
     {
@@ -294,14 +289,14 @@ bool CartridgeDPC::poke(uInt16 address, uInt8 value)
           // Data fetcher is in music mode so its low counter value
           // should be loaded from the top register not the poked value
           myCounters[index] = (myCounters[index] & 0x0700) |
-              uInt16(myTops[index]);
+            static_cast<uInt16>(myTops[index]);
         }
         else
         {
           // Data fetcher is either not a music mode data fetcher or it
           // isn't in music mode so it's low counter value should be loaded
           // with the poked value
-          myCounters[index] = (myCounters[index] & 0x0700) | uInt16(value);
+          myCounters[index] = (myCounters[index] & 0x0700) | static_cast<uInt16>(value);
         }
         break;
       }
@@ -309,7 +304,7 @@ bool CartridgeDPC::poke(uInt16 address, uInt8 value)
       // DFx counter high
       case 0x03:
       {
-        myCounters[index] = ((uInt16(value) & 0x07) << 8) |
+        myCounters[index] = ((static_cast<uInt16>(value) & 0x07) << 8) |
             (myCounters[index] & 0x00ff);
 
         // Execute special code for music mode data fetchers
@@ -332,104 +327,35 @@ bool CartridgeDPC::poke(uInt16 address, uInt8 value)
       }
 
       default:
-      {
         break;
-      }
     }
   }
   else
-  {
-    // Switch banks if necessary
-    switch(address)
-    {
-      case 0x0FF8:
-        // Set the current bank to the lower 4k bank
-        bank(0);
-        break;
+    CartridgeEnhanced::poke(pokeAddress, value);
 
-      case 0x0FF9:
-        // Set the current bank to the upper 4k bank
-        bank(1);
-        break;
-
-      default:
-        break;
-    }
-  }
   return false;
-}
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-bool CartridgeDPC::bank(uInt16 bank)
-{
-  if(bankLocked()) return false;
-
-  // Remember what bank we're in
-  myBankOffset = bank << 12;
-
-  System::PageAccess access(this, System::PageAccessType::READ);
-
-  // Set the page accessing methods for the hot spots
-  for(uInt16 addr = (0x1FF8 & ~System::PAGE_MASK); addr < 0x2000;
-      addr += System::PAGE_SIZE)
-  {
-    access.codeAccessBase = &myCodeAccessBase[myBankOffset + (addr & 0x0FFF)];
-    mySystem->setPageAccess(addr, access);
-  }
-
-  // Setup the page access methods for the current bank
-  for(uInt16 addr = 0x1080; addr < static_cast<uInt16>(0x1FF8U & ~System::PAGE_MASK);
-      addr += System::PAGE_SIZE)
-  {
-    access.directPeekBase = &myProgramImage[myBankOffset + (addr & 0x0FFF)];
-    access.codeAccessBase = &myCodeAccessBase[myBankOffset + (addr & 0x0FFF)];
-    mySystem->setPageAccess(addr, access);
-  }
-  return myBankChanged = true;
-}
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-uInt16 CartridgeDPC::getBank(uInt16) const
-{
-  return myBankOffset >> 12;
-}
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-uInt16 CartridgeDPC::bankCount() const
-{
-  return 2;
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 bool CartridgeDPC::patch(uInt16 address, uInt8 value)
 {
-  address &= 0x0FFF;
-
   // For now, we ignore attempts to patch the DPC address space
-  if(address >= 0x0080)
+  if((address & ADDR_MASK) >= ROM_OFFSET + myRomOffset)
   {
-    myProgramImage[myBankOffset + (address & 0x0FFF)] = value;
-    return myBankChanged = true;
+    return CartridgeEnhanced::patch(address, value);
   }
   else
     return false;
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-const uInt8* CartridgeDPC::getImage(size_t& size) const
-{
-  size = mySize;
-  return myImage.data();
-}
-
-// - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 bool CartridgeDPC::save(Serializer& out) const
 {
+  if(!CartridgeEnhanced::save(out))
+    return false;
+
   try
   {
-    // Indicates which bank is currently active
-    out.putShort(myBankOffset);
-
     // The top registers for the data fetchers
     out.putByteArray(myTops.data(), myTops.size());
 
@@ -464,11 +390,11 @@ bool CartridgeDPC::save(Serializer& out) const
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 bool CartridgeDPC::load(Serializer& in)
 {
+  if(!CartridgeEnhanced::load(in))
+    return false;
+
   try
   {
-    // Indicates which bank is currently active
-    myBankOffset = in.getShort();
-
     // The top registers for the data fetchers
     in.getByteArray(myTops.data(), myTops.size());
 
@@ -497,9 +423,5 @@ bool CartridgeDPC::load(Serializer& in)
     cerr << "ERROR: CartridgeDPC::load" << endl;
     return false;
   }
-
-  // Now, go to the current bank
-  bank(myBankOffset >> 12);
-
   return true;
 }

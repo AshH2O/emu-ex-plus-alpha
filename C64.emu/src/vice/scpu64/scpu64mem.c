@@ -44,7 +44,6 @@
 #include "cartio.h"
 #include "cartridge.h"
 #include "cia.h"
-#include "clkguard.h"
 #include "machine.h"
 #include "main65816cpu.h"
 #include "mem.h"
@@ -98,12 +97,7 @@ unsigned int mem_simm_ram_mask = 0;
 uint8_t mem_tooslow[1];
 static int traps_pending;
 
-#ifdef USE_EMBEDDED
-#define C64_CHARGEN_ROM_SIZE SCPU64_CHARGEN_ROM_SIZE
-#include "c64chargen.h"
-#else
 uint8_t mem_chargen_rom[SCPU64_CHARGEN_ROM_SIZE];
-#endif
 
 /* Internal color memory.  */
 static uint8_t mem_color_ram[0x400];
@@ -149,18 +143,20 @@ int mem_reg_bootmap;            /* boot map */
 int mem_reg_simm;               /* simm configuration */
 int mem_pport;                  /* processor "port" */
 
+static int dma_in_progress = 0;
+
 /* ------------------------------------------------------------------------- */
 
 inline static void check_ba_read(void)
 {
-    if (!scpu64_fastmode && maincpu_ba_low_flags) {
+    if (!scpu64_fastmode && maincpu_ba_low_flags && !dma_in_progress) {
         maincpu_steal_cycles();
     }
 }
 
 inline static void check_ba_write(void)
 {
-    if (!scpu64_fastmode && !scpu64_emulation_mode && maincpu_ba_low_flags) {
+    if (!scpu64_fastmode && !scpu64_emulation_mode && maincpu_ba_low_flags && !dma_in_progress) {
         maincpu_steal_cycles();
     }
 }
@@ -214,7 +210,7 @@ void scpu64_mem_init(void)
 
 void mem_pla_config_changed(void)
 {
-    mem_config = ((mem_pport & 7) | (export.exrom << 3) | (export.game << 4) 
+    mem_config = ((mem_pport & 7) | (export.exrom << 3) | (export.game << 4)
                 | (mem_reg_hwenable << 5) | (mem_reg_dosext << 6) | (mem_reg_bootmap << 7));
 
     if (watchpoints_active) {
@@ -239,6 +235,15 @@ static void pport_store(uint16_t addr, uint8_t value)
     }
 }
 
+/* reads zeropage, 0/1 comes from RAM */
+uint8_t zero_read_dma(uint16_t addr)
+{
+    addr &= 0xff;
+
+    return mem_ram[addr & 0xff];
+}
+
+/* reads zeropage, 0/1 comes from CPU port */
 uint8_t zero_read(uint16_t addr)
 {
     addr &= 0xff;
@@ -250,12 +255,19 @@ uint8_t zero_read(uint16_t addr)
             return pport.data_read;
     }
 
-    return mem_ram[addr & 0xff];
+    return zero_read_dma(addr);
 }
 
-void zero_store(uint16_t addr, uint8_t value)
+/* store zeropage, 0/1 goes to RAM */
+void zero_store_dma(uint16_t addr, uint8_t value)
 {
     mem_sram[addr] = value;
+}
+
+/* store zeropage, 0/1 goes to CPU port */
+void zero_store(uint16_t addr, uint8_t value)
+{
+    zero_store_dma(addr, value);
 
     if (addr == 1) {
         pport_store(addr, (uint8_t)(value & 7));
@@ -264,7 +276,9 @@ void zero_store(uint16_t addr, uint8_t value)
 
 static void zero_store_mirrored(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch();
+    }
     mem_sram[addr] = value;
     if (addr == 1) {
         pport_store(addr, (uint8_t)(value & 7));
@@ -274,7 +288,9 @@ static void zero_store_mirrored(uint16_t addr, uint8_t value)
 
 static void zero_store_int(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch();
+    }
     if (addr == 1) {
         pport_store(addr, (uint8_t)(value & 7));
     }
@@ -285,7 +301,9 @@ static void zero_store_int(uint16_t addr, uint8_t value)
 
 uint8_t chargen_read(uint16_t addr)
 {
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return mem_chargen_rom[addr & 0xfff];
 }
 
@@ -303,19 +321,25 @@ void ram_store(uint16_t addr, uint8_t value)
 
 uint8_t ram_read_int(uint16_t addr)
 {
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return mem_ram[addr];
 }
 
 void ram_store_int(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch();
+    }
     mem_ram[addr] = value;
 }
 
 static void ram_store_mirrored(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch();
+    }
     mem_sram[addr] = value;
     mem_ram[addr] = value;
 }
@@ -323,13 +347,19 @@ static void ram_store_mirrored(uint16_t addr, uint8_t value)
 static void ram_hi_store_mirrored(uint16_t addr, uint8_t value) /* mirrored, no vbank */
 {
     if (addr == 0xff00) {
-        scpu64_clock_write_stretch_io_start();
+        if (!dma_in_progress) {
+            scpu64_clock_write_stretch_io_start();
+        }
         mem_sram[addr] = value;
         mem_ram[addr] = value;
-        reu_dma(-1);
-        scpu64_clock_write_stretch_io_long();
+        if (!dma_in_progress) {
+            reu_dma(-1);
+            scpu64_clock_write_stretch_io_long();
+        }
     } else {
-        scpu64_clock_write_stretch();
+        if (!dma_in_progress) {
+            scpu64_clock_write_stretch();
+        }
         mem_sram[addr] = value;
         mem_ram[addr] = value;
     }
@@ -338,10 +368,14 @@ static void ram_hi_store_mirrored(uint16_t addr, uint8_t value) /* mirrored, no 
 static void ram_hi_store(uint16_t addr, uint8_t value) /* not mirrored */
 {
     if (addr == 0xff00) {
-        scpu64_clock_write_stretch_io_start();
+        if (!dma_in_progress) {
+            scpu64_clock_write_stretch_io_start();
+        }
         mem_sram[addr] = value;
-        reu_dma(-1);
-        scpu64_clock_write_stretch_io_long();
+        if (!dma_in_progress) {
+            reu_dma(-1);
+            scpu64_clock_write_stretch_io_long();
+        }
     } else {
         check_ba_write();
         mem_sram[addr] = value;
@@ -351,12 +385,18 @@ static void ram_hi_store(uint16_t addr, uint8_t value) /* not mirrored */
 static void ram_hi_store_int(uint16_t addr, uint8_t value) /* internal */
 {
     if (addr == 0xff00) {
-        scpu64_clock_write_stretch_io_start();
+        if (!dma_in_progress) {
+            scpu64_clock_write_stretch_io_start();
+        }
         mem_ram[addr] = value;
-        reu_dma(-1);
-        scpu64_clock_write_stretch_io_long();
+        if (!dma_in_progress) {
+            reu_dma(-1);
+            scpu64_clock_write_stretch_io_long();
+        }
     } else {
-        scpu64_clock_write_stretch();
+        if (!dma_in_progress) {
+            scpu64_clock_write_stretch();
+        }
         mem_ram[addr] = value;
     }
 }
@@ -377,9 +417,45 @@ uint8_t ram1_read(uint16_t addr)
 
 uint8_t scpu64rom_scpu64_read(uint16_t addr)
 {
-    scpu64_clock_read_stretch_eprom();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_eprom();
+    }
     return scpu64rom_scpu64_rom[addr];
 }
+
+/* ------------------------------------------------------------------------- */
+
+/* DMA memory access, this is the same as generic memory access, but needs to
+   bypass the CPU port, so it accesses RAM at $00/$01 */
+
+void mem_dma_store(uint16_t addr, uint8_t value)
+{
+    dma_in_progress = 1;
+    if ((addr & 0xff00) == 0) {
+        /* exception: 0/1 accesses RAM! */
+        zero_store_dma(addr, value);
+    } else {
+        _mem_write_tab_ptr[addr >> 8](addr, value);
+    }
+    dma_in_progress = 0;
+}
+
+uint8_t mem_dma_read(uint16_t addr)
+{
+    uint8_t retval = 0;
+
+    dma_in_progress = 1;
+    if ((addr & 0xff00) == 0) {
+        /* exception: 0/1 accesses RAM! */
+        retval = zero_read_dma(addr);
+    } else {
+        retval = _mem_read_tab_ptr[addr >> 8](addr);
+    }
+    dma_in_progress = 0;
+
+    return retval;
+}
+
 
 /* ------------------------------------------------------------------------- */
 
@@ -407,14 +483,18 @@ void mem_store2(uint32_t addr, uint8_t value)
             if (mem_reg_hwenable) {
                 mem_simm_ram[addr & 0x1ffff] = value;
             }
-            scpu64_clock_write_stretch_simm(addr);
-        } 
+            if (!dma_in_progress) {
+                scpu64_clock_write_stretch_simm(addr);
+            }
+        }
         return;
     case 0xf80000:
     case 0xfa0000:
     case 0xfc0000:
     case 0xfe0000:
-        scpu64_clock_write_stretch_eprom();
+        if (!dma_in_progress) {
+            scpu64_clock_write_stretch_eprom();
+        }
         return;
     case 0x000000:
         if (addr & 0xfffe) {
@@ -435,7 +515,9 @@ void mem_store2(uint32_t addr, uint8_t value)
                 addr = ((addr >> mem_conf_page_size) << mem_simm_page_size) | (addr & ((1 << mem_simm_page_size)-1));
             }
             mem_simm_ram[addr & mem_simm_ram_mask] = value;
-            scpu64_clock_write_stretch_simm(addr);
+            if (!dma_in_progress) {
+                scpu64_clock_write_stretch_simm(addr);
+            }
         }
     }
 }
@@ -449,7 +531,9 @@ uint8_t mem_read2(uint32_t addr)
                 addr = ((addr >> mem_conf_page_size) << mem_simm_page_size) | (addr & ((1 << mem_simm_page_size)-1));
                 addr &= mem_simm_ram_mask;
             }
-            scpu64_clock_read_stretch_simm(addr);
+            if (!dma_in_progress) {
+                scpu64_clock_read_stretch_simm(addr);
+            }
             return mem_simm_ram[addr & 0x1ffff];
         }
         break;
@@ -457,7 +541,9 @@ uint8_t mem_read2(uint32_t addr)
     case 0xfa0000:
     case 0xfc0000:
     case 0xfe0000:
-        scpu64_clock_read_stretch_eprom();
+        if (!dma_in_progress) {
+            scpu64_clock_read_stretch_eprom();
+        }
         return scpu64rom_scpu64_rom[addr & (SCPU64_SCPU64_ROM_MAXSIZE-1) & 0x7ffff];
     case 0x000000:
         if (addr & 0xfffe) {
@@ -469,7 +555,9 @@ uint8_t mem_read2(uint32_t addr)
             if (mem_simm_page_size != mem_conf_page_size) {
                 addr = ((addr >> mem_conf_page_size) << mem_simm_page_size) | (addr & ((1 << mem_simm_page_size)-1));
             }
-            scpu64_clock_read_stretch_simm(addr);
+            if (!dma_in_progress) {
+                scpu64_clock_read_stretch_simm(addr);
+            }
             return mem_simm_ram[addr & mem_simm_ram_mask];
         }
         break;
@@ -606,7 +694,7 @@ static void scpu64_hardware_store(uint16_t addr, uint8_t value)
         break;
     case 0xd073: /* System 1MHz disable */
         if (mem_reg_sys_1mhz) {
-            mem_reg_sys_1mhz = 0; 
+            mem_reg_sys_1mhz = 0;
             scpu64_set_fastmode(!(mem_reg_soft_1mhz || (mem_reg_sw_1mhz && !mem_reg_hwenable)));
         }
         break;
@@ -627,7 +715,7 @@ static void scpu64_hardware_store(uint16_t addr, uint8_t value)
         break;
     case 0xd07a: /* Software 1MHz enable */
         if (!mem_reg_soft_1mhz) {
-            mem_reg_soft_1mhz = 1; 
+            mem_reg_soft_1mhz = 1;
             scpu64_set_fastmode(0);
         }
         break;
@@ -774,10 +862,14 @@ uint8_t scpu64io_d000_read(uint16_t addr)
             check_ba_read();
             return scpu64_hardware_read(addr); /* not an i/o read! */
         }
-        scpu64_clock_read_stretch_io();
+        if (!dma_in_progress) {
+            scpu64_clock_read_stretch_io();
+        }
         return scpu64_hardware_read(addr); /* i/o read! */
     }
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return c64io_d000_read(addr); /* i/o read */
 }
 
@@ -793,7 +885,10 @@ static uint8_t scpu64io_d000_peek(uint16_t addr)
 void scpu64io_d000_store(uint16_t addr, uint8_t value)
 {
     int oldfastmode;
-    scpu64_clock_write_stretch_io_start();
+
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io_start();
+    }
     if (scpu64_version_v2) mem_sram[0x10000 + addr] = value;
     if ((addr >= 0xd071 && addr < 0xd080) || (addr >= 0xd0b0 && addr < 0xd0c0)) {
         oldfastmode = scpu64_fastmode;
@@ -804,21 +899,29 @@ void scpu64io_d000_store(uint16_t addr, uint8_t value)
     } else {
         c64io_d000_store(addr, value);
     }
-    scpu64_clock_write_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io();
+    }
 }
 
 uint8_t scpu64io_d100_read(uint16_t addr)
 {
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return c64io_d100_read(addr); /* i/o read */
 }
 
 void scpu64io_d100_store(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch_io_start();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io_start();
+    }
     if (scpu64_version_v2) mem_sram[0x10000 + addr] = value;
     c64io_d100_store(addr, value);
-    scpu64_clock_write_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io();
+    }
 }
 
 uint8_t scpu64io_d200_read(uint16_t addr)
@@ -832,7 +935,9 @@ uint8_t scpu64io_d200_read(uint16_t addr)
 
 void scpu64io_d200_store(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch();
+    }
     scpu64_d200_store(addr, value);
 }
 
@@ -847,61 +952,85 @@ uint8_t scpu64io_d300_read(uint16_t addr)
 
 void scpu64io_d300_store(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch();
+    }
     scpu64_d300_store(addr, value);
 }
 
 uint8_t scpu64io_d400_read(uint16_t addr)
 {
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return c64io_d400_read(addr); /* i/o read */
 }
 
 void scpu64io_d400_store(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch_io_start();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io_start();
+    }
     if (scpu64_version_v2) mem_sram[0x10000 + addr] = value;
     c64io_d400_store(addr, value);
-    scpu64_clock_write_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io();
+    }
 }
 
 uint8_t scpu64io_d500_read(uint16_t addr)
 {
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return c64io_d500_read(addr); /* i/o read */
 }
 
 void scpu64io_d500_store(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch_io_start();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io_start();
+    }
     if (scpu64_version_v2) mem_sram[0x10000 + addr] = value;
     c64io_d500_store(addr, value);
-    scpu64_clock_write_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io();
+    }
 }
 
 uint8_t scpu64io_d600_read(uint16_t addr)
 {
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return c64io_d600_read(addr); /* i/o read */
 }
 
 void scpu64io_d600_store(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch(); /* strange, but not i/o ! */
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch(); /* strange, but not i/o ! */
+    }
     c64io_d600_store(addr, value);
 }
 
 uint8_t scpu64io_d700_read(uint16_t addr)
 {
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return c64io_d700_read(addr); /* i/o read */
 }
 
 void scpu64io_d700_store(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch_io_start();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io_start();
+    }
     c64io_d700_store(addr, value);
-    scpu64_clock_write_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io();
+    }
 }
 
 uint8_t scpu64io_colorram_read(uint16_t addr)
@@ -910,161 +1039,229 @@ uint8_t scpu64io_colorram_read(uint16_t addr)
         check_ba_read();
         return mem_sram[0x10000 + addr]; /* not an i/o read! */
     }
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return mem_color_ram[addr & 0x3ff] | (vicii_read_phi1() & 0xf0); /* i/o read */
 }
 
 void scpu64io_colorram_store(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch();
+    }
     colorram_store(addr, value);
 }
 
 uint8_t scpu64io_colorram_read_int(uint16_t addr)
 {
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return vicii_read_phi1();
 }
 
 void scpu64io_colorram_store_int(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch();
+    }
     mem_color_ram[addr & 0x3ff] = value & 0xf;
 }
 
 uint8_t scpu64_cia1_read(uint16_t addr)
 {
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return cia1_read(addr); /* i/o read */
 }
 
 void scpu64_cia1_store(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch_io_start_cia();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io_start_cia();
+    }
     if (scpu64_version_v2) mem_sram[0x10000 + addr] = value;
     cia1_store(addr, value);
-    scpu64_clock_write_stretch_io_cia();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io_cia();
+    }
 }
 
 uint8_t scpu64_cia2_read(uint16_t addr)
 {
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return cia2_read(addr); /* i/o read */
 }
 
 void scpu64_cia2_store(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch_io_start_cia();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io_start_cia();
+    }
     if (scpu64_version_v2) mem_sram[0x10000 + addr] = value;
     cia2_store(addr, value);
-    scpu64_clock_write_stretch_io_cia();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io_cia();
+    }
 }
 
 uint8_t scpu64io_de00_read(uint16_t addr)
 {
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return c64io_de00_read(addr); /* i/o read */
 }
 
 void scpu64io_de00_store(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch_io_start();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io_start();
+    }
     c64io_de00_store(addr, value);
-    scpu64_clock_write_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io();
+    }
 }
 
 uint8_t scpu64io_df00_read(uint16_t addr)
 {
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return c64io_df00_read(addr); /* i/o read */
 }
 
 void scpu64io_df00_store(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch_io_start();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io_start();
+    }
     c64io_df00_store(addr, value);
     switch (addr) {
     case 0xdf01:
     case 0xdf21:
-        scpu64_clock_write_stretch_io_long();
+        if (!dma_in_progress) {
+            scpu64_clock_write_stretch_io_long();
+        }
         break;
     case 0xdf7e:
-        scpu64_clock_write_stretch_io(); /* TODO: verify */
+        if (!dma_in_progress) {
+            scpu64_clock_write_stretch_io(); /* TODO: verify */
+        }
         mem_reg_ramlink = 1;
         break;
     case 0xdf7f:
-        scpu64_clock_write_stretch_io(); /* TODO: verify */
+        if (!dma_in_progress) {
+            scpu64_clock_write_stretch_io(); /* TODO: verify */
+        }
         mem_reg_ramlink = 0;
         break;
     default:
-        scpu64_clock_write_stretch_io();
+        if (!dma_in_progress) {
+            scpu64_clock_write_stretch_io();
+        }
         break;
     }
 }
 
 uint8_t scpu64_roml_read(uint16_t addr)
 {
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return roml_read(addr); /* i/o read */
 }
 
 void scpu64_roml_store(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch_io_start();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io_start();
+    }
     roml_store(addr, value); /* i/o write */
-    scpu64_clock_write_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io();
+    }
 }
 
 uint8_t scpu64_romh_read(uint16_t addr)
 {
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return romh_read(addr); /* i/o read */
 }
 
 void scpu64_romh_store(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch_io_start();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io_start();
+    }
     romh_store(addr, value); /* i/o write */
-    scpu64_clock_write_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io();
+    }
 }
 
 uint8_t scpu64_ultimax_1000_7fff_read(uint16_t addr)
 {
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return ultimax_1000_7fff_read(addr); /* i/o read */
 }
 
 void scpu64_ultimax_1000_7fff_store(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch_io_start();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io_start();
+    }
     ultimax_1000_7fff_store(addr, value); /* i/o write */
-    scpu64_clock_write_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io();
+    }
 }
 
 uint8_t scpu64_ultimax_a000_bfff_read(uint16_t addr)
 {
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return ultimax_a000_bfff_read(addr); /* i/o read */
 }
 
 void scpu64_ultimax_a000_bfff_store(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch_io_start();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io_start();
+    }
     ultimax_a000_bfff_store(addr, value); /* i/o write */
-    scpu64_clock_write_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io();
+    }
 }
 
 uint8_t scpu64_ultimax_c000_cfff_read(uint16_t addr)
 {
-    scpu64_clock_read_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_read_stretch_io();
+    }
     return ultimax_c000_cfff_read(addr); /* i/o read */
 }
 
 void scpu64_ultimax_c000_cfff_store(uint16_t addr, uint8_t value)
 {
-    scpu64_clock_write_stretch_io_start();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io_start();
+    }
     ultimax_c000_cfff_store(addr, value); /* i/o write */
-    scpu64_clock_write_stretch_io();
+    if (!dma_in_progress) {
+        scpu64_clock_write_stretch_io();
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1253,7 +1450,7 @@ void mem_powerup(void)
     ram_init(mem_ram, SCPU64_RAM_SIZE);
     ram_init(mem_sram, SCPU64_SRAM_SIZE);
     ram_init(mem_trap_ram, SCPU64_KERNAL_ROM_SIZE);
-    cartridge_ram_init();  /* Clean cartridge ram too */
+    vicii_init_colorram(mem_color_ram);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1309,10 +1506,10 @@ void scpu64_hardware_reset(void)
     mem_reg_soft_1mhz = 0;
     mem_reg_sys_1mhz = 0;
     mem_reg_hwenable = 0;
-    mem_reg_dosext = 0; 
-    mem_reg_ramlink = 0; 
+    mem_reg_dosext = 0;
+    mem_reg_ramlink = 0;
     mem_reg_bootmap = 1;
-    mem_reg_simm = 4; 
+    mem_reg_simm = 4;
     mem_pport = 7;
     mem_set_mirroring(mem_reg_optim);
     mem_set_simm(mem_reg_simm);
@@ -1347,7 +1544,7 @@ void mem_set_basic_text(uint16_t start, uint16_t end)
 }
 
 /* this function should always read from the screen currently used by the kernal
-   for output, normally this does just return system ram - except when the 
+   for output, normally this does just return system ram - except when the
    videoram is not memory mapped.
    used by autostart to "read" the kernal messages
 */
@@ -1542,14 +1739,16 @@ int scpu64_interrupt_reroute(void)
 /* ------------------------------------------------------------------------- */
 
 /* Exported banked memory access functions for the monitor.  */
+#define MAXBANKS (6 + 0x100)
 
-static const char *banknames[] = {
+static const char *banknames[MAXBANKS + 1] = {
     "default",
     "cpu",
     "ram",
     "rom",
     "io",
     "cart",
+    /* by convention, a "bank array" has a 2-hex-digit bank index appended */
     "ram00", "ram01", "ram02", "ram03", "ram04", "ram05", "ram06", "ram07",
     "ram08", "ram09", "ram0a", "ram0b", "ram0c", "ram0d", "ram0e", "ram0f",
     "ram10", "ram11", "ram12", "ram13", "ram14", "ram15", "ram16", "ram17",
@@ -1585,9 +1784,15 @@ static const char *banknames[] = {
     NULL
 };
 
-static const int banknums[] = 
-{ 
-    1, 0, 1, 2, 3, 4,
+static const int banknums[MAXBANKS + 1] =
+{
+    0,
+    0,
+    1,
+    2,
+    3,
+    4,
+
     5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
     21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36,
     37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52,
@@ -1603,7 +1808,67 @@ static const int banknums[] =
     197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
     213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228,
     229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244,
-    245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 256, 257, 258, 259, 260
+    245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 256, 257, 258, 259, 260,
+
+    -1
+};
+
+static const int bankindex[MAXBANKS + 1] =
+{
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+    0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f,
+    0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f,
+    0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f,
+    0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x5b, 0x5c, 0x5d, 0x5e, 0x5f,
+    0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6a, 0x6b, 0x6c, 0x6d, 0x6e, 0x6f,
+    0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x7b, 0x7c, 0x7d, 0x7e, 0x7f,
+    0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f,
+    0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f,
+    0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xab, 0xac, 0xad, 0xae, 0xaf,
+    0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbb, 0xbc, 0xbd, 0xbe, 0xbf,
+    0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xcb, 0xcc, 0xcd, 0xce, 0xcf,
+    0xd0, 0xd1, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xdb, 0xdc, 0xdd, 0xde, 0xdf,
+    0xe0, 0xe1, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xeb, 0xec, 0xed, 0xee, 0xef,
+    0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd, 0xfe, 0xff,
+
+    -2
+};
+
+static const int bankflags[MAXBANKS + 1] =
+{
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+
+    MEM_BANK_ISARRAY | MEM_BANK_ISARRAYFIRST , MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY,
+    MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY,
+    MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY,
+    MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY,
+    MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY,
+    MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY,
+    MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY,
+    MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY,
+    MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY,
+    MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY,
+    MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY,
+    MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY,
+    MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY,
+    MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY,
+    MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY,
+    MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY | MEM_BANK_ISARRAYLAST, MEM_BANK_ISARRAY | MEM_BANK_ISARRAYFIRST, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY, MEM_BANK_ISARRAY | MEM_BANK_ISARRAYLAST,
+
+    -2
 };
 
 const char **mem_bank_list(void)
@@ -1611,6 +1876,21 @@ const char **mem_bank_list(void)
     return banknames;
 }
 
+const int *mem_bank_list_nos(void) {
+    return banknums;
+}
+
+#if 0
+const int *mem_bank_list_index(void) {
+    return bankindex;
+}
+
+const int *mem_bank_list_flags(void) {
+    return bankindex;
+}
+#endif
+
+/* return bank number for a given literal bank name */
 int mem_bank_from_name(const char *name)
 {
     int i = 0;
@@ -1618,6 +1898,33 @@ int mem_bank_from_name(const char *name)
     while (banknames[i]) {
         if (!strcmp(name, banknames[i])) {
             return banknums[i];
+        }
+        i++;
+    }
+    return -1;
+}
+
+/* return current index for a given bank */
+int mem_bank_index_from_bank(int bank)
+{
+    int i = 0;
+
+    while (banknums[i] > -1) {
+        if (banknums[i] == bank) {
+            return bankindex[i];
+        }
+        i++;
+    }
+    return -1;
+}
+
+int mem_bank_flags_from_bank(int bank)
+{
+    int i = 0;
+
+    while (banknums[i] > -1) {
+        if (banknums[i] == bank) {
+            return bankflags[i];
         }
         i++;
     }
@@ -1708,6 +2015,15 @@ uint8_t mem_bank_peek(int bank, uint16_t addr, void *context)
     return mem_bank_read(bank, addr, context);
 }
 
+int mem_get_current_bank_config(void) {
+    return 0; /* TODO: not implemented yet */
+}
+
+uint8_t mem_peek_with_config(int config, uint16_t addr, void *context) {
+    /* TODO, config not implemented yet */
+    return mem_bank_peek(0 /* current */, addr, context);
+}
+
 void mem_bank_write(int bank, uint16_t addr, uint8_t byte, void *context)
 {
     if ((bank >= 5) && (bank <= 6)) {
@@ -1780,10 +2096,10 @@ mem_ioreg_list_t *mem_ioreg_list_get(void *context)
 {
     mem_ioreg_list_t *mem_ioreg_list = NULL;
 
-    mon_ioreg_add_list(&mem_ioreg_list, "CIA1", 0xdc00, 0xdc0f, mem_dump_io, NULL);
-    mon_ioreg_add_list(&mem_ioreg_list, "CIA2", 0xdd00, 0xdd0f, mem_dump_io, NULL);
+    io_source_ioreg_add_list(&mem_ioreg_list);  /* VIC-II, SID first so it's in address order */
 
-    io_source_ioreg_add_list(&mem_ioreg_list);
+    mon_ioreg_add_list(&mem_ioreg_list, "CIA1", 0xdc00, 0xdc0f, mem_dump_io, NULL, IO_MIRROR_NONE);
+    mon_ioreg_add_list(&mem_ioreg_list, "CIA2", 0xdd00, 0xdd0f, mem_dump_io, NULL, IO_MIRROR_NONE);
 
     return mem_ioreg_list;
 }
@@ -1798,7 +2114,7 @@ void mem_get_screen_parameter(uint16_t *base, uint8_t *rows, uint8_t *columns, i
 
 /* used by autostart to locate and "read" kernal output on the current screen
  * this function should return whatever the kernal currently uses, regardless
- * what is currently visible/active in the UI 
+ * what is currently visible/active in the UI
  */
 void mem_get_cursor_parameter(uint16_t *screen_addr, uint8_t *cursor_column, uint8_t *line_length, int *blinking)
 {
@@ -1813,22 +2129,26 @@ void mem_get_cursor_parameter(uint16_t *screen_addr, uint8_t *cursor_column, uin
 
 void mem_set_simm_size(int val)
 {
-    size_t size = val << 20;
-    if (!size) size = 1;
+    unsigned int size = val << 20;
+
+    if (size == 0) {
+        size = 1;
+    }
     mem_simm_ram_mask = size - 1;
     mem_simm_ram = lib_realloc(mem_simm_ram, size);
     ram_init(mem_simm_ram, size);
+
     switch (val) {
-    case 1:
-        mem_simm_page_size = 9 + 2; /* 0 */
-        break;
-    case 4:                             /* 1 */
-    case 8:                             /* 2 */
-        mem_simm_page_size = 10 + 2;  /* 3 */
-        break;
-    default:
-        mem_simm_page_size = 11 + 2;  /* 4,3 */
-        break;
+        case 1:
+            mem_simm_page_size = 9 + 2; /* 0 */
+            break;
+        case 4:                             /* 1 */
+        case 8:                             /* 2 */
+            mem_simm_page_size = 10 + 2;  /* 3 */
+            break;
+        default:
+            mem_simm_page_size = 11 + 2;  /* 4,3 */
+            break;
     }
     maincpu_resync_limits();
 }

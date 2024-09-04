@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -33,12 +33,12 @@ class AtariMouse : public PointingDevice
     AtariMouse(Jack jack, const Event& event, const System& system)
       : PointingDevice(jack, event, system, Controller::Type::AtariMouse,
         trackballSensitivity) { }
-    virtual ~AtariMouse() = default;
+    ~AtariMouse() override = default;
 
     /**
       Returns the name of this controller.
     */
-    string name() const override { return "AtariMouse"; }
+    string name() const override { return "Atari mouse"; }
 
   protected:
     uInt8 ioPortA(uInt8 countH, uInt8 countV, uInt8, uInt8) override
@@ -54,6 +54,13 @@ class AtariMouse : public PointingDevice
     }
 
     static constexpr float trackballSensitivity = 0.8F;
+
+  private:
+    // Following constructors and assignment operators not supported
+    AtariMouse(const AtariMouse&) = delete;
+    AtariMouse(AtariMouse&&) = delete;
+    AtariMouse& operator=(const AtariMouse&) = delete;
+    AtariMouse& operator=(AtariMouse&&) = delete;
 };
 
 #endif // ATARIMOUSE_HXX

@@ -11,8 +11,7 @@ CPPFLAGS += \
 -DHAVE_STRINGS_H \
 -DHAVE_STDINT_H \
 -DRIGHTSHIFT_IS_SAR \
--DZLIB \
--DUSE_OPENGL
+-DZLIB
 
 CXXFLAGS_WARN += -Wno-register -Wno-implicit-fallthrough
 
@@ -65,14 +64,12 @@ apu/apu.cpp \
 apu/bapu/dsp/sdsp.cpp \
 apu/bapu/smp/smp.cpp \
 apu/bapu/smp/smp_state.cpp
-# conffile.cpp crosshairs.cpp logger.cpp screenshot.cpp snes9x.cpp
 
 SRC += \
 main/Main.cc \
 main/input.cc \
 main/options.cc \
 main/S9XApi.cc \
-main/EmuControls.cc \
 main/EmuMenuViews.cc \
 main/Cheats.cc \
 $(addprefix $(snes9xPath)/,$(snes9xSrc))

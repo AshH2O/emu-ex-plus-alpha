@@ -38,7 +38,6 @@
 
 #include "archdep.h"
 #include "cmdline.h"
-#include "ioutil.h"
 #include "lib.h"
 #include "log.h"
 #include "machine.h"
@@ -89,7 +88,7 @@ static const cmdline_option_t cmdline_options[] =
     CMDLINE_LIST_END
 };
 
-int romset_cmdline_options_init()
+int romset_cmdline_options_init(void)
 {
     return cmdline_register_options(cmdline_options);
 }
@@ -109,7 +108,7 @@ static char *prepend_dir_to_path(const char *dir)
                                saved_path,
                                NULL);
     } else {
-        char *current_dir = ioutil_current_dir();
+        char *current_dir = archdep_current_dir();
         new_path = util_concat(current_dir,
                                ARCHDEP_FINDPATH_SEPARATOR_STRING,
                                saved_path,
@@ -145,7 +144,7 @@ int romset_file_load(const char *filename)
         return -1;
     }
 
-    fp = sysfile_open(filename, &complete_path, MODE_READ_TEXT);
+    fp = sysfile_open(filename, machine_name, &complete_path, MODE_READ_TEXT);
 
     if (fp == NULL) {
         log_warning(romset_log, "Could not open file '%s' for reading (%s)!",
@@ -169,12 +168,13 @@ int romset_file_load(const char *filename)
                 log_error(romset_log,
                         "%s: Invalid resource specification at line %d.",
                         filename, line_num);
-                err = 1;
+                err = -1;
                 break;
             case RESERR_UNKNOWN_RESOURCE:
                 log_warning(romset_log,
                             "%s: Unknown resource specification at line %d.",
                             filename, line_num);
+                err = -1;
                 break;
         }
         line_num++;
@@ -190,7 +190,7 @@ int romset_file_load(const char *filename)
     return err;
 }
 
-int romset_file_save(const char *filename, const char **resource_list)
+int romset_file_save(const char *filename, const char * const *resource_list)
 {
     FILE *fp;
     char *newname;
@@ -222,7 +222,7 @@ int romset_file_save(const char *filename, const char **resource_list)
     return 0;
 }
 
-char *romset_file_list(const char **resource_list)
+char *romset_file_list(const char * const *resource_list)
 {
     char *list;
     const char *s;
@@ -532,11 +532,11 @@ int romset_archive_item_select(const char *romset_name)
 
 
 int romset_archive_item_create(const char *romset_name,
-                               const char **resource_list)
+                               const char * const *resource_list)
 {
     int entry;
     string_link_t *anchor, *item, *last;
-    const char **res;
+    const char * const *res;
 
     for (entry = 0, item = romsets; entry < num_romsets; entry++, item++) {
         if (strcmp(romset_name, item->name) == 0) {

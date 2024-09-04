@@ -19,21 +19,12 @@
 #ifndef _MEMORY_H_
 #define _MEMORY_H_
 
-#ifdef HAVE_CONFIG_H
 #include <gngeo-config.h>
-#endif
-
-//#include "SDL.h"
-//#include "SDL_endian.h"
 #include "video.h"
 #include "ym2610/2610intf.h"
 #include "state.h"
 #include "roms.h"
 #include <imagine/util/mayAliasInt.h>
-
-#ifdef GP2X
-#include "gp2x.h"
-#endif
 
 #define READ_WORD(a)          (*(uint16a*)(a))
 #define WRITE_WORD(a,d)       (*(uint16a*)(a) = (d))
@@ -116,6 +107,9 @@ typedef struct neo_mem {
 } neo_mem;
 
 extern neo_mem memory;
+extern uint8_t pvcMem[0x2000];
+extern bool hasPvc;
+extern uint16_t neogeo_rng;
 
 /* video related */
 //extern int irq2start, irq2control;
@@ -157,7 +151,7 @@ int cpu_68k_run_step(void);
 Uint32 cpu_68k_getpc(void);
 void cpu_68k_fill_state(M68K_STATE *st);
 void cpu_68k_set_state(M68K_STATE *st);
-int cpu_68k_debuger(void (*execstep)(int),void (*dump)(void));
+int cpu_68k_debuger(void (*execstep)(int, void *, void *, void *),void (*dump)(void));
 
 /* cpu z80 interface */
 void cpu_z80_run(int nbcycle);
@@ -269,4 +263,7 @@ extern Uint32 (*mem68k_fetch_bksw_long)(Uint32);
 extern void (*mem68k_store_bksw_byte)(Uint32,Uint8);
 extern void (*mem68k_store_bksw_word)(Uint32,Uint16);
 extern void (*mem68k_store_bksw_long)(Uint32,Uint32);
+
+void sramWritten();
+void memcardWritten();
 #endif

@@ -17,14 +17,14 @@
 
 #include <imagine/config/defs.hh>
 #include <imagine/base/BaseWindow.hh>
+#include <imagine/base/Animation.hh>
 #include <imagine/util/rectangle2.h>
 #include <imagine/util/jni.hh>
-#include <compare>
 
 struct ANativeWindow;
 struct ANativeActivity;
 
-namespace Base
+namespace IG
 {
 
 class ApplicationContext;
@@ -42,8 +42,7 @@ public:
 	explicit operator bool() const;
 	void setNativeWindow(ApplicationContext, ANativeWindow *);
 	int nativePixelFormat();
-	void updateContentRect(const IG::WindowRect &rect);
-	void setContentRect(const IG::WindowRect &rect, const IG::Point2D<int> &winSize);
+	void setContentRect(WRect bounds, WSize winSize);
 	void systemRequestsRedraw(bool sync = true);
 
 protected:
@@ -56,7 +55,7 @@ protected:
 	JNI::UniqueGlobalRef jWin{};
 	InitDelegate onInit{};
 	int32_t nPixelFormat{};
-	IG::WindowRect contentRect{}; // active window content
+	FrameAnimation<WindowRect, Window, InterpolatorType::EASEINOUTQUAD> contentRect{};
 	Type type{};
 };
 

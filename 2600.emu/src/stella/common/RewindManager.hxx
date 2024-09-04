@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -75,14 +75,14 @@ class RewindManager
     static constexpr int NUM_HORIZONS = 8;
     // cycle values for the horzions
     const std::array<uInt64, NUM_HORIZONS> HORIZON_CYCLES = {
-      76 * 262 * 60 * 3,
-      76 * 262 * 60 * 10,
-      76 * 262 * 60 * 30,
-      76 * 262 * 60 * 60,
-      76 * 262 * 60 * 60 * 3,
-      76 * 262 * 60 * 60 * 10,
-      uInt64(76) * 262 * 60 * 60 * 30,
-      uInt64(76) * 262 * 60 * 60 * 60
+      uInt64{76} * 262 * 60 * 3,
+      uInt64{76} * 262 * 60 * 10,
+      uInt64{76} * 262 * 60 * 30,
+      uInt64{76} * 262 * 60 * 60,
+      uInt64{76} * 262 * 60 * 60 * 3,
+      uInt64{76} * 262 * 60 * 60 * 10,
+      uInt64{76} * 262 * 60 * 60 * 30,
+      uInt64{76} * 262 * 60 * 60 * 60
     };
     // settings values for the horzions
     const std::array<string, NUM_HORIZONS> HOR_SETTINGS = {
@@ -144,7 +144,6 @@ class RewindManager
     bool atLast() const  { return myStateList.atLast();  }
     void resize(uInt32 size) { myStateList.resize(size); }
     void clear() {
-      myStateSize = 0;
       myStateList.clear();
     }
 
@@ -159,6 +158,7 @@ class RewindManager
     uInt64 getFirstCycles() const;
     uInt64 getCurrentCycles() const;
     uInt64 getLastCycles() const;
+    uInt64 getInterval() const { return myInterval; }
 
     /**
       Get a collection of cycle timestamps, offset from the first one in
@@ -176,7 +176,6 @@ class RewindManager
     uInt64 myHorizon{0};
     double myFactor{0.0};
     bool   myLastTimeMachineAdd{false};
-    uInt32 myStateSize{0};
 
     struct RewindState {
       Serializer data;  // actual save state
@@ -186,8 +185,11 @@ class RewindManager
       // We do nothing on object instantiation or copy
       // The goal of LinkedObjectPool is to not do any allocations at all
       RewindState() = default;
+      ~RewindState() = default;
       RewindState(const RewindState& rs) : cycles(rs.cycles) { }
       RewindState& operator= (const RewindState& rs) { cycles = rs.cycles; return *this; }
+      RewindState(RewindState&&) = default;
+      RewindState& operator=(RewindState&&) = default;
 
       // Output object info; used for debugging only
       friend ostream& operator<<(ostream& os, const RewindState& s) {

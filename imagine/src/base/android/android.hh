@@ -15,10 +15,12 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/pixmap/PixelFormat.hh>
+#include <imagine/pixmap/Pixmap.hh>
 #include <jni.h>
+#include <sys/types.h>
+#include <atomic>
 
-namespace Base
+namespace IG
 {
 
 class ApplicationContext;
@@ -29,11 +31,13 @@ public:
 	constexpr NoopThread() {}
 	void start();
 	void stop();
-	explicit operator bool() { return runFlagAddr; }
+	explicit operator bool() { return isRunning.load(std::memory_order_relaxed); }
 
 private:
-	bool *runFlagAddr{};
+	std::atomic_bool isRunning{};
 };
+
+extern pid_t mainThreadId;
 
 jobject makeSurfaceTexture(ApplicationContext, JNIEnv *, jint texName);
 jobject makeSurfaceTexture(ApplicationContext, JNIEnv *, jint texName, jboolean singleBufferMode);
@@ -44,18 +48,10 @@ void releaseSurfaceTexture(JNIEnv *env, jobject surfaceTexture);
 jobject makeSurface(JNIEnv *env, jobject surfaceTexture);
 void releaseSurface(JNIEnv *env, jobject surface);
 
-uint32_t toAHardwareBufferFormat(IG::PixelFormatID);
+uint32_t toAHardwareBufferFormat(PixelFormatId);
 const char *aHardwareBufferFormatStr(uint32_t format);
 
-enum SurfaceRotation : uint8_t
-{
-	SURFACE_ROTATION_0 = 0, SURFACE_ROTATION_90 = 1,
-	SURFACE_ROTATION_180 = 2, SURFACE_ROTATION_270 = 3
-};
-
-static bool surfaceRotationIsStraight(SurfaceRotation o)
-{
-	return o == SURFACE_ROTATION_0 || o == SURFACE_ROTATION_180;
-}
+PixelFormat makePixelFormatFromAndroidFormat(int32_t androidFormat);
+MutablePixmapView makePixmapView(JNIEnv *env, jobject bitmap, void *pixels, PixelFormat format);
 
 }

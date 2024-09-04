@@ -21,34 +21,46 @@
 #include <imagine/base/SimpleFrameTimer.hh>
 #include <imagine/base/linux/DRMFrameTimer.hh>
 #include <imagine/base/linux/FBDevFrameTimer.hh>
+#include <imagine/base/FrameTimerInterface.hh>
 #include <utility>
-#include <compare>
-#include <memory>
+#include <variant>
 
-namespace Base
+struct xcb_connection_t;
+struct xcb_screen_t;
+
+namespace IG
 {
 
 class ApplicationContext;
 
-using FrameTimerVariant = std::variant<DRMFrameTimer, FBDevFrameTimer, SimpleFrameTimer>;
+using FrameTimerVariant = std::variant<
+	NullFrameTimer,
+	SimpleFrameTimer,
+	#if CONFIG_PACKAGE_LIBDRM
+	DRMFrameTimer,
+	#endif
+	FBDevFrameTimer>;
 
-class FrameTimer : public FrameTimerVariantWrapper<FrameTimerVariant>
+class FrameTimer : public FrameTimerInterface<FrameTimerVariant>
 {
 public:
-	using FrameTimerVariantWrapper::FrameTimerVariantWrapper;
+	using FrameTimerInterface::FrameTimerInterface;
 };
+
+using ScreenId = xcb_screen_t*;
 
 class XScreen
 {
 public:
 	struct InitParams
 	{
-		void *xScreen;
+		xcb_connection_t& conn;
+		xcb_screen_t& screen;
 	};
 
 	XScreen(ApplicationContext, InitParams);
 	std::pair<float, float> mmSize() const;
-	void *nativeObject() const;
+	xcb_screen_t* nativeObject() const;
 	bool operator ==(XScreen const &rhs) const;
 	explicit operator bool() const;
 
@@ -58,10 +70,11 @@ public:
 	}
 
 protected:
-	void *xScreen{};
+	xcb_screen_t* xScreen{};
 	FrameTimer frameTimer;
-	float xMM = 0, yMM = 0;
-	IG::FloatSeconds frameTime_{};
+	SteadyClockTime frameTime_{};
+	float xMM{}, yMM{};
+	float frameRate_{};
 	bool reliableFrameTime = true;
 };
 

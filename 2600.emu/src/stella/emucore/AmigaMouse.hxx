@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -33,12 +33,12 @@ class AmigaMouse : public PointingDevice
     AmigaMouse(Jack jack, const Event& event, const System& system)
       : PointingDevice(jack, event, system, Controller::Type::AmigaMouse,
         trackballSensitivity) { }
-    virtual ~AmigaMouse() = default;
+    ~AmigaMouse() override = default;
 
     /**
       Returns the name of this controller.
     */
-    string name() const override { return "AmigaMouse"; }
+    string name() const override { return "Amiga mouse"; }
 
   protected:
     uInt8 ioPortA(uInt8 countH, uInt8 countV, uInt8, uInt8) override
@@ -54,6 +54,13 @@ class AmigaMouse : public PointingDevice
     }
 
     static constexpr float trackballSensitivity = 0.8F;
+
+  private:
+    // Following constructors and assignment operators not supported
+    AmigaMouse(const AmigaMouse&) = delete;
+    AmigaMouse(AmigaMouse&&) = delete;
+    AmigaMouse& operator=(const AmigaMouse&) = delete;
+    AmigaMouse& operator=(AmigaMouse&&) = delete;
 };
 
 #endif // AMIGAMOUSE_HXX

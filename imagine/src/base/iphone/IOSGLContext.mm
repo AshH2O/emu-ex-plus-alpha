@@ -23,8 +23,10 @@ static_assert(__has_feature(objc_arc), "This file requires ARC");
 #include <imagine/base/Screen.hh>
 #include <imagine/logger/logger.h>
 
-namespace Base
+namespace IG
 {
+
+constexpr SystemLogger log{"EAGL"};
 
 // GLDisplay
 
@@ -60,7 +62,7 @@ void GLDrawable::restoreCaches()
 
 // GLContext
 
-static EAGLRenderingAPI majorVersionToAPI(uint32_t version)
+static EAGLRenderingAPI majorVersionToAPI(int version)
 {
 	switch(version)
 	{
@@ -68,24 +70,22 @@ static EAGLRenderingAPI majorVersionToAPI(uint32_t version)
 		case 2: return kEAGLRenderingAPIOpenGLES2;
 		case 3: return kEAGLRenderingAPIOpenGLES3;
 		default:
-			logErr("unsupported OpenGL ES major version:%u", version);
+			log.error("unsupported OpenGL ES major version:{}", version);
 			return kEAGLRenderingAPIOpenGLES2;
 	}
 }
 
-IOSGLContext::IOSGLContext(GLContextAttributes attr, NativeGLContext shareContext_, IG::ErrorCode &ec)
+IOSGLContext::IOSGLContext(GLContextAttributes attr, NativeGLContext shareContext_)
 {
-	assert(attr.openGLESAPI());
-	EAGLRenderingAPI api = majorVersionToAPI(attr.majorVersion());
+	assert(attr.api == GL::API::OpenGLES);
+	EAGLRenderingAPI api = majorVersionToAPI(attr.version.major);
 	auto shareContext = (__bridge EAGLContext*)shareContext_;
 	EAGLSharegroup *sharegroup = [shareContext sharegroup];
-	logMsg("making context with version: %d.%d sharegroup:%p", attr.majorVersion(), attr.minorVersion(), sharegroup);
+	log.info("making context with version:{} sharegroup:{}", attr.version.major, (__bridge void*)sharegroup);
 	EAGLContext *newContext = [[EAGLContext alloc] initWithAPI:api sharegroup:sharegroup];
 	if(!newContext)
 	{
-		logErr("error creating context");
-		ec = {EINVAL};
-		return;
+		throw std::runtime_error("Error creating GL context");
 	}
 	context_.reset((NativeGLContext)CFBridgingRetain(newContext));
 }
@@ -106,7 +106,7 @@ void GLContext::setCurrentDrawable(NativeGLDrawable drawable) const
 {
 	if(!drawable)
 		return;
-	logMsg("setting view:%p current", drawable);
+	log.info("setting view:{} current", drawable);
 	auto glView = (__bridge EAGLView*)drawable;
 	[glView bindDrawable];
 }
@@ -116,19 +116,21 @@ void GLContext::present(NativeGLDrawable) const
 	[context() presentRenderbuffer:GL_RENDERBUFFER];
 }
 
+void GLContext::setSwapInterval(int) {}
+
 // GLManager
 
-GLManager::GLManager(Base::NativeDisplayConnection ctx, GL::API api)
+GLManager::GLManager(NativeDisplayConnection, GL::API api)
 {
 	if(!bindAPI(api))
 	{
-		logErr("error binding requested API");
+		log.error("error binding requested API");
 	}
 }
 
-GLContext GLManager::makeContext(GLContextAttributes attr, GLBufferConfig, NativeGLContext shareContext, IG::ErrorCode &ec)
+GLContext GLManager::makeContext(GLContextAttributes attr, GLBufferConfig, NativeGLContext shareContext)
 {
-	return GLContext{attr, shareContext, ec};
+	return GLContext{attr, shareContext};
 }
 
 GLDisplay GLManager::getDefaultDisplay(NativeDisplayConnection) const
@@ -140,15 +142,15 @@ void GLManager::logInfo() const {}
 
 bool GLManager::bindAPI(GL::API api)
 {
-	return api == GL::API::OPENGL_ES;
+	return api == GL::API::OpenGLES;
 }
 
-GLDrawable GLManager::makeDrawable(Window &win, GLDrawableAttributes config, IG::ErrorCode &) const
+GLDrawable GLManager::makeDrawable(Window &win, GLDrawableAttributes config) const
 {
 	CGRect rect = win.screen()->uiScreen().bounds;
 	// Create the OpenGL ES view and add it to the Window
 	auto glView = [[EAGLView alloc] initWithFrame:rect];
-	if(config.bufferConfig().useRGB565)
+	if(config.bufferConfig.useRGB565)
 	{
 		[glView setDrawableColorFormat:kEAGLColorFormatRGB565];
 	}
@@ -177,10 +179,10 @@ bool GLManager::hasCurrentDrawable()
 
 GLDisplay GLManager::display() const { return {}; }
 
-std::optional<GLBufferConfig> GLManager::makeBufferConfig(Base::ApplicationContext, GLBufferConfigAttributes attr, GL::API, unsigned) const
+std::optional<GLBufferConfig> GLManager::tryBufferConfig(ApplicationContext, const GLBufferRenderConfigAttributes& attrs) const
 {
 	GLBufferConfig conf;
-	if(attr.pixelFormat == PIXEL_RGB565)
+	if(attrs.bufferAttrs.pixelFormat == PixelFmtRGB565)
 	{
 		conf.useRGB565 = true;
 	}
@@ -199,14 +201,12 @@ void *GLManager::procAddress(const char *funcName)
 
 bool GLManager::hasBufferConfig(GLBufferConfigAttributes attrs) const
 {
-	switch(attrs.pixelFormat.id())
+	switch(attrs.pixelFormat)
 	{
-		default:
-			bug_unreachable("format id == %d", attrs.pixelFormat.id());
-			return false;
-		case PIXEL_NONE:
-		case PIXEL_RGB565:
-		case PIXEL_RGBA8888: return true;
+		case PixelFmtUnset:
+		case PixelFmtRGB565:
+		case PixelFmtRGBA8888: return true;
+		default: std::unreachable();
 	}
 }
 
@@ -232,12 +232,14 @@ bool GLManager::hasSrgbColorSpace() const
 	return false;
 }
 
-Base::NativeWindowFormat GLManager::nativeWindowFormat(Base::ApplicationContext, GLBufferConfig) const
+NativeWindowFormat GLManager::nativeWindowFormat(ApplicationContext, GLBufferConfig) const
 {
 	return {};
 }
 
-bool GLBufferConfig::maySupportGLES(GLDisplay, unsigned majorVersion) const
+bool GLManager::hasPresentationTime() const { return false; }
+
+bool GLBufferConfig::maySupportGLES(GLDisplay, int majorVersion) const
 {
 	return majorVersion >= 1 && majorVersion <= 3;
 }

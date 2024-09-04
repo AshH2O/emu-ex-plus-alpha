@@ -16,6 +16,7 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/config/defs.hh>
+#include <imagine/util/DelegateFunc.hh>
 
 namespace IG::Audio
 {
@@ -39,14 +40,37 @@ enum class Api: uint8_t
 	AAUDIO,
 };
 
+#if defined __ANDROID__
+constexpr std::array systemApis{Api::AAUDIO, Api::OPENSL_ES};
+#elif defined __APPLE__
+constexpr std::array systemApis{Api::COREAUDIO};
+#else
+	constexpr std::array systemApis{
+	#ifdef CONFIG_PACKAGE_PULSEAUDIO
+	Api::PULSEAUDIO,
+	#endif
+	#ifdef CONFIG_PACKAGE_ALSA
+	Api::ALSA,
+	#endif
+	};
+#endif
+
 struct ApiDesc
 {
 	const char *name = "";
 	Api api{Api::DEFAULT};
 
-	constexpr ApiDesc() {}
-	constexpr ApiDesc(const char *name, Api api):name{name}, api{api} {}
 	constexpr bool operator ==(Api api_) const { return api == api_; }
 };
+
+using OnSamplesNeededDelegate = DelegateFunc<bool(void *buff, size_t frames)>;
+
+enum class StreamError
+{
+	Ok, BadArgument, NotInitialized
+};
+
+struct OutputStreamConfig;
+class Manager;
 
 }

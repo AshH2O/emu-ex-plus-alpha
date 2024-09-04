@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -18,11 +18,11 @@
 #ifndef TIA_PLAYER
 #define TIA_PLAYER
 
+class TIA;
+
 #include "bspf.hxx"
 #include "Serializable.hxx"
 #include "TIAConstants.hxx"
-
-class TIA;
 
 class Player : public Serializable
 {
@@ -67,7 +67,7 @@ class Player : public Serializable
     uInt8 getClock() const { return myCounter; }
 
     bool isOn() const { return (collision & 0x8000); }
-    uInt8 getColor() const { return myColor; }
+    uInt8 getColor() const;
 
     void shufflePatterns();
 
@@ -125,6 +125,7 @@ class Player : public Serializable
     bool myIsRendering{false};
     Int8 myRenderCounter{0};
     Int8 myRenderCounterTripPoint{0};
+    Int8 myCopy{1};
     uInt8 myDivider{0};
     uInt8 myDividerPending{0};
     uInt8 mySampleCounter{0};
@@ -186,6 +187,7 @@ void Player::tick()
     myIsRendering = true;
     mySampleCounter = 0;
     myRenderCounter = renderCounterOffset;
+    myCopy = myDecodes[myCounter];
   } else if (myIsRendering) {
     ++myRenderCounter;
 

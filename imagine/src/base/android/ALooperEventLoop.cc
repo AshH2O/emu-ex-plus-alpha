@@ -13,13 +13,17 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "EventLoop"
 #include <imagine/base/EventLoop.hh>
+#include <imagine/util/format.hh>
+#include <imagine/util/jni.hh>
 #include <imagine/logger/logger.h>
 #include <unistd.h>
 
-namespace Base
+namespace IG
 {
+
+constexpr SystemLogger log{"EventLoop"};
+extern pthread_key_t jEnvPThreadKey;
 
 static int eventCallback(int fd, int events, void *data)
 {
@@ -32,23 +36,20 @@ static int eventCallback(int fd, int events, void *data)
 	return keep;
 }
 
-ALooperFDEventSource::ALooperFDEventSource(const char *debugLabel, int fd):
-	debugLabel{debugLabel ? debugLabel : "unnamed"},
-	info{std::make_unique<ALooperFDEventSourceInfo>()},
-	fd_{fd}
-{}
+ALooperFDEventSource::ALooperFDEventSource(MaybeUniqueFileDescriptor fd, FDEventSourceDesc, PollEventDelegate del):
+	info{fd.get() != -1 ? std::make_unique<ALooperFDEventSourceInfo>(del) : std::unique_ptr<ALooperFDEventSourceInfo>{}},
+	fd_{std::move(fd)} {}
 
-ALooperFDEventSource::ALooperFDEventSource(ALooperFDEventSource &&o)
+ALooperFDEventSource::ALooperFDEventSource(ALooperFDEventSource &&o) noexcept
 {
 	*this = std::move(o);
 }
 
-ALooperFDEventSource &ALooperFDEventSource::operator=(ALooperFDEventSource &&o)
+ALooperFDEventSource &ALooperFDEventSource::operator=(ALooperFDEventSource &&o) noexcept
 {
 	deinit();
 	info = std::move(o.info);
-	fd_ = std::exchange(o.fd_, -1);
-	debugLabel = o.debugLabel;
+	fd_ = std::move(o.fd_);
 	return *this;
 }
 
@@ -57,61 +58,60 @@ ALooperFDEventSource::~ALooperFDEventSource()
 	deinit();
 }
 
-bool FDEventSource::attach(EventLoop loop, PollEventDelegate callback, uint32_t events)
+bool FDEventSource::attach(EventLoop loop, PollEventFlags events)
 {
-	logMsg("adding fd:%d to looper:%p (%s)", fd_, loop.nativeObject(), label());
-	assumeExpr(info);
+	if(fd_.get() == -1) [[unlikely]]
+	{
+		log.error("trying to attach without valid fd");
+		return false;
+	}
 	detach();
+	log.info("adding fd:{} to looper:{} ({})", fd_.get(), (void*)loop.nativeObject(), debugLabel());
 	if(!loop)
 		loop = EventLoop::forThread();
+	assumeExpr(info);
+	info->looper = loop.nativeObject();
 	if(auto res = ALooper_addFd(loop.nativeObject(), fd_, ALOOPER_POLL_CALLBACK, events, eventCallback, info.get());
 		res != 1)
 	{
 		return false;
 	}
-	info->callback = callback;
-	info->looper = loop.nativeObject();
 	return true;
 }
 
 void FDEventSource::detach()
 {
-	if(!info || !info->looper)
+	if(!hasEventLoop())
 		return;
-	logMsg("removing fd %d from looper (%s)", fd_, label());
+	log.info("removing fd:{} from looper ({})", fd_.get(), debugLabel());
 	ALooper_removeFd(info->looper, fd_);
 	info->looper = {};
 }
 
-void FDEventSource::setEvents(uint32_t events)
+void FDEventSource::setEvents(PollEventFlags events)
 {
 	if(!hasEventLoop())
 	{
-		logErr("trying to set events while not attached to event loop");
+		log.error("trying to set events without event loop");
 		return;
 	}
 	ALooper_addFd(info->looper, fd_, ALOOPER_POLL_CALLBACK, events, eventCallback, info.get());
 }
 
-void FDEventSource::dispatchEvents(uint32_t events)
+void FDEventSource::dispatchEvents(PollEventFlags events)
 {
 	eventCallback(fd(), events, info.get());
 }
 
 void FDEventSource::setCallback(PollEventDelegate callback)
 {
-	if(!hasEventLoop())
-	{
-		logErr("trying to set callback while not attached to event loop");
-		return;
-	}
+	assumeExpr(info);
 	info->callback = callback;
 }
 
 bool FDEventSource::hasEventLoop() const
 {
-	assumeExpr(info);
-	return info->looper;
+	return info && info->looper;
 }
 
 int FDEventSource::fd() const
@@ -119,23 +119,9 @@ int FDEventSource::fd() const
 	return fd_;
 }
 
-void FDEventSource::closeFD()
-{
-	if(fd_ == -1)
-		return;
-	detach();
-	close(fd_);
-	fd_ = -1;
-}
-
 void ALooperFDEventSource::deinit()
 {
 	static_cast<FDEventSource*>(this)->detach();
-}
-
-const char *ALooperFDEventSource::label() const
-{
-	return debugLabel;
 }
 
 EventLoop EventLoop::forThread()
@@ -160,16 +146,56 @@ static const char *aLooperPollResultStr(int res)
 	return "Unknown";
 }
 
-void EventLoop::run()
+struct JavaLooperContext
 {
-	int res = ALooper_pollAll(-1, nullptr, nullptr, nullptr);
-	if(res != ALOOPER_POLL_WAKE)
-		logDMsg("ALooper_pollAll returned:%s", aLooperPollResultStr(res));
+	JNIEnv* env{};
+	jclass cls{};
+	jobject looper{};
+};
+
+static JavaLooperContext javaLooperContext()
+{
+	auto env = static_cast<JNIEnv*>(pthread_getspecific(jEnvPThreadKey));
+	if(!env)
+		return {};
+	auto looperClass = env->FindClass("android/os/Looper");
+	assert(looperClass);
+	JNI::ClassMethod<jobject()> myLooper{env, looperClass, "myLooper", "()Landroid/os/Looper;"};
+	return {env, looperClass, myLooper(env, looperClass)};
+}
+
+void EventLoop::run(const bool& condition)
+{
+	if(auto jLooperCtx = javaLooperContext(); jLooperCtx.looper)
+	{
+		JNI::ClassMethod<void()> loop{jLooperCtx.env, jLooperCtx.cls, "loop", "()V"};
+		while(condition)
+		{
+			loop(jLooperCtx.env, jLooperCtx.cls);
+		}
+	}
+	else
+	{
+		while(condition)
+		{
+			int res = ALooper_pollOnce(-1, nullptr, nullptr, nullptr);
+			if(res != ALOOPER_POLL_CALLBACK && res != ALOOPER_POLL_WAKE)
+				log.error("ALooper_pollOnce returned:{}", aLooperPollResultStr(res));
+		}
+	}
 }
 
 void EventLoop::stop()
 {
-	ALooper_wake(looper);
+	if(auto jLooperCtx = javaLooperContext(); jLooperCtx.looper)
+	{
+		JNI::InstMethod<void()> quit{jLooperCtx.env, jLooperCtx.cls, "quit", "()V"};
+		quit(jLooperCtx.env, jLooperCtx.looper);
+	}
+	else
+	{
+		ALooper_wake(looper);
+	}
 }
 
 EventLoop::operator bool() const

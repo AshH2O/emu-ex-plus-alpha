@@ -13,93 +13,111 @@
 	You should have received a copy of the GNU General Public License
 	along with EmuFramework.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "VControllerKeyboard"
 #include <emuframework/VController.hh>
 #include <emuframework/EmuApp.hh>
-#include <imagine/util/math/space.hh>
+#include <imagine/util/math.hh>
 #include <imagine/gfx/RendererCommands.hh>
+#include <imagine/gfx/BasicEffect.hh>
+#include <imagine/gfx/Mat4.hh>
 #include <imagine/logger/logger.h>
 
-void VControllerKeyboard::updateImg(Gfx::Renderer &r)
+namespace EmuEx
 {
-	if(mode_)
-		spr.setUVBounds({{0., .5}, {texXEnd, 1.}});
-	else
-		spr.setUVBounds({{}, {texXEnd, .5}});
-	spr.compileDefaultProgramOneShot(Gfx::IMG_MODE_MODULATE);
+
+constexpr SystemLogger log{"VControllerKeyboard"};
+
+void VControllerKeyboard::updateImg()
+{
+	texture.bounds = mode_ == VControllerKbMode::LAYOUT_2 ? FRect{{0., .5}, {texXEnd, 1.}} : FRect{{}, {texXEnd, .5}};
+	kbQuad.write(0, {.bounds = bound.as<int16_t>(), .textureSpan = texture});
 }
 
-void VControllerKeyboard::setImg(Gfx::Renderer &r, Gfx::TextureSpan img)
+void VControllerKeyboard::setImg(Gfx::RendererTask &task, Gfx::TextureSpan img)
 {
-	spr = {{{-.5, -.5}, {.5, .5}}, img};
-	texXEnd = img.uvBounds().x2;
-	updateImg(r);
+	kbQuad = {task, {.size = 1}};
+	texture = img;
+	selectQuads = {task, {.size = 1}};
+	selectQuads.write(0, {.bounds = {{}, {1, 1}}});
+	texXEnd = img.bounds.x2;
+	updateImg();
 }
 
-void VControllerKeyboard::place(Gfx::GC btnSize, Gfx::GC yOffset, Gfx::ProjectionPlane projP)
+void VControllerKeyboard::place(int btnSize, int yOffset, WRect viewBounds)
 {
-	Gfx::GC xSize, ySize;
-	IG::setSizesWithRatioX(xSize, ySize, 3./2., std::min(btnSize*10, projP.width()));
-	Gfx::GC vArea = projP.height() - yOffset*2;
+	int xSize, ySize;
+	setSizesWithRatioX(xSize, ySize, 3./2., std::min(btnSize*10, viewBounds.xSize()));
+	int vArea = viewBounds.ySize() - yOffset * 2;
 	if(ySize > vArea)
 	{
 		IG::setSizesWithRatioY(xSize, ySize, 3./2., vArea);
 	}
-	Gfx::GCRect boundGC {{}, {xSize, ySize}};
-	boundGC.setPos({0., projP.bounds().y + yOffset}, CB2DO);
-	spr.setPos(boundGC);
-	bound = projP.projectRect(boundGC);
-	keyXSize = std::max(bound.xSize() / VKEY_COLS, 1u);
-	keyYSize = std::max(bound.ySize() / KEY_ROWS, 1u);
-	logMsg("key size %dx%d", keyXSize, keyYSize);
+	WRect bounds {{}, {xSize, ySize}};
+	bounds.setPos({viewBounds.xCenter(), viewBounds.y2 - yOffset}, CB2DO);
+	bound = bounds;
+	keyXSize = std::max(bound.xSize() / VKEY_COLS, 1);
+	keyYSize = std::max(bound.ySize() / KEY_ROWS, 1);
+	//log.info("key size {}x{}", keyXSize, keyYSize);
+	updateImg();
 }
 
-void VControllerKeyboard::draw(Gfx::RendererCommands &cmds, Gfx::ProjectionPlane projP) const
+void VControllerKeyboard::draw(Gfx::RendererCommands &__restrict__ cmds) const
 {
-	if(spr.image()->levels() > 1)
-		cmds.set(View::imageCommonTextureSampler);
-	else
-		cmds.set(Gfx::CommonTextureSampler::NO_MIP_CLAMP);
-	spr.setCommonProgram(cmds, Gfx::IMG_MODE_MODULATE);
-	spr.draw(cmds);
+	using namespace IG::Gfx;
+	auto &basicEffect = cmds.basicEffect();
+	basicEffect.drawSprite(cmds, kbQuad, 0, texture);
+	constexpr auto selectCol = Gfx::Color{.2, .71, .9, 1./3.}.multiplyAlpha();
+	constexpr auto shiftCol = Gfx::Color{.2, .71, .9, .5}.multiplyAlpha();
 	if(selected.x != -1)
 	{
-		cmds.setColor(.2, .71, .9, 1./3.);
-		cmds.setCommonProgram(Gfx::CommonProgram::NO_TEX, projP.makeTranslate());
+		cmds.setColor(selectCol);
+		basicEffect.disableTexture(cmds);
 		IG::WindowRect rect{};
-		rect.x = bound.x + (selected.x * keyXSize);
-		rect.x2 = bound.x + ((selected.x2 + 1) * keyXSize);
-		rect.y = bound.y + (selected.y * keyYSize);
+		rect.x = bound.x + 1 + (selected.x * keyXSize);
+		rect.x2 = bound.x + 1 + ((selected.x2 + 1) * keyXSize);
+		rect.y = bound.y + 1 + (selected.y * keyYSize);
 		rect.y2 = rect.y + keyYSize;
-		Gfx::GeomRect::draw(cmds, rect, projP);
+		basicEffect.setModelView(cmds, Mat4::makeTranslateScale(rect));
+		cmds.drawQuad(selectQuads, 0);
+	}
+	if(shiftIsActive() && mode_ == VControllerKbMode::LAYOUT_1)
+	{
+		cmds.setColor(shiftCol);
+		basicEffect.disableTexture(cmds);
+		IG::WindowRect rect{};
+		rect.x = bound.x + 1 + (shiftRect.x * keyXSize);
+		rect.x2 = bound.x + 1 + ((shiftRect.x2 + 1) * keyXSize);
+		rect.y = bound.y + 1 + (shiftRect.y * keyYSize);
+		rect.y2 = rect.y + keyYSize;
+		basicEffect.setModelView(cmds, Mat4::makeTranslateScale(rect));
+		cmds.drawQuad(selectQuads, 0);
 	}
 }
 
-int VControllerKeyboard::getInput(IG::WP c) const
+int VControllerKeyboard::getInput(WPt c) const
 {
 	if(!bound.overlaps(c))
 		return -1;
 	int relX = c.x - bound.x, relY = c.y - bound.y;
-	unsigned row = std::min(relY/keyYSize, 3u);
-	unsigned col = std::min(relX/keyXSize, 19u);
-	unsigned idx = col + (row * VKEY_COLS);
-	logMsg("pointer %d,%d key @ %d,%d, idx %d", relX, relY, row, col, idx);
+	int row = std::min(relY/keyYSize, 3);
+	int col = std::min(relX/keyXSize, 19);
+	int idx = col + (row * VKEY_COLS);
+	//log.debug("pointer {},{} key @ {},{}, idx {}", relX, relY, row, col, idx);
 	return idx;
 }
 
-int VControllerKeyboard::translateInput(unsigned idx) const
+KeyInfo VControllerKeyboard::translateInput(int idx) const
 {
 	assumeExpr(idx < VKEY_COLS * KEY_ROWS);
 	return table[0][idx];
 }
 
-bool VControllerKeyboard::keyInput(VController &v, Gfx::Renderer &r, Input::Event e)
+bool VControllerKeyboard::keyInput(VController& v, const Input::KeyEvent& e)
 {
 	if(selected.x == -1)
 	{
-		if(e.pushed() && (e.isDefaultConfirmButton() || e.isDefaultDirectionButton()))
+		if(e.pushed(Input::DefaultKey::CONFIRM) || e.pushed(Input::DefaultKey::DIRECTION))
 		{
-			selectKey(0, 3);
+			selected = selectKey(0, 3);
 			return true;
 		}
 		else
@@ -113,7 +131,7 @@ bool VControllerKeyboard::keyInput(VController &v, Gfx::Renderer &r, Input::Even
 		{
 			if(!e.pushed() || e.repeated())
 				return false;
-			logMsg("dismiss kb");
+			log.info("dismiss kb");
 			unselectKey();
 			v.toggleKeyboard();
 		}
@@ -121,17 +139,17 @@ bool VControllerKeyboard::keyInput(VController &v, Gfx::Renderer &r, Input::Even
 		{
 			if(!e.pushed() || e.repeated())
 				return false;
-			logMsg("switch kb mode");
-			setMode(r, mode() ^ true);
+			log.info("switch kb mode");
+			cycleMode(v.system());
 			v.resetInput();
 		}
 		else if(e.pushed())
 		{
-			EmuSystem::handleInputAction(&v.app(), Input::Action::PUSHED, currentKey());
+			v.app().handleSystemKeyInput(currentKey(), Input::Action::PUSHED, 0);
 		}
 		else
 		{
-			EmuSystem::handleInputAction(&v.app(), Input::Action::RELEASED, currentKey());
+			v.app().handleSystemKeyInput(currentKey(), Input::Action::RELEASED, 0);
 		}
 		return true;
 	}
@@ -162,14 +180,14 @@ bool VControllerKeyboard::keyInput(VController &v, Gfx::Renderer &r, Input::Even
 	return false;
 }
 
-void VControllerKeyboard::selectKey(unsigned x, unsigned y)
+WRect VControllerKeyboard::selectKey(int x, int y)
 {
 	if(x >= VKEY_COLS || y >= KEY_ROWS)
 	{
-		logErr("selected key:%dx%d out of range", x, y);
+		log.error("selected key:{}x{} out of range", x, y);
+		return {{-1, -1}, {-1, -1}};
 	}
-	selected = {{(int)x, (int)y}, {(int)x, (int)y}};
-	extendKeySelection();
+	return extendKeySelection({{x, y}, {x, y}});
 }
 
 void VControllerKeyboard::selectKeyRel(int x, int y)
@@ -189,10 +207,10 @@ void VControllerKeyboard::selectKeyRel(int x, int y)
 		selected.y = selected.y2 = IG::wrapMinMax(selected.y2 + y, 0, (int)KEY_ROWS);
 		selected.x2 = selected.x;
 	}
-	extendKeySelection();
-	if(!currentKey())
+	selected = extendKeySelection(selected);
+	if(!currentKey(selected.x, selected.y))
 	{
-		logMsg("skipping blank key index");
+		log.info("skipping blank key index");
 		selectKeyRel(x, y);
 	}
 }
@@ -202,36 +220,49 @@ void VControllerKeyboard::unselectKey()
 	selected = {{-1, -1}, {-1, -1}};
 }
 
-void VControllerKeyboard::extendKeySelection()
+IG::WindowRect VControllerKeyboard::extendKeySelection(IG::WindowRect selected)
 {
-	auto key = currentKey();
-	iterateTimes(selected.x, i)
+	auto key = currentKey(selected.x, selected.y);
+	for([[maybe_unused]] auto i : iotaCount(selected.x))
 	{
 		if(table[selected.y][selected.x - 1] == key)
 			selected.x--;
 		else
 			break;
 	}
-	iterateTimes((VKEY_COLS - 1) - selected.x2, i)
+	for([[maybe_unused]] auto i : iotaCount((VKEY_COLS - 1) - selected.x2))
 	{
 		if(table[selected.y][selected.x2 + 1] == key)
 			selected.x2++;
 		else
 			break;
 	}
-	logMsg("extended selection to:%d:%d", selected.x, selected.x2);
+	log.info("extended selection to:{}:{}", selected.x, selected.x2);
+	return selected;
 }
 
-unsigned VControllerKeyboard::currentKey() const
+KeyInfo VControllerKeyboard::currentKey(int x, int y) const
 {
-	return table[selected.y][selected.x];
+	return table[y][x];
 }
 
-void VControllerKeyboard::setMode(Gfx::Renderer &r, int mode)
+KeyInfo VControllerKeyboard::currentKey() const
+{
+	return currentKey(selected.x, selected.y);
+}
+
+void VControllerKeyboard::setMode(EmuSystem& sys, VControllerKbMode mode)
 {
 	mode_ = mode;
-	updateImg(r);
-	updateKeyboardMapping();
+	updateImg();
+	updateKeyboardMapping(sys);
+}
+
+void VControllerKeyboard::cycleMode(EmuSystem& sys)
+{
+	setMode(sys,
+		mode() == VControllerKbMode::LAYOUT_1 ? VControllerKbMode::LAYOUT_2
+		: VControllerKbMode::LAYOUT_1);
 }
 
 void VControllerKeyboard::applyMap(KbMap map)
@@ -240,7 +271,7 @@ void VControllerKeyboard::applyMap(KbMap map)
 	// 1st row
 	auto *__restrict tablePtr = &table[0][0];
 	auto *__restrict mapPtr = &map[0];
-	iterateTimes(10, i)
+	for([[maybe_unused]] auto i : iotaCount(10))
 	{
 		tablePtr[0] = *mapPtr;
 		tablePtr[1] = *mapPtr;
@@ -249,10 +280,10 @@ void VControllerKeyboard::applyMap(KbMap map)
 	}
 	// 2nd row
 	mapPtr = &map[10];
-	if(mode_ == 0)
+	if(mode_ == VControllerKbMode::LAYOUT_1)
 	{
 		tablePtr = &table[1][1];
-		iterateTimes(9, i)
+		for([[maybe_unused]] auto i : iotaCount(9))
 		{
 			tablePtr[0] = *mapPtr;
 			tablePtr[1] = *mapPtr;
@@ -263,7 +294,7 @@ void VControllerKeyboard::applyMap(KbMap map)
 	else
 	{
 		tablePtr = &table[1][0];
-		iterateTimes(10, i)
+		for([[maybe_unused]] auto i : iotaCount(10))
 		{
 			tablePtr[0] = *mapPtr;
 			tablePtr[1] = *mapPtr;
@@ -276,7 +307,7 @@ void VControllerKeyboard::applyMap(KbMap map)
 	table[2][0] = table[2][1] = table[2][2] = *mapPtr;
 	mapPtr++;
 	tablePtr = &table[2][3];
-	iterateTimes(7, i)
+	for([[maybe_unused]] auto i : iotaCount(7))
 	{
 		tablePtr[0] = *mapPtr;
 		tablePtr[1] = *mapPtr;
@@ -289,7 +320,7 @@ void VControllerKeyboard::applyMap(KbMap map)
 	table[3][3] = table[3][4] = table[3][5] = VController::CHANGE_KEYBOARD_MODE;
 	tablePtr = &table[3][6];
 	mapPtr = &map[33];
-	iterateTimes(8, i)
+	for([[maybe_unused]] auto i : iotaCount(8))
 	{
 		*tablePtr++ = *mapPtr;
 	}
@@ -300,16 +331,41 @@ void VControllerKeyboard::applyMap(KbMap map)
 
 	/*iterateTimes(table.size(), i)
 	{
-		logMsg("row:%d", i);
+		log.debug("row:{}", i);
 		iterateTimes(table[0].size(), j)
 		{
-			logMsg("col:%d = %d", j, table[i][j]);
+			log.info("col:{} = {}", j, table[i][j]);
 		}
 	}*/
 }
 
-void VControllerKeyboard::updateKeyboardMapping()
+void VControllerKeyboard::updateKeyboardMapping(EmuSystem &sys)
 {
-	auto map = updateVControllerKeyboardMapping(mode());
+	auto map = sys.vControllerKeyboardMap(mode());
 	applyMap(map);
+}
+
+void VControllerKeyboard::setShiftActive(bool on)
+{
+	if(on)
+	{
+		shiftRect = selectKey(0, 2);
+	}
+	else
+	{
+		shiftRect = {{-1, -1}, {-1, -1}};
+	}
+}
+
+bool VControllerKeyboard::toggleShiftActive()
+{
+	setShiftActive(shiftIsActive() ^ 1);
+	return shiftIsActive();
+}
+
+bool VControllerKeyboard::shiftIsActive() const
+{
+	return shiftRect.x != -1;
+}
+
 }

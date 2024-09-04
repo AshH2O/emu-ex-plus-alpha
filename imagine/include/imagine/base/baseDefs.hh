@@ -18,21 +18,24 @@
 #include <imagine/config/defs.hh>
 #include <imagine/time/Time.hh>
 #include <imagine/util/DelegateFunc.hh>
-#include <imagine/util/bitset.hh>
+#include <imagine/util/string/CStringView.hh>
+#include <imagine/util/enum.hh>
+#include <imagine/util/variant.hh>
 #include <vector>
 #include <memory>
+#include <string_view>
+#include <type_traits>
+#include <variant>
 
 namespace Config
 {
 #if defined __ANDROID__
-#define CONFIG_BASE_SUPPORTS_VIBRATOR
 static constexpr bool BASE_SUPPORTS_VIBRATOR = true;
 #else
 static constexpr bool BASE_SUPPORTS_VIBRATOR = false;
 #endif
 
 #if defined __ANDROID__ || (defined __APPLE__ && TARGET_OS_IPHONE)
-#define CONFIG_BASE_CAN_BACKGROUND_APP
 static constexpr bool BASE_CAN_BACKGROUND_APP = true;
 #else
 static constexpr bool BASE_CAN_BACKGROUND_APP = false;
@@ -45,28 +48,30 @@ static constexpr bool BASE_SUPPORTS_ORIENTATION_SENSOR = true;
 static constexpr bool BASE_SUPPORTS_ORIENTATION_SENSOR = false;
 #endif
 
-#if defined __ANDROID__ || defined CONFIG_BASE_IOS
+#if defined __ANDROID__ || defined CONFIG_OS_IOS
 #define CONFIG_BASE_MULTI_SCREEN
-#define CONFIG_BASE_SCREEN_HOTPLUG
 static constexpr bool BASE_MULTI_SCREEN = true;
 #else
 static constexpr bool BASE_MULTI_SCREEN = false;
 #endif
 
-#if defined CONFIG_BASE_IOS
+#if defined CONFIG_OS_IOS
 #define CONFIG_BASE_SCREEN_FRAME_INTERVAL
+static constexpr bool SCREEN_FRAME_INTERVAL = true;
+#else
+static constexpr bool SCREEN_FRAME_INTERVAL = false;
 #endif
 
-#if (defined CONFIG_BASE_X11 && !defined CONFIG_MACHINE_PANDORA) || defined CONFIG_BASE_MULTI_SCREEN
+#if (defined CONFIG_PACKAGE_X11 && !defined CONFIG_MACHINE_PANDORA) || defined CONFIG_BASE_MULTI_SCREEN
 #define CONFIG_BASE_MULTI_WINDOW
 static constexpr bool BASE_MULTI_WINDOW = true;
 #else
 static constexpr bool BASE_MULTI_WINDOW = false;
 #endif
 
-#if defined CONFIG_BASE_IOS && defined __ARM_ARCH_6K__
+#if defined CONFIG_OS_IOS && defined __ARM_ARCH_6K__
 #define CONFIG_GFX_SOFT_ORIENTATION 1
-#elif !defined __ANDROID__ && !defined CONFIG_BASE_IOS
+#elif !defined __ANDROID__ && !defined CONFIG_OS_IOS
 #define CONFIG_GFX_SOFT_ORIENTATION 1
 #endif
 
@@ -76,39 +81,111 @@ static constexpr bool SYSTEM_ROTATES_WINDOWS = false;
 static constexpr bool SYSTEM_ROTATES_WINDOWS = true;
 #endif
 
-	namespace Base
-	{
-	#if defined __linux__
-	#define CONFIG_BASE_GL_PLATFORM_EGL
-	static constexpr bool GL_PLATFORM_EGL = true;
-	#else
-	static constexpr bool GL_PLATFORM_EGL = false;
-	#endif
-	}
+#if defined __linux__
+#define CONFIG_BASE_GL_PLATFORM_EGL
+static constexpr bool GL_PLATFORM_EGL = true;
+#else
+static constexpr bool GL_PLATFORM_EGL = false;
+#endif
+static constexpr bool SYSTEM_FILE_PICKER = Config::envIsAndroid;
+
+#if defined __ANDROID__ || (defined __APPLE__ && TARGET_OS_IPHONE)
+#define CONFIG_BASE_STATUS_BAR
+static constexpr bool STATUS_BAR = true;
+#else
+static constexpr bool STATUS_BAR = false;
+#endif
+
+#if defined __ANDROID__
+#define CONFIG_BASE_NAVIGATION_BAR
+static constexpr bool NAVIGATION_BAR = true;
+#else
+static constexpr bool NAVIGATION_BAR = false;
+#endif
+
+#if defined __ANDROID__
+constexpr bool TRANSLUCENT_SYSTEM_UI = true;
+#else
+constexpr bool TRANSLUCENT_SYSTEM_UI = false;
+#endif
+
+#if defined __ANDROID__
+constexpr bool DISPLAY_CUTOUT = true;
+#else
+constexpr bool DISPLAY_CUTOUT = false;
+#endif
+
+#if defined __ANDROID__
+#define IG_CONFIG_SENSORS
+constexpr bool SENSORS = true;
+#else
+constexpr bool SENSORS = false;
+#endif
+
+constexpr bool threadPerformanceHints = Config::envIsAndroid;
+
+constexpr bool multipleScreenFrameRates = Config::envIsAndroid;
+
+constexpr bool cpuAffinity = Config::envIsAndroid || Config::envIsLinux;
+
+constexpr bool freeformWindows = Config::envIsLinux;
+
+constexpr bool windowFocus = Config::envIsAndroid || Config::envIsLinux;
 }
 
-namespace Input
+namespace IG::Input
 {
+
 class Event;
 class Device;
-class DeviceChange;
+class KeyEvent;
+class MotionEvent;
+
+enum class DeviceChange: uint8_t { added, removed, updated, shown, hidden, connectError };
+
+// Sent when a known input device addition/removal/change occurs
+struct DeviceChangeEvent{const Device &device; DeviceChange change;};
+
+// Sent when the device list is rebuilt, all devices should be re-checked
+struct DevicesEnumeratedEvent{};
+
 }
 
-namespace Base
+namespace IG
 {
-using namespace IG;
 
 using OnFrameDelegate = DelegateFunc<bool (FrameParams params)>;
 
-// orientation
-using Orientation = uint8_t;
-static constexpr Orientation VIEW_ROTATE_0 = bit(0), VIEW_ROTATE_90 = bit(1), VIEW_ROTATE_180 = bit(2), VIEW_ROTATE_270 = bit(3);
-static constexpr Orientation VIEW_ROTATE_AUTO = bit(5);
-static constexpr Orientation VIEW_ROTATE_ALL = VIEW_ROTATE_0 | VIEW_ROTATE_90 | VIEW_ROTATE_180 | VIEW_ROTATE_270;
-static constexpr Orientation VIEW_ROTATE_ALL_BUT_UPSIDE_DOWN = VIEW_ROTATE_0 | VIEW_ROTATE_90 | VIEW_ROTATE_270;
+struct Orientations
+{
+	uint8_t
+	portrait:1{},
+	landscapeRight:1{},
+	portraitUpsideDown:1{},
+	landscapeLeft:1{};
 
-const char *orientationToStr(Orientation o);
-bool orientationIsSideways(Orientation o);
+	// TODO: use constexpr bit_cast with bit-fields when Clang supports it
+	constexpr operator uint8_t() const { return portrait | landscapeRight << 1 | portraitUpsideDown << 2 | landscapeLeft << 3; }
+	constexpr bool operator ==(Orientations const&) const = default;
+	static constexpr Orientations allLandscape() { return {.landscapeRight = 1, .landscapeLeft = 1}; }
+	static constexpr Orientations allPortrait() { return {.portrait = 1, .portraitUpsideDown = 1}; }
+	static constexpr Orientations allButUpsideDown() { return {.portrait = 1, .landscapeRight = 1, .landscapeLeft = 1}; }
+	static constexpr Orientations all() { return {.portrait = 1, .landscapeRight = 1, .portraitUpsideDown = 1, .landscapeLeft = 1}; }
+};
+
+std::string_view asString(Orientations);
+
+WISE_ENUM_CLASS((Rotation, uint8_t),
+	UP,
+	RIGHT,
+	DOWN,
+	LEFT,
+	ANY);
+
+template<>
+constexpr bool isValidProperty(const Rotation &v) { return enumIsValidUpToLast(v); }
+
+constexpr bool isSideways(Rotation r) { return r == Rotation::LEFT || r == Rotation::RIGHT; }
 
 static constexpr int APP_ON_EXIT_PRIORITY = 0;
 static constexpr int RENDERER_TASK_ON_EXIT_PRIORITY = 200;
@@ -126,6 +203,15 @@ static constexpr int APP_ON_RESUME_PRIORITY = 0;
 
 // Window/Screen helper classes
 
+struct WindowSurfaceChangeFlags
+{
+	using BitSetClassInt = uint8_t;
+
+	BitSetClassInt
+	surfaceResized:1{},
+	contentRectResized:1{};
+};
+
 struct WindowSurfaceChange
 {
 	enum class Action : uint8_t
@@ -133,95 +219,127 @@ struct WindowSurfaceChange
 		CREATED, CHANGED, DESTROYED
 	};
 
-	static constexpr uint8_t SURFACE_RESIZED = IG::bit(0),
-		CONTENT_RECT_RESIZED = IG::bit(1),
-		CUSTOM_VIEWPORT_RESIZED = IG::bit(2);
-	static constexpr uint8_t RESIZE_BITS =
-		SURFACE_RESIZED | CONTENT_RECT_RESIZED | CUSTOM_VIEWPORT_RESIZED;
+	Action action{};
+	WindowSurfaceChangeFlags flags{};
 
-	constexpr WindowSurfaceChange(Action action, uint8_t flags = 0):
-		action_{action}, flags{flags}
-	{}
-
-	constexpr Action action() const
-	{
-		return action_;
-	}
-
-	constexpr bool resized() const
-	{
-		return action() == Action::CHANGED;
-	}
-
-	constexpr bool surfaceResized() const { return flags & SURFACE_RESIZED; }
-	constexpr bool contentRectResized() const { return flags & CONTENT_RECT_RESIZED; }
-	constexpr bool customViewportResized() const { return flags & CUSTOM_VIEWPORT_RESIZED; }
-
-protected:
-	Action action_{};
-	uint8_t flags{};
+	constexpr WindowSurfaceChange(Action action, WindowSurfaceChangeFlags flags = {}):
+		action{action}, flags{flags} {}
+	constexpr bool resized() const { return action == Action::CHANGED; }
 };
 
 struct WindowDrawParams
 {
-	bool wasResized_ = false;
-	bool needsSync_ = false;
-
-	constexpr WindowDrawParams() {}
-	bool wasResized() const { return wasResized_; }
-	bool needsSync() const { return needsSync_; }
+	bool wasResized{};
+	bool needsSync{};
 };
 
-enum class WindowFrameTimeSource : uint8_t
-{
-	AUTO,
-	SCREEN,
-	RENDERER,
-};
+enum class ScreenChange : int8_t { added, removed, frameRate };
 
-struct ScreenChange
-{
-	uint32_t state;
-	enum { ADDED, REMOVED };
+WISE_ENUM_CLASS((SensorType, uint8_t),
+	(Accelerometer, 1),
+	(Gyroscope, 4),
+	(Light, 5)
+);
 
-	constexpr ScreenChange(uint32_t state): state(state) {}
-	bool added() const { return state == ADDED; }
-	bool removed() const { return state == REMOVED; }
-};
+using SensorValues = std::array<float, 3>;
 
 class Screen;
 class Window;
-class WindowConfig;
+struct WindowConfig;
 class ApplicationContext;
+class Application;
+struct ApplicationInitParams;
+class FrameTimer;
+struct FDEventSourceDesc;
+class FDEventSource;
+class EventLoop;
+struct TimerDesc;
 
 using WindowContainer = std::vector<std::unique_ptr<Window>>;
 using ScreenContainer = std::vector<std::unique_ptr<Screen>>;
-using InputDeviceContainer = std::vector<Input::Device*>;
+using InputDeviceContainer = std::vector<std::unique_ptr<Input::Device>>;
 
+// App events & delegates
+
+// Sent when another process or the system file picker requests opening a document
+struct DocumentPickerEvent{CStringView uri, displayName;};
+
+// Sent when OS needs app to free any cached data
+struct FreeCachesEvent{bool running;};
+
+// Sent when a Screen is connected/disconnected or its properties change
+struct ScreenChangeEvent{Screen &screen; ScreenChange change;};
+
+using ApplicationEventVariant = std::variant<DocumentPickerEvent, FreeCachesEvent,
+	ScreenChangeEvent, Input::DeviceChangeEvent, Input::DevicesEnumeratedEvent>;
+
+class ApplicationEvent: public ApplicationEventVariant, public AddVisit
+{
+public:
+	using ApplicationEventVariant::ApplicationEventVariant;
+	using AddVisit::visit;
+};
+
+using OnApplicationEvent = DelegateFunc<void(ApplicationContext, const ApplicationEvent&)>;
 using MainThreadMessageDelegate = DelegateFunc<void(ApplicationContext)>;
-using InterProcessMessageDelegate = DelegateFunc<void (ApplicationContext, const char *filename)>;
 using ResumeDelegate = DelegateFunc<bool (ApplicationContext, bool focused)>;
-using FreeCachesDelegate = DelegateFunc<void (ApplicationContext, bool running)>;
 using ExitDelegate = DelegateFunc<bool (ApplicationContext, bool backgrounded)>;
-using DeviceOrientationChangedDelegate = DelegateFunc<void (ApplicationContext, Orientation newOrientation)>;
-using SystemOrientationChangedDelegate = DelegateFunc<void (ApplicationContext, Orientation oldOrientation, Orientation newOrientation)>;
-using ScreenChangeDelegate = DelegateFunc<void (ApplicationContext, Screen &s, ScreenChange)>;
-using SystemPathPickerDelegate = DelegateFunc<void(const char *path)>;
+using DeviceOrientationChangedDelegate = DelegateFunc<void (ApplicationContext, Rotation newRotation)>;
+using SystemOrientationChangedDelegate = DelegateFunc<void (ApplicationContext, Rotation oldRotation, Rotation newRotation)>;
+using TextFieldDelegate = DelegateFunc<void (const char *str)>;
+using SensorChangedDelegate = DelegateFunc<void (SensorValues)>;
 
-using InputDeviceChangeDelegate = DelegateFunc<void (const Input::Device &dev, Input::DeviceChange)>;
-using InputDevicesEnumeratedDelegate = DelegateFunc<void ()>;
+// Window events & delegates
 
-using WindowInitDelegate = DelegateFunc<void (ApplicationContext, Window &)>;
-using WindowInitDelegate = DelegateFunc<void (ApplicationContext, Window &)>;
-using WindowSurfaceChangeDelegate = DelegateFunc<void (Window &, WindowSurfaceChange)>;
-using WindowDrawDelegate = DelegateFunc<bool (Window &, WindowDrawParams)>;
-using WindowInputEventDelegate = DelegateFunc<bool (Window &, Input::Event)>;
-using WindowFocusChangeDelegate = DelegateFunc<void (Window &, bool in)>;
-using WindowDragDropDelegate = DelegateFunc<void (Window &, const char *filename)>;
-using WindowDismissRequestDelegate = DelegateFunc<void (Window &)>;
-using WindowDismissDelegate = DelegateFunc<void (Window &)>;
+// Sent when the state of the window's drawing surface changes,
+// such as a re-size or if it becomes the current drawing target
+struct WindowSurfaceChangeEvent{WindowSurfaceChange change;};
 
-using ScreenId = std::conditional_t<Config::envIsAndroid, int, void*>;
-using NativeDisplayConnection = void*;
+// Sent during a Screen frame callback if the window needs to be drawn
+struct DrawEvent{WindowDrawParams params;};
+
+// Sent when app window enters/exits focus
+struct FocusChangeEvent{bool in;};
+
+// Sent when a file is dropped into into the app's window
+// if app enables setAcceptDnd()
+struct DragDropEvent{CStringView filename;};
+
+// Sent when the user performs an action indicating to
+// to the window manager they wish to dismiss the window
+// (clicking the close button for example),
+// by default it will exit the app
+struct DismissRequestEvent{};
+
+// Sent when the window is dismissed
+struct DismissEvent{};
+
+using WindowEventVariant = std::variant<WindowSurfaceChangeEvent, DrawEvent,
+	Input::Event, FocusChangeEvent, DragDropEvent,
+	DismissRequestEvent, DismissEvent>;
+
+class WindowEvent;
+
+using OnWindowEvent = DelegateFunc<bool(Window&, const WindowEvent&)>;
+using WindowInitDelegate = DelegateFunc<void (ApplicationContext, Window&)>;
+
+using PollEventFlags = int;
+using PollEventDelegate = DelegateFunc<bool (int fd, PollEventFlags)>;
+
+class CallbackDelegate : public DelegateFunc<bool ()>
+{
+public:
+	using DelegateFuncBase::DelegateFuncBase;
+
+	constexpr CallbackDelegate(Callable<void> auto&& f):
+		DelegateFuncBase
+		{
+			[=]()
+			{
+				f();
+				return false;
+			}
+		} {}
+};
 
 }

@@ -18,8 +18,8 @@
 #include <imagine/logger/logger.h>
 #include <assert.h>
 #include <string.h>
-#include <emuframework/EmuApp.hh>
 #include <emuframework/Option.hh>
+#include "MainApp.hh"
 
 extern "C"
 {
@@ -28,9 +28,13 @@ extern "C"
 	#include <blueMSX/Memory/MegaromCartridge.h>
 }
 
-extern BoardInfo boardInfo;
-extern Mixer* mixer;
-extern Machine *machine;
+using namespace EmuEx;
+
+namespace EmuEx
+{
+bool fdcActive = 0;
+}
+
 static HdType hdType[MAX_HD_COUNT]{};
 RomType currentRomType[2]{};
 static BoardTimer* fdcTimer{};
@@ -60,9 +64,6 @@ void boardChangeDiskette(int driveId, char* fileName, const char* fileInZipFile)
     diskChange(driveId, fileName, fileInZipFile);
 }
 
-bool fdcActive = 0;
-extern Byte1Option optionSkipFdcAccess;
-
 static void onFdcDone(void* ref, UInt32 time)
 {
     fdcActive = 0;
@@ -71,7 +72,8 @@ static void onFdcDone(void* ref, UInt32 time)
 
 void boardSetFdcActive()
 {
-	if(optionSkipFdcAccess)
+	auto &sys = static_cast<MsxSystem&>(gSystem());
+	if(sys.optionSkipFdcAccess)
 	{
 		if(!fdcActive)
 			logMsg("FDC active");
@@ -239,7 +241,7 @@ void boardTimerRemove(BoardTimer* timer)
 
 const char* boardGetBaseDirectory()
 {
-    return EmuSystem::savePath();
+	return EmuEx::gSystem().contentSaveDirectoryPtr();
 }
 
 void boardOnBreakpoint(UInt16 pc) { }
@@ -342,8 +344,6 @@ HdType boardGetHdType(int hdIndex)
     return hdType[hdIndex];
 }
 
-extern char hdName[4][512];
-
 int boardChangeCartridge(int cartNo, RomType romType, const char* cart, const char* cartZip)
 {
     /*if (romType == ROM_UNKNOWN) {
@@ -373,8 +373,8 @@ int boardChangeCartridge(int cartNo, RomType romType, const char* cart, const ch
 	{
 		diskChange(diskGetHdDriveId(cartNo, 0), 0, 0);
 		diskChange(diskGetHdDriveId(cartNo, 1), 0, 0);
-		strcpy(hdName[cartNo * 2], "");
-		strcpy(hdName[(cartNo * 2) + 1], "");
+		hdName[cartNo * 2] = {};
+		hdName[(cartNo * 2) + 1] = {};
 	}
 
     hdType[cartNo] = HD_NONE;
@@ -404,7 +404,8 @@ int boardChangeCartridge(int cartNo, RomType romType, const char* cart, const ch
         if (currentRomType[cartNo] == ROM_GOUDASCSI)    hdType[cartNo] = HD_GOUDASCSI;
     }
 
-    logMsg("HD Type %d", (int)hdType[cartNo]);
+    if(hdType[cartNo] != HD_NONE)
+    	logMsg("HD Type:%d", (int)hdType[cartNo]);
 
     bool success;
     if(cartNo < boardInfo.cartridgeCount)

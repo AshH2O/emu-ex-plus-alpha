@@ -16,8 +16,9 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/util/utility.h>
-#include <imagine/util/math/math.hh>
-#include <assert.h>
+#include <imagine/util/math.hh>
+#include <imagine/util/enum.hh>
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -28,89 +29,80 @@
 // min:negative y = bottom
 // max:positive y = top
 
-enum { _2DORIGIN_NONE = 0, _2DORIGIN_MIN, _2DORIGIN_MIN_INVERSE_CARTESIAN, _2DORIGIN_CENTER, _2DORIGIN_CENTER_INVERSE_CARTESIAN, _2DORIGIN_MAX, _2DORIGIN_MAX_INVERSE_CARTESIAN };
+namespace IG
+{
+
+WISE_ENUM_CLASS((Origin, uint8_t),
+	center,
+	min,
+	max,
+	centerInverted,
+	minInverted,
+	maxInverted);
+
 class _2DOrigin
 {
 public:
-	uint8_t x = _2DORIGIN_NONE, y = _2DORIGIN_NONE;
-	constexpr _2DOrigin() { }
-	constexpr _2DOrigin(uint8_t x, uint8_t y): x(x & 7), y(y & 7) { }
-	explicit constexpr _2DOrigin(uint8_t val): x(val & 7), y(val >> 3) { }
+	using PackedType = uint8_t;
 
-	static const char *toString(uint32_t value)
+	Origin x{}, y{};
+
+	constexpr _2DOrigin() = default;
+	constexpr _2DOrigin(Origin x, Origin y): x{x}, y{y} {}
+
+	static constexpr _2DOrigin unpack(PackedType val)
 	{
-		switch(value)
-		{
-			case _2DORIGIN_MIN: return "Min";
-			case _2DORIGIN_MIN_INVERSE_CARTESIAN: return "Min (Inverted)";
-			case _2DORIGIN_CENTER: return "Center";
-			case _2DORIGIN_CENTER_INVERSE_CARTESIAN: return "Center (Inverted)";
-			case _2DORIGIN_MAX: return "Max";
-			case _2DORIGIN_MAX_INVERSE_CARTESIAN: return "Max (Inverted)";
-			default: bug_unreachable("value == %d", value); return 0;
-		}
+		int maxVal = to_underlying(lastEnum<Origin>);
+		return {Origin(std::min(val & 0xF, maxVal)), Origin(std::min(val >> 4, maxVal))};
 	}
 
-	static int scaler(uint32_t originValue)
+	constexpr PackedType pack() const
+	{
+		return to_underlying(x) | (to_underlying(y) << 4);
+	}
+
+	static constexpr int scaler(Origin originValue)
 	{
 		switch(originValue)
 		{
-			case _2DORIGIN_MIN:
-			case _2DORIGIN_MIN_INVERSE_CARTESIAN: return -1;
-			case _2DORIGIN_CENTER:
-			case _2DORIGIN_CENTER_INVERSE_CARTESIAN: return 0;
-			case _2DORIGIN_MAX:
-			case _2DORIGIN_MAX_INVERSE_CARTESIAN: return 1;
-			default: bug_unreachable("value == %d", originValue); return 0;
+			case Origin::min:
+			case Origin::minInverted: return -1;
+			case Origin::center:
+			case Origin::centerInverted: return 0;
+			case Origin::max:
+			case Origin::maxInverted: return 1;
+			default: bug_unreachable("invalid Origin");
 		}
 	}
 
-	int xScaler() const
+	constexpr int xScaler() const
 	{
 		return scaler(x);
 	}
 
-	int yScaler() const
+	constexpr int yScaler() const
 	{
 		return scaler(y);
 	}
 
-	bool isYCartesian() const
+	constexpr bool isYCartesian() const
 	{
 		return isCartesian(y);
 	}
 
-	static int isCartesian(int type)
+	static constexpr int isCartesian(Origin type)
 	{
-		return type == _2DORIGIN_MIN || type ==_2DORIGIN_MAX || type ==_2DORIGIN_CENTER;
+		return type == Origin::min || type ==Origin::max || type ==Origin::center;
 	}
 
-	static bool valIsValid(uint32_t originValue)
-	{
-		switch(originValue)
-		{
-			case 0:
-			case _2DORIGIN_MIN:
-			case _2DORIGIN_CENTER:
-			case _2DORIGIN_MAX:
-				return 1;
-		}
-		return 0;
-	}
+	constexpr bool isXCentered() { return scaler(x) == 0; }
+	constexpr bool onYCenter() { return scaler(y) == 0; }
+	constexpr bool onRight() { return scaler(x) == 1; }
+	constexpr bool onLeft() { return scaler(x) == -1; }
+	constexpr bool onTop() { return scaler(y) == 1; }
+	constexpr bool onBottom() { return scaler(y) == -1; }
 
-	bool isValid()
-	{
-		return valIsValid(x) && valIsValid(y);
-	}
-
-	bool isXCentered() { return scaler(x) == 0; }
-	bool onYCenter() { return scaler(y) == 0; }
-	bool onRight() { return scaler(x) == 1; }
-	bool onLeft() { return scaler(x) == -1; }
-	bool onTop() { return scaler(y) == 1; }
-	bool onBottom() { return scaler(y) == -1; }
-
-	static int inverted(int inputType, int outputType)
+	static constexpr uint8_t inverted(Origin inputType, Origin outputType)
 	{
 		int inputInverted;
 		if(isCartesian(inputType))
@@ -125,197 +117,111 @@ public:
 		return lxor(inputInverted, outputInverted);
 	}
 
-	int xInverted(_2DOrigin outputType) const
+	constexpr uint8_t xInverted(_2DOrigin outputType) const
 	{
 		return inverted(x, outputType.x);
 	}
 
-	int yInverted(_2DOrigin outputType) const
+	constexpr uint8_t yInverted(_2DOrigin outputType) const
 	{
 		return inverted(y, outputType.y);
 	}
 
-	static int invert(uint32_t originValue)
+	static constexpr Origin invert(Origin originValue)
 	{
 		switch(originValue)
 		{
-			case _2DORIGIN_MIN: return _2DORIGIN_MAX_INVERSE_CARTESIAN;
-			case _2DORIGIN_MIN_INVERSE_CARTESIAN: return _2DORIGIN_MAX;
-			case _2DORIGIN_CENTER: return _2DORIGIN_CENTER_INVERSE_CARTESIAN;
-			case _2DORIGIN_CENTER_INVERSE_CARTESIAN: return _2DORIGIN_CENTER;
-			case _2DORIGIN_MAX: return _2DORIGIN_MIN_INVERSE_CARTESIAN;
-			case _2DORIGIN_MAX_INVERSE_CARTESIAN: return _2DORIGIN_MIN;
-			default: bug_unreachable("value == %d", originValue); return 0;
+			case Origin::min: return Origin::maxInverted;
+			case Origin::minInverted: return Origin::max;
+			case Origin::center: return Origin::centerInverted;
+			case Origin::centerInverted: return Origin::center;
+			case Origin::max: return Origin::minInverted;
+			case Origin::maxInverted: return Origin::min;
+			default: bug_unreachable("invalid Origin");
 		}
 	}
 
-	_2DOrigin invertX() const
-	{
-		_2DOrigin o(x, y);
-		o.x = invert(x);
-		return o;
-	}
+	constexpr _2DOrigin invertX() const { return {invert(x), y}; }
 
-	_2DOrigin invertY() const
-	{
-		_2DOrigin o(x, y);
-		o.y = invert(y);
-		return o;
-	}
+	constexpr _2DOrigin invertY() const { return {x, invert(y)}; }
 
-	_2DOrigin invertYIfCartesian() const
+	constexpr _2DOrigin invertYIfCartesian() const
 	{
-		_2DOrigin o(x, y);
 		if(isCartesian(y))
 		{
-			o.y = invert(y);
-			//logDMsg("inverted");
+			return invertY();
 		}
-		return o;
+		return *this;
 	}
 
-	static int flip(uint32_t originValue)
+	static constexpr Origin flip(Origin originValue)
 	{
 		switch(originValue)
 		{
-			case _2DORIGIN_MIN: return _2DORIGIN_MAX;
-			case _2DORIGIN_MIN_INVERSE_CARTESIAN: return _2DORIGIN_MAX_INVERSE_CARTESIAN;
-			case _2DORIGIN_CENTER: return _2DORIGIN_CENTER;
-			case _2DORIGIN_CENTER_INVERSE_CARTESIAN: return _2DORIGIN_CENTER_INVERSE_CARTESIAN;
-			case _2DORIGIN_MAX: return _2DORIGIN_MIN;
-			case _2DORIGIN_MAX_INVERSE_CARTESIAN: return _2DORIGIN_MIN_INVERSE_CARTESIAN;
-			default: bug_unreachable("value == %d", originValue); return 0;
+			case Origin::min: return Origin::max;
+			case Origin::minInverted: return Origin::maxInverted;
+			case Origin::center: return Origin::center;
+			case Origin::centerInverted: return Origin::centerInverted;
+			case Origin::max: return Origin::min;
+			case Origin::maxInverted: return Origin::minInverted;
+			default: bug_unreachable("invalid Origin");
 		}
 	}
 
-	_2DOrigin flipX() const
-	{
-		_2DOrigin o(x, y);
-		o.x = flip(x);
-		return o;
-	}
+	constexpr _2DOrigin flipX() const { return {flip(x), y}; }
 
-	_2DOrigin flipY() const
-	{
-		_2DOrigin o(x, y);
-		o.y = flip(y);
-		return o;
-	}
+	constexpr _2DOrigin flipY() const { return {x, flip(y)}; }
 
-	template<class T>
-	static T adjust(T pos, T halfSize, T fullSize, int inputScale, int outputScale)
+	static constexpr auto adjust(auto pos, auto halfSize, auto fullSize, int inputScale, int outputScale)
 	{
 		int scaleDiff = inputScale - outputScale;
-		if(std::abs(scaleDiff) == 1)
-			return pos - halfSize * IG::sign(scaleDiff);
-		else if(std::abs(scaleDiff) == 2)
-			return pos - fullSize * IG::sign(scaleDiff);
-		else
-			return pos;
+		switch(std::abs(scaleDiff))
+		{
+			case 1: return pos - halfSize * sign(scaleDiff);
+			case 2: return pos - fullSize * sign(scaleDiff);
+		}
+		return pos;
 	}
 
-	template<class T>
-	T adjustX(T pos, T halfSize, T fullSize, _2DOrigin outputType) const
+	constexpr auto adjustX(auto pos, auto halfSize, auto fullSize, _2DOrigin outputType) const
 	{
 		pos = xInverted(outputType) ? (fullSize) - pos : pos;
 		return adjust(pos, halfSize, fullSize, xScaler(), outputType.xScaler());
 	}
 
-	template<class T>
-	T adjustX(T pos, T fullSize, _2DOrigin outputType) const
+	constexpr auto adjustX(auto pos, auto fullSize, _2DOrigin outputType) const
 	{
-		return adjustX(pos, fullSize/(T)2, fullSize, outputType);
+		return adjustX(pos, fullSize / (decltype(fullSize))2, fullSize, outputType);
 	}
 
-	template<class T>
-	T adjustY(T pos, T halfSize, T fullSize, _2DOrigin outputType) const
+	constexpr auto adjustY(auto pos, auto halfSize, auto fullSize, _2DOrigin outputType) const
 	{
 		pos = yInverted(outputType) ? (fullSize) - pos : pos;
 		return adjust(pos, halfSize, fullSize, yScaler(), outputType.yScaler());
 	}
 
-	template<class T>
-	T adjustY(T pos, T fullSize, _2DOrigin outputType) const
+	constexpr auto adjustY(auto pos, auto fullSize, _2DOrigin outputType) const
 	{
-		return adjustY(pos, fullSize/(T)2, fullSize, outputType);
+		return adjustY(pos, fullSize / (decltype(fullSize))2, fullSize, outputType);
 	}
 
-	template<class T>
-	T adjustYInv(T pos, T halfSize, T fullSize, _2DOrigin outputType) const
-	{
-		_2DOrigin o = invertY();
-		return o.adjustY(pos, halfSize, fullSize, outputType.invertY());
-	}
+	constexpr bool operator==(_2DOrigin const &rhs) const = default;
 
-	template<class T>
-	T adjustYInv(T pos, T fullSize, _2DOrigin outputType) const
-	{
-		return adjustYInv(pos, fullSize/(T)2, fullSize, outputType);
-	}
-
-	template<class T>
-	T adjustXExtent(T pos, T halfSize, _2DOrigin outputType) const
-	{
-		assert(!xInverted(outputType));
-		return adjust(pos, halfSize, halfSize+halfSize, xScaler(), outputType.xScaler());
-	}
-
-	template<class T>
-	T adjustYExtent(T pos, T halfSize, _2DOrigin outputType) const
-	{
-		assert(!yInverted(outputType));
-		return adjust(pos, halfSize, halfSize+halfSize, yScaler(), outputType.yScaler());
-	}
-
-	bool operator ==(_2DOrigin const& rhs) const
-	{
-		return x == rhs.x && y == rhs.y;
-	}
-
-	bool operator !=(_2DOrigin const& rhs) const
-	{
-		return !(*this == rhs);
-	}
-
-	operator unsigned int() const
-	{
-		//logMsg("converting 0x%X 0x%X to 0x%X", x, y, x | (y << 3));
-		return x | (y << 3);
-	}
-
-	static int lxor(int a, int b)
+	static constexpr int lxor(int a, int b)
 	{
 		return !a != !b;
 	}
 };
 
 // cartesian origin shortcuts sorted clockwise
-static constexpr _2DOrigin CenterTop2DOrigin(_2DORIGIN_CENTER, _2DORIGIN_MAX);
-#define CT2DO CenterTop2DOrigin
-static constexpr _2DOrigin RightTop2DOrigin(_2DORIGIN_MAX, _2DORIGIN_MAX);
-#define RT2DO RightTop2DOrigin
-static constexpr _2DOrigin RightCenter2DOrigin(_2DORIGIN_MAX, _2DORIGIN_CENTER);
-#define RC2DO RightCenter2DOrigin
-static constexpr _2DOrigin RightBottom2DOrigin(_2DORIGIN_MAX, _2DORIGIN_MIN);
-#define RB2DO RightBottom2DOrigin
-static constexpr _2DOrigin CenterBottom2DOrigin(_2DORIGIN_CENTER, _2DORIGIN_MIN);
-#define CB2DO CenterBottom2DOrigin
-static constexpr _2DOrigin LeftBottom2DOrigin(_2DORIGIN_MIN, _2DORIGIN_MIN);
-#define LB2DO LeftBottom2DOrigin
-static constexpr _2DOrigin LeftCenter2DOrigin(_2DORIGIN_MIN, _2DORIGIN_CENTER);
-#define LC2DO LeftCenter2DOrigin
-static constexpr _2DOrigin LeftTop2DOrigin(_2DORIGIN_MIN, _2DORIGIN_MAX);
-#define LT2DO LeftTop2DOrigin
+constexpr _2DOrigin CT2DO(Origin::center, Origin::max);
+constexpr _2DOrigin RT2DO(Origin::max, Origin::max);
+constexpr _2DOrigin RC2DO(Origin::max, Origin::center);
+constexpr _2DOrigin RB2DO(Origin::max, Origin::min);
+constexpr _2DOrigin CB2DO(Origin::center, Origin::min);
+constexpr _2DOrigin LB2DO(Origin::min, Origin::min);
+constexpr _2DOrigin LC2DO(Origin::min, Origin::center);
+constexpr _2DOrigin LT2DO(Origin::min, Origin::max);
+constexpr _2DOrigin C2DO(Origin::center, Origin::center);
 
-static constexpr _2DOrigin Center2DOrigin(_2DORIGIN_CENTER, _2DORIGIN_CENTER);
-#define C2DO Center2DOrigin
-
-static constexpr _2DOrigin LeftBottomInvCart2DOrigin(_2DORIGIN_MIN, _2DORIGIN_MAX_INVERSE_CARTESIAN);
-#define LBIC2DO LeftBottomInvCart2DOrigin
-static constexpr _2DOrigin LeftTopInvCart2DOrigin(_2DORIGIN_MIN, _2DORIGIN_MIN_INVERSE_CARTESIAN);
-#define LTIC2DO LeftTopInvCart2DOrigin
-static constexpr _2DOrigin CenterInvCart2DOrigin(_2DORIGIN_CENTER, _2DORIGIN_CENTER_INVERSE_CARTESIAN);
-#define CIC2DO CenterInvCart2DOrigin
-
-static constexpr _2DOrigin Null2DOrigin(_2DORIGIN_NONE, _2DORIGIN_NONE);
-#define NULL2DO Null2DOrigin
+}

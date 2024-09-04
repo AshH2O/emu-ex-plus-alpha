@@ -1,11 +1,12 @@
 #pragma once
 
+#include <concepts>
 #include <utility>
 
 namespace IG
 {
 
-template <class F>
+template <std::invocable F>
 class ScopeGuard
 {
 	F func;

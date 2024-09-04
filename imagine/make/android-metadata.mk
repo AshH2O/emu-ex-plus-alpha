@@ -15,7 +15,6 @@ ifndef android_metadata_id
   $(error Please specify metadata_id or android_metadata_id)
  endif
 endif
-android_gen_metadata_args += --id=$(android_metadata_id)
 
 ifndef android_metadata_vendor
  android_metadata_vendor := $(metadata_vendor)
@@ -76,7 +75,7 @@ ifdef android_metadata_bluetooth
 endif
 
 ifndef android_metadata_target_sdk
- android_metadata_target_sdk := 29
+ android_metadata_target_sdk := 34
 endif
 
 ifdef android_metadata_vibrate
@@ -95,4 +94,12 @@ endif
 
 ifdef android_metadata_legacyStorage
  android_gen_metadata_args += --legacy-storage
+endif
+
+ifdef android_metadata_appExtStorage
+ android_gen_metadata_args += --app-ext-storage
+endif
+
+ifeq ($(findstring O_RELEASE=1,$(android_makefileOpts)),)
+ android_gen_metadata_args += --debug
 endif

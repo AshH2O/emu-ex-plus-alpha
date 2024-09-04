@@ -168,10 +168,10 @@ h6809_regs_t h6809_regs;
         EXPORT_REGISTERS();                                      \
         tmp = machine_jam("   6809: " INSTR " at $%04X   ", PC); \
         switch (tmp) {                                           \
-            case JAM_RESET:                                      \
+            case JAM_RESET_CPU:                                  \
                 DO_INTERRUPT(IK_RESET);                          \
                 break;                                           \
-            case JAM_HARD_RESET:                                 \
+            case JAM_POWER_CYCLE:                                \
                 mem_powerup();                                   \
                 DO_INTERRUPT(IK_RESET);                          \
                 break;                                           \
@@ -236,9 +236,9 @@ static unsigned int cc_changed = 0;
 
 static uint16_t *index_regs[4] = { &X, &Y, &U, &S };
 
-extern void nmi(void);
-extern void irq(void);
-extern void firq(void);
+void nmi(void);
+void irq(void);
+void firq(void);
 
 static void request_nmi(unsigned int source)
 {
@@ -5964,7 +5964,7 @@ void cpu6809_reset (void)
 
 static char snap_module_name[] = "CPU6809";
 #define SNAP_MAJOR 1
-#define SNAP_MINOR 0
+#define SNAP_MINOR 1
 
 int cpu6809_snapshot_write_module(snapshot_t *s)
 {
@@ -5981,7 +5981,7 @@ int cpu6809_snapshot_write_module(snapshot_t *s)
     EXPORT_REGISTERS();
 
     if (0
-        || SMW_DW(m, maincpu_clk) < 0
+        || SMW_CLOCK(m, maincpu_clk) < 0
         || SMW_W(m, GLOBAL_REGS.reg_x) < 0
         || SMW_W(m, GLOBAL_REGS.reg_y) < 0
         || SMW_W(m, GLOBAL_REGS.reg_u) < 0
@@ -6038,7 +6038,7 @@ int cpu6809_snapshot_read_module(snapshot_t *s)
 {
     uint8_t major, minor;
     snapshot_module_t *m;
-    uint32_t my_maincpu_clk;
+    CLOCK my_maincpu_clk;
     uint16_t v;
     uint8_t e, f, md;
 
@@ -6057,7 +6057,7 @@ int cpu6809_snapshot_read_module(snapshot_t *s)
     }
 
     if (0
-        || SMR_DW(m, &my_maincpu_clk) < 0
+        || SMR_CLOCK(m, &my_maincpu_clk) < 0
         || SMR_W(m, &GLOBAL_REGS.reg_x) < 0
         || SMR_W(m, &GLOBAL_REGS.reg_y) < 0
         || SMR_W(m, &GLOBAL_REGS.reg_u) < 0

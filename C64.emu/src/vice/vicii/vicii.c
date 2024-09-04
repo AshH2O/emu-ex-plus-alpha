@@ -57,7 +57,6 @@
 #include "c64cartmem.h"
 #include "c64dtvblitter.h"
 #include "c64dtvdma.h"
-#include "clkguard.h"
 #include "dma.h"
 #include "lib.h"
 #include "log.h"
@@ -142,15 +141,6 @@ vicii_t vicii;
 
 static void vicii_set_geometry(void);
 
-static void clk_overflow_callback(CLOCK sub, void *unused_data)
-{
-    vicii.raster_irq_clk -= sub;
-    vicii.last_emulate_line_clk -= sub;
-    vicii.fetch_clk -= sub;
-    vicii.draw_clk -= sub;
-    vicii.sprite_fetch_clk -= sub;
-}
-
 void vicii_change_timing(machine_timing_t *machine_timing, int border_mode)
 {
     vicii_timing_set(machine_timing, border_mode);
@@ -159,6 +149,8 @@ void vicii_change_timing(machine_timing_t *machine_timing, int border_mode)
         vicii_set_geometry();
         raster_mode_change();
     }
+    /* this should go to vicii_chip_model_init() incase we ever go that far */
+    vicii_color_update_palette(vicii.raster.canvas);
 }
 
 static CLOCK old_maincpu_clk = 0;
@@ -189,13 +181,13 @@ inline void vicii_delay_clk(void)
 #endif
 }
 
-inline void vicii_handle_pending_alarms(int num_write_cycles)
+inline void vicii_handle_pending_alarms(CLOCK num_write_cycles)
 {
     if (vicii.viciie != 0) {
         vicii_delay_clk();
     }
 
-    if (num_write_cycles != 0) {
+    if (num_write_cycles != 0 && num_write_cycles <= maincpu_clk) {
         int f;
 
         /* Cycles can be stolen only during the read accesses, so we serve
@@ -258,18 +250,41 @@ inline void vicii_handle_pending_alarms(int num_write_cycles)
     }
 }
 
-void vicii_handle_pending_alarms_external(int num_write_cycles)
+/*
+ * This function is called externally, often with 1 + maincpu_rmw_flag.
+ * Since we have eliminated the flag, we must use another way to detect
+ * multiple consecutive write cycles.
+ */
+void vicii_handle_pending_alarms_external(CLOCK num_write_cycles)
 {
     if (vicii.initialized) {
-        vicii_handle_pending_alarms(num_write_cycles);
+        if (num_write_cycles) {
+            vicii_handle_pending_alarms_external_write();
+        } else {
+            vicii_handle_pending_alarms(0);
+        }
     }
 }
 
+/*
+ * As mentioned elsewhere, BA won't interrupt the CPU's write cycles, but it can
+ * stop it at read cycles.
+ * This function makes sure the fetch_alarm_handler and the draw_alarm are handled
+ * up to the current set of consecutive write cycles.
+ * It is called in cases where it is known a write cycle happens (but not in
+ * all of those cases).
+ * If there are several write cycles in a row, then no further alarms are handled
+ * for the subsequent ones.
+ * This usually happens for read-modify-write instructions.
+ * Note that this can be called multiple times for the same clock value.
+ */
 void vicii_handle_pending_alarms_external_write(void)
 {
-    /* WARNING: assumes `maincpu_rmw_flag' is 0 or 1.  */
     if (vicii.initialized) {
-        vicii_handle_pending_alarms(maincpu_rmw_flag + 1);
+        if (maincpu_clk > vicii.last_write_clk + 1) {
+            vicii_handle_pending_alarms(1);
+        }
+        vicii.last_write_clk = maincpu_clk;
     }
 }
 
@@ -302,9 +317,9 @@ static int vicii_get_crt_type(void)
     switch (video) {
         case MACHINE_SYNC_PAL:
         case MACHINE_SYNC_PALN:
-            return 1; /* PAL */
+            return VIDEO_CRT_TYPE_PAL;
         default:
-            return 0; /* NTSC */
+            return VIDEO_CRT_TYPE_NTSC;
     }
 }
 
@@ -348,7 +363,9 @@ static int init_raster(void)
         return -1;
     }
     raster_modes_set_idle_mode(raster->modes, VICII_IDLE_MODE);
-    resources_touch("VICIIVideoCache");
+    if (machine_class != VICE_MACHINE_VSID) {
+        resources_touch("VICIIVideoCache");
+    }
 
     vicii_set_geometry();
 
@@ -356,8 +373,6 @@ static int init_raster(void)
         log_error(vicii.log, "Cannot load palette.");
         return -1;
     }
-
-    raster_set_title(raster, machine_name);
 
     if (raster_realize(raster) < 0) {
         return -1;
@@ -427,8 +442,6 @@ raster_t *vicii_init(unsigned int flag)
 
     vicii.initialized = 1;
 
-    clk_guard_add_callback(maincpu_clk_guard, clk_overflow_callback, NULL);
-
     return &vicii.raster;
 }
 
@@ -479,6 +492,7 @@ void vicii_reset(void)
     vicii.raster.display_ystop = vicii.row_25_stop_line;
 
     vicii.store_clk = CLOCK_MAX;
+    vicii.last_write_clk = 0;
 
     vicii.counta = 0;
     vicii.counta_mod = 0;
@@ -791,7 +805,7 @@ void vicii_update_memory_ptrs(unsigned int cycle)
     bitmap_bank = tmp & 0xe000;
     bitmap_low_base = vicii.ram_base_phi1 + bitmap_bank;
 
-    VICII_DEBUG_REGISTER(("Bitmap memory at $%04X", tmp & 0xe000));
+    VICII_DEBUG_REGISTER(("Bitmap memory at $%04X", tmp & 0xE000u));
 
     if (export.ultimax_phi2 != 0) {
         /* phi2 fetch from expansion port in ultimax mode */
@@ -1244,12 +1258,12 @@ void vicii_raster_draw_alarm_handler(CLOCK offset, void *data)
     }
 #endif
 
+    vsync_do_end_of_line();
+
     if (vicii.raster.current_line == 0) {
         /* no vsync here for NTSC  */
         if ((unsigned int)vicii.last_displayed_line < vicii.screen_height) {
-            raster_skip_frame(&vicii.raster,
-                              vsync_do_vsync(vicii.raster.canvas,
-                                             vicii.raster.skip_frame));
+            vsync_do_vsync(vicii.raster.canvas);
         }
         vicii.memptr = 0;
         vicii.mem_counter = 0;
@@ -1290,9 +1304,7 @@ void vicii_raster_draw_alarm_handler(CLOCK offset, void *data)
     /* vsync for NTSC */
     if ((unsigned int)vicii.last_displayed_line >= vicii.screen_height
         && vicii.raster.current_line == vicii.last_displayed_line - vicii.screen_height + 1) {
-        raster_skip_frame(&vicii.raster,
-                          vsync_do_vsync(vicii.raster.canvas,
-                                         vicii.raster.skip_frame));
+        vsync_do_vsync(vicii.raster.canvas);
     }
 
     if (vicii.viciidtv) {
@@ -1447,7 +1459,7 @@ int vicii_dump(void)
         mon_out("              MuCol1: %2d MuCol2: %2d\n", vicii.regs[0x22], vicii.regs[0x23]);
     }
     mon_out("Scroll X/Y:   %d/%d\n", vicii.regs[0x16] & 0x07, vicii.regs[0x11] & 0x07);
-    mon_out("Screen Size:  %d x %d\n", 39 + ((vicii.regs[0x16] >> 3) & 1), 24 + ((vicii.regs[0x11] >> 3) & 1));
+    mon_out("Screen Size:  %d x %d\n", 38 + ((vicii.regs[0x16] >> 2) & 2), 24 + ((vicii.regs[0x11] >> 3) & 1));
 
     mon_out("\nVIC Memory Bank:   $%04x - $%04x\n",
            (unsigned int)v_bank, (unsigned int)(v_bank + 0x3fff));

@@ -16,32 +16,36 @@
 	along with EmuFramework.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/gfx/GfxText.hh>
-#include <imagine/gfx/GfxSprite.hh>
+#include <imagine/gfx/Quads.hh>
 #include <imagine/gui/View.hh>
-#include <imagine/input/config.hh>
 #include <imagine/input/TextField.hh>
-#include <imagine/util/typeTraits.hh>
+#include <imagine/util/used.hh>
+#include <imagine/util/string/StaticString.hh>
 #include <array>
+
+namespace IG
+{
 
 class TextEntry
 {
 public:
-	TextEntry(const char *initText, Gfx::Renderer &r, Gfx::GlyphTextureSet *face, const Gfx::ProjectionPlane &projP);
+	Gfx::IQuads bgQuads;
+
+	TextEntry(const char *initText, ViewAttachParams, Gfx::GlyphTextureSet *face);
 	void setAcceptingInput(bool on);
 	bool isAcceptingInput() const;
-	bool inputEvent(View &parentView, Input::Event e);
-	void prepareDraw(Gfx::Renderer &r);
-	void draw(Gfx::RendererCommands &cmds);
-	void place(Gfx::Renderer &r);
-	void place(Gfx::Renderer &r, IG::WindowRect rect, const Gfx::ProjectionPlane &projP);
+	bool inputEvent(View &parentView, const Input::Event &);
+	void prepareDraw();
+	void draw(Gfx::RendererCommands &__restrict__) const;
+	void place();
+	void place(WRect rect);
 	const char *textStr() const;
-	IG::WindowRect bgRect() const;
+	WRect bgRect() const;
 
 protected:
-	Gfx::Text t{};
-	Gfx::ProjectionPlane projP{};
-	IG::WindowRect b{};
-	std::array<char, 128> str{};
+	Gfx::Text t;
+	WRect b;
+	StaticString<128> str;
 	bool acceptingInput{};
 	bool multiLine{};
 };
@@ -50,24 +54,31 @@ class CollectTextInputView : public View
 {
 public:
 	// returning non-zero keeps text entry active on Android
-	using OnTextDelegate = DelegateFunc<uint32_t (CollectTextInputView &view, const char *str)>;
+	using OnTextDelegate = DelegateFunc<bool (CollectTextInputView &view, const char *str)>;
 
-	CollectTextInputView(ViewAttachParams attach, const char *msgText, const char *initialContent,
+	CollectTextInputView(ViewAttachParams attach, CStringView msgText, CStringView initialContent,
 		Gfx::TextureSpan closeRes, OnTextDelegate onText, Gfx::GlyphTextureSet *face = {});
-	CollectTextInputView(ViewAttachParams attach, const char *msgText,
+	CollectTextInputView(ViewAttachParams attach, CStringView msgText,
 		Gfx::TextureSpan closeRes, OnTextDelegate onText, Gfx::GlyphTextureSet *face = {}):
 		CollectTextInputView(attach, msgText, "", closeRes, onText, face) {}
 	void place() override;
-	bool inputEvent(Input::Event e) override;
+	bool inputEvent(const Input::Event&, ViewInputEventParams p = {}) override;
 	void prepareDraw() override;
-	void draw(Gfx::RendererCommands &cmds) override;
+	void draw(Gfx::RendererCommands &__restrict__, ViewDrawParams p = {}) const override;
 
 protected:
-	IG::WindowRect cancelBtn{};
+	struct CancelButton
+	{
+		WRect bounds{};
+		Gfx::ITexQuads quad;
+		Gfx::TextureSpan texture{};
+	};
 	// TODO: cancel button doesn't work yet due to popup window not forwarding touch events to main window
-	IG_enableMemberIf(!Config::envIsAndroid, Gfx::Sprite, cancelSpr){};
-	Gfx::Text message{};
+	ConditionalMember<!Config::envIsAndroid, CancelButton> cancelButton;
+	Gfx::Text message;
 	[[no_unique_address]] Input::TextField textField;
-	IG_enableMemberIf(!Config::Input::SYSTEM_COLLECTS_TEXT, TextEntry, textEntry);
-	OnTextDelegate onTextD{};
+	ConditionalMember<!Config::Input::SYSTEM_COLLECTS_TEXT, TextEntry> textEntry;
+	OnTextDelegate onTextD;
 };
+
+}

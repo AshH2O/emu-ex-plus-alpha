@@ -10,7 +10,6 @@ CPPFLAGS += \
 -DHAVE_STRINGS_H \
 -DVAR_CYCLES \
 -DRIGHTSHIFT_IS_SAR \
--DZLIB \
 -DUSE_OPENGL \
 -DCPU_SHUTDOWN \
 -DSPC700_SHUTDOWN \
@@ -65,7 +64,6 @@ main/Main.cc \
 main/input.cc \
 main/options.cc \
 main/S9XApi.cc \
-main/EmuControls.cc \
 main/EmuMenuViews.cc \
 main/Cheats.cc \
 $(addprefix $(snes9xPath)/,$(snes9xSrc))

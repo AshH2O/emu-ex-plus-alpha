@@ -13,124 +13,139 @@
 	You should have received a copy of the GNU General Public License
 	along with EmuFramework.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "EmuSystemTask"
 #include <emuframework/EmuApp.hh>
 #include <emuframework/EmuVideo.hh>
 #include <emuframework/EmuSystemTask.hh>
 #include <imagine/thread/Thread.hh>
 #include <imagine/logger/logger.h>
 
-EmuSystemTask::EmuSystemTask(EmuApp &app):
-	appPtr{&app}
-{}
-
-void EmuSystemTask::start()
+namespace EmuEx
 {
-	if(started)
+
+constexpr SystemLogger log{"EmuSystemTask"};
+
+EmuSystemTask::EmuSystemTask(EmuApp &app):
+	app{app} {}
+
+void EmuSystemTask::start(Window& win)
+{
+	if(taskThread.joinable())
 		return;
-	IG::makeDetachedThreadSync(
+	win.setDrawEventPriority(Window::drawEventPriorityLocked); // block UI from posting draws
+	winPtr = &win;
+	taskThread = makeThreadSync(
 		[this](auto &sem)
 		{
-			auto eventLoop = Base::EventLoop::makeForThread();
-			commandPort.attach(eventLoop,
-				[this](auto msgs)
+			threadId_ = thisThreadId();
+			auto eventLoop = EventLoop::makeForThread();
+			winPtr->setFrameEventsOnThisThread();
+			app.addOnFrameDelayed();
+			bool started = true;
+			commandPort.attach(eventLoop, [this, &started](auto msgs)
+			{
+				for(auto msg : msgs)
 				{
-					for(auto msg : msgs)
+					bool threadIsRunning = msg.command.visit(overloaded
 					{
-						switch(msg.command)
+						[&](SetWindowCommand &cmd)
 						{
-							bcase Command::RUN_FRAME:
-							{
-								auto frames = msg.args.run.frames;
-								assumeExpr(frames);
-								//logMsg("running %d frame(s)", frames);
-								app().runFrames(this, msg.args.run.video, msg.args.run.audio,
-									frames, msg.args.run.skipForward);
-							}
-							bcase Command::PAUSE:
-							{
-								//logMsg("got pause command");
-								assumeExpr(msg.semPtr);
-								msg.semPtr->notify();
-							}
-							bcase Command::EXIT:
-							{
-								//logMsg("got exit command");
-								started = false;
-								Base::EventLoop::forThread().stop();
-								assumeExpr(msg.semPtr);
-								msg.semPtr->notify();
-								return false;
-							}
-							bdefault:
-							{
-								logWarn("unknown CommandMessage value:%d", (int)msg.command);
-							}
-						}
-					}
-					return true;
-				});
-			started = true;
-			sem.notify();
-			logMsg("starting thread event loop");
+							//log.debug("got set window command");
+							cmd.winPtr->moveOnFrame(*winPtr, app.system().onFrameUpdate, app.frameTimeSource);
+							winPtr = cmd.winPtr;
+							assumeExpr(msg.semPtr);
+							msg.semPtr->release();
+							suspendSem.acquire();
+							return true;
+						},
+						[&](SuspendCommand &)
+						{
+							//log.debug("got suspend command");
+							isSuspended = true;
+							assumeExpr(msg.semPtr);
+							msg.semPtr->release();
+							suspendSem.acquire();
+							return true;
+						},
+						[&](ExitCommand &)
+						{
+							started = false;
+							app.removeOnFrame();
+							winPtr->removeFrameEvents();
+							threadId_ = 0;
+							EventLoop::forThread().stop();
+							return false;
+						},
+					});
+					if(!threadIsRunning)
+						return false;
+				}
+				return true;
+			});
+			sem.release();
+			log.info("starting thread event loop");
 			eventLoop.run(started);
-			logMsg("exiting thread");
+			log.info("exiting thread");
 			commandPort.detach();
 		});
 }
 
-void EmuSystemTask::pause()
+EmuSystemTask::SuspendContext EmuSystemTask::setWindow(Window& win)
 {
-	if(!started)
+	assert(!isSuspended);
+	if(!taskThread.joinable())
+		return {};
+	auto oldWinPtr = winPtr;
+	commandPort.send({.command = SetWindowCommand{&win}}, MessageReplyMode::wait);
+	oldWinPtr->setFrameEventsOnThisThread();
+	oldWinPtr->setDrawEventPriority(); // allow UI to post draws again
+	app.flushMainThreadMessages();
+	return {this};
+}
+
+EmuSystemTask::SuspendContext EmuSystemTask::suspend()
+{
+	if(!taskThread.joinable() || isSuspended)
+		return {};
+	commandPort.send({.command = SuspendCommand{}}, MessageReplyMode::wait);
+	app.flushMainThreadMessages();
+	return {this};
+}
+
+void EmuSystemTask::resume()
+{
+	if(!taskThread.joinable() || !isSuspended)
 		return;
-	commandPort.send({Command::PAUSE}, true);
-	app().flushMainThreadMessages();
+	suspendSem.release();
 }
 
 void EmuSystemTask::stop()
 {
-	if(!started)
+	if(!taskThread.joinable())
 		return;
-	commandPort.send({Command::EXIT}, true);
-	app().flushMainThreadMessages();
-}
-
-void EmuSystemTask::runFrame(EmuVideo *video, EmuAudio *audio, uint8_t frames, bool skipForward)
-{
-	assumeExpr(frames);
-	if(!started) [[unlikely]]
-		return;
-	commandPort.send({Command::RUN_FRAME, video, audio, frames, skipForward});
+	assert(threadId_ != thisThreadId());
+	commandPort.send({.command = ExitCommand{}});
+	taskThread.join();
+	winPtr->setFrameEventsOnThisThread();
+	winPtr->setDrawEventPriority(); // allow UI to post draws again
+	app.flushMainThreadMessages();
 }
 
 void EmuSystemTask::sendVideoFormatChangedReply(EmuVideo &video)
 {
-	app().runOnMainThread(
-		[&video](Base::ApplicationContext)
-		{
-			video.dispatchFormatChanged();
-		});
+	video.dispatchFormatChanged();
 }
 
 void EmuSystemTask::sendFrameFinishedReply(EmuVideo &video)
 {
-	app().runOnMainThread(
-		[&video](Base::ApplicationContext)
-		{
-			video.dispatchFrameFinished();
-		});
+	video.dispatchFrameFinished();
 }
 
-void EmuSystemTask::sendScreenshotReply(int num, bool success)
+void EmuSystemTask::sendScreenshotReply(bool success)
 {
-	app().runOnMainThread(
-		[=](Base::ApplicationContext ctx)
-		{
-			EmuApp::get(ctx).printScreenshotResult(num, success);
-		});
+	app.runOnMainThread([&app = app, success](ApplicationContext)
+	{
+		app.printScreenshotResult(success);
+	});
 }
 
-EmuApp &EmuSystemTask::app() const
-{
-	return *appPtr;
 }

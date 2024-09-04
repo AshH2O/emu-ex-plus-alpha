@@ -16,218 +16,122 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/config/defs.hh>
-#include <imagine/fs/FSDefs.hh>
+#include <imagine/fs/PosixFS.hh>
+#include <imagine/util/string/CStringView.hh>
+#include <imagine/util/string/uri.hh>
+#include <concepts>
 #include <cstddef>
-#include <system_error>
-#include <compare>
 #include <memory>
+#include <iterator>
+#include <string_view>
 
 // Tries to mirror API of C++ filesystem TS library in most cases
 
-namespace FS
+namespace IG::FS
 {
 
-class directory_iterator : public std::iterator<std::input_iterator_tag, directory_entry>
+class directory_iterator
 {
 public:
-	constexpr directory_iterator() {}
-	directory_iterator(PathString path): directory_iterator{path.data()} {}
-	directory_iterator(const char *path);
-	directory_iterator(PathString path, std::error_code &result): directory_iterator{path.data(), result} {}
-	directory_iterator(const char *path, std::error_code &result);
+	using iterator_category = std::input_iterator_tag;
+	using value_type = directory_entry;
+	using difference_type = ptrdiff_t;
+	using pointer = value_type*;
+	using reference = value_type&;
+
+	constexpr directory_iterator() = default;
+	directory_iterator(CStringView path);
 	directory_iterator(const directory_iterator&) = default;
 	directory_iterator(directory_iterator&&) = default;
-	~directory_iterator();
 	directory_entry& operator*();
 	directory_entry* operator->();
 	void operator++();
 	bool operator==(directory_iterator const &rhs) const;
 
 protected:
-	std::shared_ptr<DirectoryEntryImpl> impl{};
+	std::shared_ptr<DirectoryStream> impl;
 };
 
-static const directory_iterator &begin(const directory_iterator &iter)
+inline const directory_iterator &begin(const directory_iterator& iter)
 {
 	return iter;
 }
 
-static directory_iterator end(const directory_iterator &)
+inline directory_iterator end(const directory_iterator&)
 {
 	return {};
 }
 
 PathString current_path();
-PathString current_path(std::error_code &result);
+void current_path(CStringView path);
+bool exists(CStringView path);
+std::uintmax_t file_size(CStringView path);
+file_status status(CStringView path);
+file_status symlink_status(CStringView path);
+void chown(CStringView path, uid_t owner, gid_t group);
+bool access(CStringView path, acc type);
+bool remove(CStringView path);
+bool create_directory(CStringView path);
+bool rename(CStringView oldPath, CStringView newPath);
 
-void current_path(const char *path);
-void current_path(const char *path, std::error_code &result);
+PathString makeAppPathFromLaunchCommand(CStringView launchPath);
+FileString basename(CStringView path);
+PathString dirname(CStringView path);
+FileString displayName(CStringView path);
 
-static void current_path(PathString path)
+// URI path functions
+static constexpr std::string_view uriPathSegmentTreeName{"/tree/"};
+static constexpr std::string_view uriPathSegmentDocumentName{"/document/"};
+PathString dirnameUri(CStringView pathOrUri);
+std::pair<std::string_view, size_t> uriPathSegment(std::string_view uri, std::string_view segmentName);
+
+template <class T>
+concept ConvertibleToPathString = std::convertible_to<T, PathStringImpl> || std::convertible_to<T, std::string_view>;
+
+static constexpr PathString pathString(ConvertibleToPathString auto &&base, auto &&...components)
 {
-	current_path(path.data());
+	PathString path{IG_forward(base)};
+	([&]()
+	{
+		path += '/';
+		path += IG_forward(components);
+	}(), ...);
+	return path;
 }
 
-static void current_path(PathString path, std::error_code &result)
+static constexpr PathString uriString(ConvertibleToPathString auto &&base, auto &&...components)
 {
-	current_path(path.data(), result);
+	if(!isUri(base))
+		return pathString(IG_forward(base), IG_forward(components)...);
+	// assumes base is already encoded and encodes the components
+	PathString uri{IG_forward(base)};
+	([&]()
+	{
+		uri += "%2F";
+		uri += encodeUri<PathString>(IG_forward(components));
+	}(), ...);
+	return uri;
 }
 
-bool exists(const char *path);
-bool exists(const char *path, std::error_code &result);
-
-static bool exists(PathString path)
+static PathString createDirectorySegments(ConvertibleToPathString auto &&base, auto &&...components)
 {
-	return exists(path.data());
+	PathString path{IG_forward(base)};
+	([&]()
+	{
+		path += '/';
+		path += IG_forward(components);
+		create_directory(path);
+	}(), ...);
+	return path;
 }
 
-static bool exists(PathString path, std::error_code &result)
-{
-	return exists(path.data(), result);
 }
 
-std::uintmax_t file_size(const char *path);
-std::uintmax_t file_size(const char *path, std::error_code &result);
-
-static std::uintmax_t file_size(PathString path)
+namespace IG
 {
-	return file_size(path.data());
+	// convenience aliases for path strings
+	using FS::PathString;
+	using FS::FileString;
+	using FS::pathString;
+	using FS::uriString;
 }
-
-static std::uintmax_t file_size(PathString path, std::error_code &result)
-{
-	return file_size(path.data(), result);
-}
-
-file_status status(const char *path);
-file_status status(const char *path, std::error_code &result);
-
-static file_status status(PathString path)
-{
-	return status(path.data());
-}
-
-static file_status status(PathString path, std::error_code &result)
-{
-	return status(path.data(), result);
-}
-
-file_status symlink_status(const char *path);
-file_status symlink_status(const char *path, std::error_code &result);
-
-static file_status symlink_status(PathString path)
-{
-	return symlink_status(path.data());
-}
-
-static file_status symlink_status(PathString path, std::error_code &result)
-{
-	return symlink_status(path.data(), result);
-}
-
-void chown(const char *path, uid_t owner, gid_t group);
-void chown(const char *path, uid_t owner, gid_t group, std::error_code &result);
-
-static void chown(PathString path, uid_t owner, gid_t group)
-{
-	chown(path.data(), owner, group);
-}
-
-static void chown(PathString path, uid_t owner, gid_t group, std::error_code &result)
-{
-	chown(path.data(), owner, group, result);
-}
-
-bool access(const char *path, acc type);
-bool access(const char *path, acc type, std::error_code &result);
-
-static bool access(PathString path, acc type)
-{
-	return access(path.data(), type);
-}
-
-static bool access(PathString path, acc type, std::error_code &result)
-{
-	return access(path.data(), type, result);
-}
-
-bool remove(const char *path);
-bool remove(const char *path, std::error_code &result);
-
-static bool remove(PathString path)
-{
-	return remove(path.data());
-}
-
-static bool remove(PathString path, std::error_code &result)
-{
-	return remove(path.data(), result);
-}
-
-bool create_directory(const char *path);
-bool create_directory(const char *path, std::error_code &result);
-
-static bool create_directory(PathString path)
-{
-	return create_directory(path.data());
-}
-
-static bool create_directory(PathString path, std::error_code &result)
-{
-	return create_directory(path.data(), result);
-}
-
-void rename(const char *oldPath, const char *newPath);
-void rename(const char *oldPath, const char *newPath, std::error_code &result);
-
-static void rename(PathString oldPath, PathString newPath)
-{
-	rename(oldPath.data(), newPath.data());
-}
-
-static void rename(PathString oldPath, PathString newPath, std::error_code &result)
-{
-	rename(oldPath.data(), newPath.data(), result);
-}
-
-[[gnu::format(printf, 1, 2)]]
-FileString makeFileStringPrintf(const char *format, ...);
-[[gnu::format(printf, 1, 2)]]
-PathString makePathStringPrintf(const char *format, ...);
-FileString makeFileString(const char *str);
-FileString makeFileStringWithoutDotExtension(const char *str);
-
-template <size_t S>
-FileString makeFileStringWithoutDotExtension(std::array<char, S> &str)
-{
-	return makeFileStringWithoutDotExtension(str.data());
-}
-
-PathString makePathString(const char *str);
-PathString makePathString(const char *dir, const char *base);
-PathString makeAppPathFromLaunchCommand(const char *launchPath);
-
-FileString basename(const char *path);
-
-template <size_t S>
-static FileString basename(std::array<char, S> &path)
-{
-	return basename(path.data());
-}
-
-PathString dirname(const char *path);
-
-template <size_t S>
-static PathString dirname(std::array<char, S> &path)
-{
-	return dirname(path.data());
-}
-
-using FileStringCompareFunc = bool (*)(const FS::FileString &s1, const FS::FileString &s2);
-
-bool fileStringNoCaseLexCompare(FS::FileString s1, FS::FileString s2);
-
-int directoryItems(const char *path);
-static int directoryItems(PathString path) { return directoryItems(path.data()); }
-
-};

@@ -14,141 +14,112 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #define LOGTAG "FS"
-#if !defined __APPLE__ && !defined __ANDROID__ && !defined __PPU__ && defined _GNU_SOURCE
-#define CONFIG_USE_GNU_BASENAME
-#endif
-#include <stdlib.h>
 #include <imagine/fs/FS.hh>
+#include <imagine/fs/FSUtils.hh>
 #include <imagine/logger/logger.h>
-#include <imagine/util/string.h>
 #include <imagine/util/utility.h>
-#ifdef CONFIG_USE_GNU_BASENAME
-#include <imagine/util/string/glibc.h>
-#endif
+#include <imagine/util/string.h>
 #include "libgen.hh"
+#include <stdlib.h>
 
-namespace FS
+namespace IG::FS
 {
 
-FileString makeFileStringPrintf(const char *format, ...)
+PathString makeAppPathFromLaunchCommand(CStringView launchCmd)
 {
-	FileString path{};
-	va_list args;
-	va_start(args, format);
-	vsnprintf(path.data(), path.size(), format, args);
-	va_end(args);
-	return path;
-}
-
-PathString makePathStringPrintf(const char *format, ...)
-{
-	PathString path{};
-	va_list args;
-	va_start(args, format);
-	vsnprintf(path.data(), path.size(), format, args);
-	va_end(args);
-	return path;
-}
-
-FileString makeFileString(const char *str)
-{
-	FileString path{};
-	string_copy(path, str);
-	return path;
-}
-
-FileString makeFileStringWithoutDotExtension(const char *str)
-{
-	auto fileStr = makeFileString(str);
-	if(auto dotPos = string_dotExtension(str);
-		dotPos)
-	{
-		fileStr[(uintptr_t)(dotPos - str)] = 0;
-	}
-	return fileStr;
-}
-
-PathString makePathString(const char *str)
-{
-	PathString path{};
-	string_copy(path, str);
-	return path;
-}
-
-PathString makePathString(const char *dir, const char *file)
-{
-	return makePathStringPrintf("%s/%s", dir, file);
-}
-
-PathString makeAppPathFromLaunchCommand(const char *launchCmd)
-{
-	logMsg("app path from launch command:%s", launchCmd);
-	FS::PathString realPath;
+	logMsg("app path from launch command:%s", launchCmd.data());
+	PathStringArray realPath;
 	if(!realpath(FS::dirname(launchCmd).data(), realPath.data()))
 	{
 		logErr("error in realpath()");
 		return {};
 	}
-	return realPath;
+	return realPath.data();
 }
 
-FileString basename(const char *path)
+FileString basename(CStringView path)
 {
-	FileString name;
-	#ifdef CONFIG_USE_GNU_BASENAME
-	string_copy(name, gnu_basename(path));
-	#elif defined __ANDROID__
-	string_copy(name, ::posixBasenameImpl(path));
-	#elif defined _WIN32
-	char namePart[_MAX_FNAME], extPart[_MAX_EXT];
-	_splitpath(path, nullptr, nullptr, namePart, extPart);
-	string_printf(name, "%s%s", namePart, extPart);
-	#else
-	// standard version can modify input, and returns a pointer within it
-	// BSD version can modify input, but always returns its own allocated storage
-	PathString tempPath = makePathString(path);
-	string_copy(name, ::posixBasenameImpl(tempPath.data()));
-	#endif
-	return name;
+	return basenameImpl(path);
 }
 
-PathString dirname(const char *path)
+PathString dirname(CStringView path)
 {
-	PathString dir;
-	#if defined __ANDROID__
-	string_copy(dir, ::posixDirnameImpl(path));
-	#elif defined _WIN32
-	char drivePart[_MAX_DRIVE], dirPart[_MAX_DIR];
-	_splitpath(path, drivePart, dirPart, nullptr, nullptr);
-	string_printf(dir, "%s%s", drivePart, dirPart);
-	#else
-	// standard version can modify input, and returns a pointer within it
-	// BSD version can modify input, but always returns its own allocated storage
-	PathString tempPath = makePathString(path);
-	string_copy(dir, ::posixDirnameImpl(tempPath.data()));
-	#endif
-	return dir;
+	return dirnameImpl(path);
 }
 
-bool fileStringNoCaseLexCompare(FS::FileString s1, FS::FileString s2)
+FileString displayName(CStringView path)
 {
-	return std::lexicographical_compare(
-		s1.data(), s1.data() + strlen(s1.data()),
-		s2.data(), s2.data() + strlen(s2.data()),
-		[](char c1, char c2)
+	if(path.empty() || !FS::exists(path))
+		return {};
+	else
+		return basename(path);
+}
+
+PathString dirnameUri(CStringView pathOrUri)
+{
+	if(pathOrUri.empty())
+		return {};
+	if(!isUri(pathOrUri))
+		return dirname(pathOrUri);
+	if(auto [treePath, treePos] = FS::uriPathSegment(pathOrUri, FS::uriPathSegmentTreeName);
+		Config::envIsAndroid && treePos != std::string_view::npos)
+	{
+		auto [docPath, docPos] = FS::uriPathSegment(pathOrUri, FS::uriPathSegmentDocumentName);
+		if(docPos == std::string_view::npos)
 		{
-			return std::tolower(c1) < std::tolower(c2);
-		});
-}
-
-int directoryItems(const char *path)
-{
-		uint32_t items = 0;
-		for(auto &d : FS::directory_iterator(path))
-		{
-			items++;
+			logErr("invalid document path in tree URI:%s", pathOrUri.data());
+			return {};
 		}
-		return items;
+		if(auto lastSlashPos = docPath.rfind("%2F");
+			lastSlashPos != std::string_view::npos) // return everything before the last /
+		{
+			return {pathOrUri, docPos + lastSlashPos};
+		}
+		if(auto colonPos = docPath.find("%3A");
+			colonPos != std::string_view::npos) // at root, return everything before and including the :
+		{
+			colonPos += 3;
+			return {pathOrUri, docPos + colonPos};
+		}
+	}
+	logErr("can't get directory name on unsupported URI:%s", pathOrUri.data());
+	return {};
+}
+
+std::pair<std::string_view, size_t> uriPathSegment(std::string_view uri, std::string_view name)
+{
+	assert(name.starts_with('/') && name.ends_with('/'));
+	auto pathPos = uri.find(name);
+	if(pathPos == std::string_view::npos)
+		return {{}, std::string_view::npos};
+	pathPos += name.size();
+	auto pathStart = uri.substr(pathPos);
+	// return the substring of the segment and the absolute offset into the original string view
+	return {pathStart.substr(0, pathStart.find('/')), pathPos};
+}
+
+size_t directoryItems(CStringView path)
+{
+	size_t items = 0;
+	forEachInDirectory(path, [&](auto&){ items++; return true; });
+	return items;
+}
+
+bool forEachInDirectory(CStringView path, DirectoryEntryDelegate del, DirOpenFlags flags)
+{
+	bool entriesRead{};
+	for(FS::DirectoryStream dirStream{path, flags}; dirStream.hasEntry(); dirStream.readNextDir())
+	{
+		entriesRead = true;
+		if(!del(dirStream.entry()))
+			break;
+	}
+	return entriesRead;
+}
+
+std::string formatLastWriteTimeLocal(ApplicationContext ctx, CStringView path)
+{
+	return ctx.formatDateAndTime(status(path).lastWriteTime());
 }
 
 }

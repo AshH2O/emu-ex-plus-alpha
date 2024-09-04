@@ -55,9 +55,9 @@ static piareg mypia;
 /* ------------------------------------------------------------------------- */
 /* CPU binding */
 
-static void my_set_int(unsigned int pia_int_num, int a)
+static void my_set_int(unsigned int pia_int_num, int a, CLOCK offset)
 {
-    maincpu_set_irq(pia_int_num, a ? IK_IRQ : IK_NONE);
+    maincpu_set_irq_clk(pia_int_num, a ? IK_IRQ : IK_NONE, maincpu_clk - offset);
 }
 
 static void my_restore_int(unsigned int pia_int_num, int a)
@@ -122,13 +122,15 @@ static uint8_t read_pa(void)
 
     drive_cpu_execute_all(maincpu_clk);
 
-    if (parallel_debug) {
+#ifdef DEBUG
+    if (debug.ieee) {
         log_message(mypia_log,
                     "read pia2 port A %x, parallel_bus=%x, gives %x.",
                     mypia.port_a, parallel_bus,
                     (unsigned int)((parallel_bus & ~mypia.ddr_a)
                      | (mypia.port_a & mypia.ddr_a)));
     }
+#endif
 
     byte = (parallel_bus & ~mypia.ddr_a) | (mypia.port_a & mypia.ddr_a);
     return byte;

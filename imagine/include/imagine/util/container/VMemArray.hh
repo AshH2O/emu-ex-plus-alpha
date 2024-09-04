@@ -16,7 +16,7 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/vmem/memory.hh>
-#include <assert.h>
+#include <cassert>
 #include <cstddef>
 #include <iterator>
 
@@ -33,55 +33,33 @@ public:
 	using reverse_iterator = std::reverse_iterator<iterator>;
 	using const_reverse_iterator = std::reverse_iterator<const_iterator>;
 
-	constexpr VMemArray() {}
+	constexpr VMemArray() = default;
 
-	VMemArray(unsigned size)
+	VMemArray(size_t size)
 	{
 		resize(size);
 	}
 
-	VMemArray(VMemArray &&o)
-	{
-		*this = std::move(o);
-	}
-
-	VMemArray &operator=(VMemArray &&o)
-	{
-		freeStorage();
-		data_ = std::exchange(o.data_, {});
-		size_ = std::exchange(o.size_, 0);
-		return *this;
-	}
-
-	~VMemArray()
-	{
-		freeStorage();
-	}
-
 	// Iterators (STL API)
-	iterator begin() { return data(); }
-	iterator end() { return data() + size(); }
-	const_iterator begin() const { return data(); }
-	const_iterator end() const { return data() + size(); }
+	auto begin(this auto&& self) { return self.data(); }
+	auto end(this auto&& self) { return self.data() + self.size(); }
 	const_iterator cbegin() const { return begin(); }
 	const_iterator cend() const { return end(); }
-	reverse_iterator rbegin() { return reverse_iterator(end()); }
-	reverse_iterator rend() { return reverse_iterator(begin()); }
-	const_reverse_iterator rbegin() const { return const_reverse_iterator(end()); }
-	const_reverse_iterator rend() const { return const_reverse_iterator(begin()); }
+	auto rbegin(this auto&& self) { return std::reverse_iterator(self.end()); }
+	auto rend(this auto&& self) { return std::reverse_iterator(self.begin()); }
 	const_reverse_iterator crbegin() const { return rbegin(); }
 	const_reverse_iterator crend() const { return rend(); }
 
 	// Capacity (STL API)
-	size_t size() const { return size_; }
+	size_t size() const { return buff.get_deleter().size; }
 	bool empty() const { return !size(); };
 	size_t max_size() const { return size(); }
 
-	void resize(size_t size)
+	void resize(size_t size_)
 	{
-		if(size == size_)
+		if(size_ == size())
 			return;
-		allocateStorage(size);
+		allocateStorage(size_);
 	}
 
 	// Element Access (STL API)
@@ -94,11 +72,8 @@ public:
 		return (*this)[idx];
 	}
 
-	T *data() { return data_; }
-	const T *data() const { return data_; }
-
-	T& operator[] (int idx) { return data()[idx]; }
-	const T& operator[] (int idx) const { return data()[idx]; }
+	auto data(this auto&& self) { return self.buff.get(); }
+	auto& operator[] (this auto&& self, size_t idx) { return self.data()[idx]; }
 
 	void resetElements()
 	{
@@ -107,31 +82,12 @@ public:
 	}
 
 private:
-	T *data_{};
-	unsigned size_ = 0;
-
-	void freeStorage()
-	{
-		if(!size_)
-			return;
-		for(auto &o : *this) // run all destructors
-		{
-			o.~T();
-		}
-		freeVMemObjects(data_, size_);
-		data_ = {};
-		size_ = 0;
-	}
+	UniqueVPtr<T> buff;
 
 	void allocateStorage(size_t size)
 	{
-		freeStorage();
-		if(!size)
-			return;
-		data_ = allocVMemObjects<T>(size);
-		if(!data_) [[unlikely]]
-			return;
-		size_= size;
+		buff.reset();
+		buff = makeUniqueVPtr<T>(size);
 	}
 
 };

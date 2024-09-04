@@ -17,44 +17,41 @@
 
 #include <imagine/config/defs.hh>
 #include <imagine/pixmap/Pixmap.hh>
+#include <imagine/font/FontSettings.hh>
 #include <imagine/util/jni.hh>
 #include <utility>
-
-namespace Base
-{
-class ApplicationContext;
-class Application;
-}
 
 namespace IG
 {
 
+class ApplicationContext;
+class Application;
 class FontManager;
 struct GlyphMetrics;
 
 class AndroidGlyphImage
 {
 public:
-	constexpr AndroidGlyphImage() {}
-	AndroidGlyphImage(JNI::LockedLocalBitmap, IG::Pixmap);
+	constexpr AndroidGlyphImage() = default;
+	AndroidGlyphImage(JNI::LockedLocalBitmap, PixmapView);
 
 protected:
 	JNI::LockedLocalBitmap lockedBitmap{};
-	IG::Pixmap pixmap_{};
+	PixmapView pixmap_{};
 };
 
 class AndroidFont
 {
 public:
-	constexpr AndroidFont() {}
-	constexpr AndroidFont(const FontManager &manager, bool isBold = false):
+	constexpr AndroidFont() = default;
+	constexpr AndroidFont(const FontManager &manager, FontWeight weight = {}):
 		managerPtr{&manager},
-		isBold{isBold}
+		weight{weight}
 	{}
 
 protected:
 	const FontManager *managerPtr{};
-	bool isBold{};
+	FontWeight weight{};
 
 	constexpr const FontManager &manager() const { return *managerPtr; }
 };
@@ -62,7 +59,7 @@ protected:
 class AndroidFontSize
 {
 public:
-	constexpr AndroidFontSize() {}
+	constexpr AndroidFontSize() = default;
 	AndroidFontSize(JNI::UniqueGlobalRef paint);
 	jobject paint() const { return paint_; }
 
@@ -73,15 +70,15 @@ protected:
 class AndroidFontManager
 {
 public:
-	AndroidFontManager(Base::ApplicationContext);
+	AndroidFontManager(ApplicationContext);
 	std::pair<jobject, GlyphMetrics> makeBitmap(JNIEnv*, int idx, AndroidFontSize &) const;
 	GlyphMetrics makeMetrics(JNIEnv*, int idx, AndroidFontSize &) const;
-	jobject makePaint(JNIEnv*, int pixelHeight, bool isBold) const;
-	constexpr Base::Application &app() const { return *appPtr; }
+	jobject makePaint(JNIEnv*, int pixelHeight, FontWeight) const;
+	constexpr Application &app() const { return *appPtr; }
 	constexpr JNI::InstMethod<void()> recycleBitmapMethod() const { return jRecycleBitmap; }
 
 protected:
-	Base::Application *appPtr{};
+	Application *appPtr{};
 	JNI::UniqueGlobalRef renderer{};
 	JNI::InstMethod<jobject(jint, jobject, jlong)> jBitmap{};
 	JNI::InstMethod<void(jint, jobject, jlong)> jMetrics{};

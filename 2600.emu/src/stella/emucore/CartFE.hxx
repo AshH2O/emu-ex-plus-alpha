@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -21,13 +21,14 @@
 class System;
 
 #include "bspf.hxx"
-#include "Cart.hxx"
+#include "CartEnhanced.hxx"
 #ifdef DEBUGGER_SUPPORT
   #include "CartFEWidget.hxx"
 #endif
 
 /**
-  Bankswitching method used by Activision's Robot Tank and Decathlon.
+  Bankswitching method used by Activision e.g. for Robot Tank and Decathlon
+  Originally named SCABS (Subroutine Controlled Automatic Bank Switching)
 
   This scheme was originally designed to have up to 8 4K banks, and is
   triggered by monitoring the address bus for address $01FE.  All released
@@ -72,10 +73,10 @@ class System;
         particular *why* the address $01FE will be placed on the address
         bus after both the JSR and RTS opcodes.
 
-  @author  Stephen Anthony; with ideas/research from Christian Speckner and
-           alex_79 and TomSon (of AtariAge)
+  @author  Stephen Anthony, Thomas Jentzsch; with ideas/research from Christian
+           Speckner and alex_79 and TomSon (of AtariAge)
 */
-class CartridgeFE : public Cartridge
+class CartridgeFE : public CartridgeEnhanced
 {
   friend class CartridgeFEWidget;
 
@@ -87,10 +88,11 @@ class CartridgeFE : public Cartridge
       @param size      The size of the ROM image
       @param md5       The md5sum of the ROM image
       @param settings  A reference to the various settings (read-only)
+      @param bsSize    The size specified by the bankswitching scheme
     */
     CartridgeFE(const ByteBuffer& image, size_t size, const string& md5,
-                const Settings& settings);
-    virtual ~CartridgeFE() = default;
+                const Settings& settings, size_t bsSize = 8_KB);
+    ~CartridgeFE() override = default;
 
   public:
     /**
@@ -105,42 +107,6 @@ class CartridgeFE : public Cartridge
       @param system The system the device should install itself in
     */
     void install(System& system) override;
-
-    /**
-      Install pages for the specified bank in the system.
-
-      @param bank The bank that should be installed in the system
-    */
-    bool bank(uInt16 bank) override;
-
-    /**
-      Get the current bank.
-
-      @param address The address to use when querying the bank
-    */
-    uInt16 getBank(uInt16 address = 0) const override;
-
-    /**
-      Query the number of banks supported by the cartridge.
-    */
-    uInt16 bankCount() const override;
-
-    /**
-      Patch the cartridge ROM.
-
-      @param address  The ROM address to patch
-      @param value    The value to place into the address
-      @return    Success or failure of the patch operation
-    */
-    bool patch(uInt16 address, uInt8 value) override;
-
-    /**
-      Access the internal ROM image for this cartridge.
-
-      @param size  Set to the size of the internal ROM image data
-      @return  A pointer to the internal ROM image data
-    */
-    const uInt8* getImage(size_t& size) const override;
 
     /**
       Save the current state of this cart to the given Serializer.
@@ -194,20 +160,16 @@ class CartridgeFE : public Cartridge
     */
     bool poke(uInt16 address, uInt8 value) override;
 
-  private:
+  protected:
     /**
       Perform bankswitch when necessary, by monitoring for $01FE
       on the address bus and getting the bank number from the data bus.
     */
-    void checkBankSwitch(uInt16 address, uInt8 value);
+    bool checkSwitchBank(uInt16 address, uInt8 value) override;
+
+    uInt16 hotspot() const override { return 0x01FE; }
 
   private:
-    // The 8K ROM image of the cartridge
-    std::array<uInt8, 8_KB> myImage;
-
-    // Indicates the offset into the ROM image (aligns to current bank)
-    uInt16 myBankOffset{0};
-
     // Whether previous address by peek/poke equals $01FE (hotspot)
     bool myLastAccessWasFE{false};
 

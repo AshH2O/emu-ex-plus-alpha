@@ -17,42 +17,43 @@
 
 #include <imagine/config/defs.hh>
 #include <imagine/base/ApplicationContext.hh>
+#include <imagine/pixmap/Pixmap.hh>
 #include <system_error>
 
 struct png_struct_def;
 struct png_info_def;
-class GenericIO;
 
 namespace IG
 {
-class PixelFormat;
-class Pixmap;
+class IO;
 }
 
 namespace IG::Data
 {
 
+struct PixmapReaderParams;
+
 class PngImage
 {
 public:
-	constexpr PngImage() {}
-	PngImage(GenericIO io);
-	PngImage(PngImage &&o);
-	PngImage &operator=(PngImage &&o);
+	constexpr PngImage() = default;
+	PngImage(IO, PixmapReaderParams);
+	PngImage(PngImage &&o) noexcept;
+	PngImage &operator=(PngImage &&o) noexcept;
 	~PngImage();
-	std::error_code readHeader(GenericIO io);
-	std::errc readImage(IG::Pixmap dest);
+	std::errc readImage(MutablePixmapView dest);
 	bool hasAlphaChannel();
 	bool isGrayscale();
 	void freeImageData();
-	uint32_t width();
-	uint32_t height();
-	IG::PixelFormat pixelFormat();
+	int width();
+	int height();
+	PixelFormat pixelFormat();
 
 protected:
 	png_struct_def *png{};
 	png_info_def *info{};
-	void setTransforms(IG::PixelFormat outFormat, png_info_def *transInfo);
+	bool premultiplyAlpha{};
+	void setTransforms(PixelFormat outFormat);
 	static bool supportUncommonConv;
 };
 
@@ -61,14 +62,14 @@ using PixmapImageImpl = PngImage;
 class PngReader
 {
 public:
-	constexpr PngReader(Base::ApplicationContext ctx):
+	constexpr PngReader(ApplicationContext ctx):
 		ctx{ctx}
 	{}
 
 protected:
-	Base::ApplicationContext ctx{};
+	ApplicationContext ctx{};
 
-	constexpr Base::ApplicationContext appContext() const { return ctx; }
+	constexpr ApplicationContext appContext() const { return ctx; }
 };
 
 using PixmapReaderImpl = PngReader;
@@ -76,7 +77,7 @@ using PixmapReaderImpl = PngReader;
 class PngWriter
 {
 public:
-	constexpr PngWriter(Base::ApplicationContext) {}
+	constexpr PngWriter(ApplicationContext) {}
 };
 
 using PixmapWriterImpl = PngWriter;

@@ -6,7 +6,7 @@ include $(buildSysPath)/setAndroidNDKPath.mk
 .PHONY: all
 all : android-bundle
 
-BUNDLETOOL_PATH ?= $(IMAGINE_PATH)/tools/bundletool-all-1.6.0.jar
+BUNDLETOOL_PATH ?= $(IMAGINE_PATH)/tools/bundletool-all-1.15.6.jar
 BUNDLETOOL := java -jar $(BUNDLETOOL_PATH)
 
 # Code signing parameters used when generating APKs from the app bundle
@@ -54,14 +54,17 @@ ifeq ($(filter x86_64, $(android_arch)),)
 endif
 
 android_targetPath := target/$(android_buildName)
+android_resPath := $(android_targetPath)/src/main/res
 
 ifdef imagineLibExt
  android_makefileOpts += imagineLibExt=$(imagineLibExt)
 endif
 
+xmlDecl := <?xml version="1.0" encoding="utf-8"?>
+
 # metadata
 
-android_manifestXml := $(android_targetPath)/AndroidManifest.xml
+android_manifestXml := $(android_targetPath)/src/main/AndroidManifest.xml
 $(android_manifestXml) : $(projectPath)/metadata/conf.mk $(metadata_confDeps)
 	@mkdir -p $(@D)
 	bash $(IMAGINE_PATH)/tools/genAndroidMeta.sh $(android_gen_metadata_args) $@
@@ -84,87 +87,111 @@ else ifneq ($(wildcard $(android_resSrcPath)/assets),)
 endif
 
 ifdef android_assetsSrcPath
-android_assetsPath := $(android_targetPath)/assets
+android_assetsPath := $(android_targetPath)/src/main/assets
 $(android_assetsPath) :
 	@mkdir -p $(@D)
 	ln -rs $(android_assetsSrcPath) $@
 endif
 
 ifneq ($(wildcard $(resPath)/icons/icon-48.png),)
-android_drawableMdpiIconPath := $(android_targetPath)/res/mipmap-mdpi/icon.png
+android_drawableMdpiIconPath := $(android_resPath)/mipmap-mdpi/icon.png
 $(android_drawableMdpiIconPath) :
 	@mkdir -p $(@D)
 	ln -rs $(resPath)/icons/icon-48.png $@
 endif
 
 ifneq ($(wildcard $(resPath)/icons/icon-72.png),)
-android_drawableHdpiIconPath := $(android_targetPath)/res/mipmap-hdpi/icon.png
+android_drawableHdpiIconPath := $(android_resPath)/mipmap-hdpi/icon.png
 $(android_drawableHdpiIconPath) :
 	@mkdir -p $(@D)
 	ln -rs $(resPath)/icons/icon-72.png $@
 endif
 
 ifneq ($(wildcard $(resPath)/icons/icon-96.png),)
-android_drawableXhdpiIconPath := $(android_targetPath)/res/mipmap-xhdpi/icon.png
+android_drawableXhdpiIconPath := $(android_resPath)/mipmap-xhdpi/icon.png
 $(android_drawableXhdpiIconPath) :
 	@mkdir -p $(@D)
 	ln -rs $(resPath)/icons/icon-96.png $@
 endif
 
 ifneq ($(wildcard $(resPath)/icons/icon-144.png),)
-android_drawableXxhdpiIconPath := $(android_targetPath)/res/mipmap-xxhdpi/icon.png
+android_drawableXxhdpiIconPath := $(android_resPath)/mipmap-xxhdpi/icon.png
 $(android_drawableXxhdpiIconPath) :
 	@mkdir -p $(@D)
 	ln -rs $(resPath)/icons/icon-144.png $@
 
 # "iconbig" used by Xperia Play launcher, links to xxhdpi icon
-android_drawableMdpiBigIconPath := $(android_targetPath)/res/drawable-mdpi/iconbig.png
+android_drawableMdpiBigIconPath := $(android_resPath)/drawable-mdpi/iconbig.png
 $(android_drawableMdpiBigIconPath) :
 	@mkdir -p $(@D)
 	ln -rs $(resPath)/icons/icon-144.png $@
 endif
 
 ifneq ($(wildcard $(resPath)/icons/icon-192.png),)
-android_drawableXxxhdpiIconPath := $(android_targetPath)/res/mipmap-xxxhdpi/icon.png
+android_drawableXxxhdpiIconPath := $(android_resPath)/mipmap-xxxhdpi/icon.png
 $(android_drawableXxxhdpiIconPath) :
 	@mkdir -p $(@D)
 	ln -rs $(resPath)/icons/icon-192.png $@
 endif
 
-ifneq ($(wildcard $(resPath)/icons/adaptive-icon-bg.png),)
-android_drawableIconV26Path := $(android_targetPath)/res/mipmap-anydpi-v26/icon.xml
+ifdef android_metadata_adaptiveIconIsMonochrome
+ androidMonochromeIcon := icon_fg
+else
+ androidMonochromeIcon := icon_monochrome
+endif
+
+ifneq ($(wildcard $(resPath)/icons/adaptive-icon-bg.webp),)
+android_drawableIconV26Path := $(android_resPath)/mipmap-anydpi-v26/icon.xml
 $(android_drawableIconV26Path) :
 	@mkdir -p $(@D)
-	printf '<?xml version="1.0" encoding="utf-8"?>\n<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">\n\t<background android:drawable="@mipmap/icon_bg" />\n\t<foreground android:drawable="@mipmap/icon_fg" />\n</adaptive-icon>' > $@
+	printf '$(xmlDecl)\n<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">\n\t<background android:drawable="@mipmap/icon_bg" />\n\t<foreground android:drawable="@mipmap/icon_fg" />\n\t<monochrome android:drawable="@mipmap/$(androidMonochromeIcon)" />\n</adaptive-icon>' > $@
 
-android_drawableIconBgPath := $(android_targetPath)/res/mipmap-xhdpi/icon_bg.png
+android_drawableIconBgPath := $(android_resPath)/mipmap-xhdpi/icon_bg.webp
 $(android_drawableIconBgPath) :
 	@mkdir -p $(@D)
-	ln -rs $(resPath)/icons/adaptive-icon-bg.png $@
+	ln -rs $(resPath)/icons/adaptive-icon-bg.webp $@
 
-android_mipmapXhdpiIconFgPath := $(android_targetPath)/res/mipmap-xhdpi/icon_fg.png
+android_mipmapXhdpiIconFgPath := $(android_resPath)/mipmap-xhdpi/icon_fg.webp
 $(android_mipmapXhdpiIconFgPath) :
 	@mkdir -p $(@D)
-	ln -rs $(resPath)/icons/adaptive-icon-fg-216.png $@
+	ln -rs $(resPath)/icons/adaptive-icon-fg-216.webp $@
 
-android_mipmapXxhdpiIconFgPath := $(android_targetPath)/res/mipmap-xxhdpi/icon_fg.png
+android_mipmapXxhdpiIconFgPath := $(android_resPath)/mipmap-xxhdpi/icon_fg.webp
 $(android_mipmapXxhdpiIconFgPath) :
 	@mkdir -p $(@D)
-	ln -rs $(resPath)/icons/adaptive-icon-fg-324.png $@
+	ln -rs $(resPath)/icons/adaptive-icon-fg-324.webp $@
 
-android_mipmapXxxhdpiIconFgPath := $(android_targetPath)/res/mipmap-xxxhdpi/icon_fg.png
+android_mipmapXxxhdpiIconFgPath := $(android_resPath)/mipmap-xxxhdpi/icon_fg.webp
 $(android_mipmapXxxhdpiIconFgPath) :
 	@mkdir -p $(@D)
-	ln -rs $(resPath)/icons/adaptive-icon-fg-432.png $@
+	ln -rs $(resPath)/icons/adaptive-icon-fg-432.webp $@
+endif
+
+ifneq ($(wildcard $(resPath)/icons/monochrome-icon-432.webp),)
+android_mipmapXhdpiIconMonochromePath := $(android_resPath)/mipmap-xhdpi/icon_monochrome.webp
+$(android_mipmapXhdpiIconMonochromePath) :
+	@mkdir -p $(@D)
+	ln -rs $(resPath)/icons/monochrome-icon-216.webp $@
+
+android_mipmapXxhdpiIconMonochromePath := $(android_resPath)/mipmap-xxhdpi/icon_monochrome.webp
+$(android_mipmapXxhdpiIconMonochromePath) :
+	@mkdir -p $(@D)
+	ln -rs $(resPath)/icons/monochrome-icon-324.webp $@
+
+android_mipmapXxxhdpiIconMonochromePath := $(android_resPath)/mipmap-xxxhdpi/icon_monochrome.webp
+$(android_mipmapXxxhdpiIconMonochromePath) :
+	@mkdir -p $(@D)
+	ln -rs $(resPath)/icons/monochrome-icon-432.webp $@
 endif
 
 android_drawableIconPaths := $(android_drawableMdpiIconPath) $(android_drawableHdpiIconPath) \
  $(android_drawableXhdpiIconPath) $(android_drawableXxhdpiIconPath) $(android_drawableXxxhdpiIconPath) \
  $(android_drawableIconV26Path) $(android_drawableIconBgPath) $(android_mipmapXhdpiIconFgPath) \
- $(android_mipmapXxhdpiIconFgPath) $(android_mipmapXxxhdpiIconFgPath) $(android_drawableMdpiBigIconPath)
+ $(android_mipmapXxhdpiIconFgPath) $(android_mipmapXxxhdpiIconFgPath) $(android_drawableMdpiBigIconPath) \
+ $(android_mipmapXhdpiIconMonochromePath) $(android_mipmapXxhdpiIconMonochromePath) $(android_mipmapXxxhdpiIconMonochromePath)
 
 ifneq ($(wildcard $(resPath)/icons/ouya_icon.png),)
- android_drawableXhdpiOuyaIconPath := $(android_targetPath)/res/drawable-xhdpi/ouya_icon.png
+ android_drawableXhdpiOuyaIconPath := $(android_resPath)/drawable-xhdpi/ouya_icon.png
  android_drawableIconPaths += $(android_drawableXhdpiOuyaIconPath)
  android_gen_metadata_args += --ouya
 endif
@@ -174,11 +201,11 @@ ifdef android_drawableXhdpiOuyaIconPath
 $(android_drawableXhdpiOuyaIconPath) :
 	@mkdir -p $(@D)
 	ln -rs $(resPath)/icons/ouya_icon.png $@
-	printf '<?xml version="1.0" encoding="utf-8"?>\n<resources xmlns:tools="http://schemas.android.com/tools" tools:keep="@drawable/ouya_icon"/>\n' > $(@D)/ouya.xml
+	printf '$(xmlDecl)\n<resources xmlns:tools="http://schemas.android.com/tools" tools:keep="@drawable/ouya_icon"/>\n' > $(@D)/ouya.xml
 endif
 
-ifneq ($(wildcard $(resPath)/icons/tv-banner.png),)
- android_drawableTVBannerPath := $(android_targetPath)/res/drawable-v21/banner.png
+ifneq ($(wildcard $(resPath)/icons/tv-banner.webp),)
+ android_drawableTVBannerPath := $(android_resPath)/drawable-v21/banner.webp
  android_drawableIconPaths += $(android_drawableTVBannerPath)
  android_gen_metadata_args += --tv
 endif
@@ -186,7 +213,7 @@ endif
 ifdef android_drawableTVBannerPath
 $(android_drawableTVBannerPath) :
 	@mkdir -p $(@D)
-	ln -rs $(resPath)/icons/tv-banner.png $@
+	ln -rs $(resPath)/icons/tv-banner.webp $@
 endif
 
 android_imagineLib9SrcPath := $(IMAGINE_SDK_PATH)/android-java/imagine-v9.aar
@@ -201,21 +228,27 @@ ifeq ($(wildcard $(android_imagineLib9SrcPath)),)
  $(error couldn't find $(android_imagineLib9SrcPath), make sure you've built and installed it with android-java.mk) 
 endif
 
-android_styles21Xml := $(android_targetPath)/res/values-v21/styles.xml
+android_styles21Xml := $(android_resPath)/values-v21/styles.xml
+
+android_MaterialTheme := android:Theme.Material.NoActionBar.TranslucentDecor
+android_HoloTheme := android:Theme.Holo.NoActionBar.TranslucentDecor
+android_LegacyHoloTheme := android:Theme.Holo.NoActionBar
+android_LegacyTheme := android:Theme.NoTitleBar
+android_ShortEdgesItem := <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
 
 $(android_styles21Xml) :
 	@mkdir -p $(@D)
-	printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n\t<style name="AppTheme" parent="android:Theme.Material.NoActionBar.TranslucentDecor"/>\n</resources>\n' > $@
+	printf '$(xmlDecl)\n<resources>\n\t<style name="AppTheme" parent="$(android_MaterialTheme)">\n\t\t$(android_ShortEdgesItem)\n\t</style>\n</resources>\n' > $@
 
 android_stylesXmlFiles += $(android_styles21Xml)
 
 ifeq ($(shell expr $(android_minSDK) \< 21), 1)
 
-android_styles19Xml := $(android_targetPath)/res/values-v19/styles.xml
+android_styles19Xml := $(android_resPath)/values-v19/styles.xml
 
 $(android_styles19Xml) :
 	@mkdir -p $(@D)
-	printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n\t<style name="AppTheme" parent="android:Theme.Holo.NoActionBar.TranslucentDecor"/>\n</resources>\n' > $@
+	printf '$(xmlDecl)\n<resources>\n\t<style name="AppTheme" parent="$(android_HoloTheme)"/>\n</resources>\n' > $@
 
 android_stylesXmlFiles += $(android_styles19Xml)
 
@@ -223,11 +256,11 @@ endif
 
 ifeq ($(shell expr $(android_minSDK) \< 19), 1)
 
-android_styles11Xml := $(android_targetPath)/res/values-v11/styles.xml
+android_styles11Xml := $(android_resPath)/values-v11/styles.xml
 
 $(android_styles11Xml) :
 	@mkdir -p $(@D)
-	printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n\t<style name="AppTheme" parent="android:Theme.Holo.NoActionBar"/>\n</resources>\n' > $@
+	printf '$(xmlDecl)\n<resources>\n\t<style name="AppTheme" parent="$(android_LegacyHoloTheme)"/>\n</resources>\n' > $@
 
 android_stylesXmlFiles += $(android_styles11Xml)
 
@@ -235,21 +268,21 @@ endif
 
 ifeq ($(shell expr $(android_minSDK) \< 11), 1)
 
-android_stylesXml := $(android_targetPath)/res/values/styles.xml
+android_stylesXml := $(android_resPath)/values/styles.xml
 
 $(android_stylesXml) :
 	@mkdir -p $(@D)
-	printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n\t<style name="AppTheme" parent="android:Theme.NoTitleBar"/>\n</resources>\n' > $@
+	printf '$(xmlDecl)\n<resources>\n\t<style name="AppTheme" parent="$(android_LegacyTheme)"/>\n</resources>\n' > $@
 
 android_stylesXmlFiles += $(android_stylesXml)
 
 endif
 
-android_stringsXml := $(android_targetPath)/res/values/strings.xml
+android_stringsXml := $(android_resPath)/values/strings.xml
 
 $(android_stringsXml) : $(projectPath)/metadata/conf.mk
 	@mkdir -p $(@D)
-	printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n\t<string name="app_name">$(android_metadata_name)</string>\n</resources>\n' > $@
+	printf '$(xmlDecl)\n<resources>\n\t<string name="app_name">$(android_metadata_name)</string>\n</resources>\n' > $@
 
 gradleSrcPath = $(IMAGINE_PATH)/make/gradle
 
@@ -260,6 +293,7 @@ $(android_drawableIconPaths) $(android_assetsPath) $(android_stylesXmlFiles)
 	cp $(gradleSrcPath)/gradlew $(gradleSrcPath)/app/build.gradle $(gradleSrcPath)/app/gradle.properties $(@D)
 	cp -r $(gradleSrcPath)/gradle $(@D)
 	echo METADATA_PROJECT=$(android_metadata_project) >> $(@D)/gradle.properties
+	echo METADATA_NAMESPACE=$(android_metadata_id) >> $(@D)/gradle.properties
 	echo METADATA_MIN_SDK=$(android_minSDK) >> $(@D)/gradle.properties
 	echo METADATA_TARGET_SDK=$(android_metadata_target_sdk) >> $(@D)/gradle.properties
 

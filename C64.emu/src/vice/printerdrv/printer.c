@@ -34,11 +34,20 @@
 #include "drv-raw.h"
 #include "interface-serial.h"
 #include "interface-userport.h"
+#include "log.h"
 #include "machine-printer.h"
 #include "output-graphics.h"
 #include "output-select.h"
 #include "output-text.h"
 #include "printer.h"
+
+/* #define DEBUG_PRINTER */
+
+#ifdef DEBUG_PRINTER
+#define DBG(x)  log_debug x
+#else
+#define DBG(x)
+#endif
 
 int printer_resources_init(void)
 {
@@ -110,16 +119,34 @@ void printer_reset(void)
 
 void printer_shutdown(void)
 {
-    output_graphics_shutdown();
-    output_select_shutdown();
+    int n;
+    driver_select_shutdown();
+    /*
+     * This shuts down the serial port, which may close some lingering
+     * secondary addresses on the printers, which may produce some final
+     * (graphics) output.
+     */
+    machine_printer_shutdown();
+    /* send a formfeed to all drivers */
+    for (n = 0; n < NUM_OUTPUT_SELECT; n++) {
+        driver_select_formfeed(n);
+    }
+    /*
+     * So really shutting them down should be done after that.
+     */
     drv_mps803_shutdown();
     drv_nl10_shutdown();
     drv_1520_shutdown();
-    driver_select_shutdown();
-    machine_printer_shutdown();
+    output_graphics_shutdown();
+    output_select_shutdown();
 }
 
+/** \brief  Send formfeed to printer
+ *
+ * \param[in]   prnr    device index (0-2: 4-6, 3: userport)
+ */
 void printer_formfeed(unsigned int prnr)
 {
+    DBG(("printer_formfeed:%u", prnr));
     driver_select_formfeed(prnr);
 }

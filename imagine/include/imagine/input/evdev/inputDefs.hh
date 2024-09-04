@@ -16,12 +16,9 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <linux/input.h>
-#include <chrono>
 
-namespace Input
+namespace IG::Input
 {
-
-using Time = std::chrono::nanoseconds;
 
 using Key = uint16_t;
 
@@ -110,5 +107,30 @@ namespace Evdev
 	static const uint32_t EX_KEYS = 18;
 	static const uint32_t COUNT = KEY_CNT + EX_KEYS;
 }
+
+enum class AxisId : uint8_t
+{
+	X = ABS_X,
+	Y = ABS_Y,
+	LTRIGGER = ABS_Z,
+	Z = ABS_RX,
+	RZ = ABS_RY,
+	RTRIGGER = ABS_RZ,
+	HAT0X = ABS_HAT0X,
+	HAT0Y = ABS_HAT0Y,
+	HAT1X = ABS_HAT1X,
+	HAT1Y = ABS_HAT1Y,
+	HAT2X = ABS_HAT2X,
+	HAT2Y = ABS_HAT2Y,
+	HAT3X = ABS_HAT3X,
+	HAT3Y = ABS_HAT3Y,
+	RX = ABS_THROTTLE,
+	RY = ABS_PRESSURE,
+	RUDDER = ABS_RUDDER,
+	WHEEL = ABS_WHEEL,
+	GAS = ABS_GAS,
+	BRAKE = ABS_BRAKE,
+};
+
 
 }

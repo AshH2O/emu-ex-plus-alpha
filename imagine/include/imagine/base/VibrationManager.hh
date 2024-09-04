@@ -20,7 +20,7 @@
 #if defined __ANDROID__
 #include <imagine/base/android/AndroidVibrationManager.hh>
 #else
-namespace Base
+namespace IG
 {
 
 struct VibrationManagerImpl
@@ -33,7 +33,7 @@ struct VibrationManagerImpl
 
 #include <imagine/time/Time.hh>
 
-namespace Base
+namespace IG
 {
 
 class VibrationManager : public VibrationManagerImpl
@@ -41,7 +41,7 @@ class VibrationManager : public VibrationManagerImpl
 public:
 	using VibrationManagerImpl::VibrationManagerImpl;
 	bool hasVibrator() const;
-	void vibrate(IG::Milliseconds ms);
+	void vibrate(Milliseconds);
 };
 
 }

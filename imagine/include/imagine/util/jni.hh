@@ -15,13 +15,36 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <jni.h>
-#include <imagine/util/string.h>
-#include <imagine/util/ScopeGuard.hh>
-#include <assert.h>
+#include <imagine/util/utility.h>
+#include <concepts>
+#include <cassert>
 #include <cstddef>
 #include <iterator>
-#include <type_traits>
+#include <string_view>
+#include <memory>
+#if __has_include(<jni.h>)
+#include <jni.h>
+#else
+// dummy implementation to allow header inclusion but not use
+#define DUMMY_JNI_IMPL
+using jobject  = void*;
+using jclass  = int*;
+using jstring = char*;
+using jfieldID = void*;
+using jmethodID = void*;
+using jboolean = bool;
+using jbyte = int8_t;
+using jchar = uint16_t;
+using jshort = int16_t;
+using jint = int32_t;
+using jlong = int64_t;
+using jfloat = float;
+using jdouble = double;
+struct JNIEnv
+{
+	constexpr jclass GetObjectClass(jobject) const { return {}; }
+};
+#endif
 
 namespace JNI
 {
@@ -29,45 +52,165 @@ namespace JNI
 jmethodID getJNIStaticMethodID(JNIEnv *env, jclass cls, const char *fName, const char *sig);
 jmethodID getJNIMethodID(JNIEnv *env, jclass cls, const char *fName, const char *sig);
 
-template<typename R>
-R callJNIStaticMethodV(JNIEnv *env, jmethodID method, jclass cls, va_list args);
+#ifndef DUMMY_JNI_IMPL
+template<std::same_as<void> R>
+static void callJNIMethod(JNIEnv *env, jmethodID method, jobject obj, auto &&...args)
+{
+	env->CallVoidMethod(obj, method, IG_forward(args)...);
+}
 
-template<typename R>
-R callJNIMethodV(JNIEnv *env, jmethodID method, jobject obj, va_list args);
+template<std::same_as<jobject> R>
+static jobject callJNIMethod(JNIEnv *env, jmethodID method, jobject obj, auto &&...args)
+{
+	return env->CallObjectMethod(obj, method, IG_forward(args)...);
+}
 
-template <typename T> class ClassMethod {};
+template<std::same_as<jstring> R>
+static jstring callJNIMethod(JNIEnv *env, jmethodID method, jobject obj, auto &&...args)
+{
+	return (jstring)env->CallObjectMethod(obj, method, IG_forward(args)...);
+}
 
-template <typename R, typename ...ARGS>
-class ClassMethod<R(ARGS...)>
+template<std::same_as<jboolean> R>
+static jboolean callJNIMethod(JNIEnv *env, jmethodID method, jobject obj, auto &&...args)
+{
+	return env->CallBooleanMethod(obj, method, IG_forward(args)...);
+}
+
+template<std::same_as<jbyte> R>
+static jbyte callJNIMethod(JNIEnv *env, jmethodID method, jobject obj, auto &&...args)
+{
+	return env->CallByteMethod(obj, method, IG_forward(args)...);
+}
+
+template<std::same_as<jchar> R>
+static jchar callJNIMethod(JNIEnv *env, jmethodID method, jobject obj, auto &&...args)
+{
+	return env->CallCharMethod(obj, method, IG_forward(args)...);
+}
+
+template<std::same_as<jshort> R>
+static jshort callJNIMethod(JNIEnv *env, jmethodID method, jobject obj, auto &&...args)
+{
+	return env->CallShortMethod(obj, method, IG_forward(args)...);
+}
+
+template<std::same_as<jint> R>
+static jint callJNIMethod(JNIEnv *env, jmethodID method, jobject obj, auto &&...args)
+{
+	return env->CallIntMethod(obj, method, IG_forward(args)...);
+}
+
+template<std::same_as<jlong> R>
+static jlong callJNIMethod(JNIEnv *env, jmethodID method, jobject obj, auto &&...args)
+{
+	return env->CallLongMethod(obj, method, IG_forward(args)...);
+}
+
+template<std::same_as<jfloat> R>
+static jfloat callJNIMethod(JNIEnv *env, jmethodID method, jobject obj, auto &&...args)
+{
+	return env->CallFloatMethod(obj, method, IG_forward(args)...);
+}
+
+template<std::same_as<jdouble> R>
+static jdouble callJNIMethod(JNIEnv *env, jmethodID method, jobject obj, auto &&...args)
+{
+	return env->CallDoubleMethod(obj, method, IG_forward(args)...);
+}
+
+template<std::same_as<void> R>
+static void callJNIStaticMethod(JNIEnv *env, jmethodID method, jclass cls, auto &&...args)
+{
+	env->CallStaticVoidMethod(cls, method, IG_forward(args)...);
+}
+
+template<std::same_as<jobject> R>
+static jobject callJNIStaticMethod(JNIEnv *env, jmethodID method, jclass cls, auto &&...args)
+{
+	return env->CallStaticObjectMethod(cls, method, IG_forward(args)...);
+}
+
+template<std::same_as<jstring> R>
+static jstring callJNIStaticMethod(JNIEnv *env, jmethodID method, jclass cls, auto &&...args)
+{
+	return (jstring)env->CallStaticObjectMethod(cls, method, IG_forward(args)...);
+}
+
+template<std::same_as<jboolean> R>
+static jboolean callJNIStaticMethod(JNIEnv *env, jmethodID method, jclass cls, auto &&...args)
+{
+	return env->CallStaticBooleanMethod(cls, method, IG_forward(args)...);
+}
+
+template<std::same_as<jbyte> R>
+static jbyte callJNIStaticMethod(JNIEnv *env, jmethodID method, jclass cls, auto &&...args)
+{
+	return env->CallStaticByteMethod(cls, method, IG_forward(args)...);
+}
+
+template<std::same_as<jchar> R>
+static jchar callJNIStaticMethod(JNIEnv *env, jmethodID method, jclass cls, auto &&...args)
+{
+	return env->CallStaticCharMethod(cls, method, IG_forward(args)...);
+}
+
+template<std::same_as<jshort> R>
+static jshort callJNIStaticMethod(JNIEnv *env, jmethodID method, jclass cls, auto &&...args)
+{
+	return env->CallStaticShortMethod(cls, method, IG_forward(args)...);
+}
+
+template<std::same_as<jint> R>
+static jint callJNIStaticMethod(JNIEnv *env, jmethodID method, jclass cls, auto &&...args)
+{
+	return env->CallStaticIntMethod(cls, method, IG_forward(args)...);
+}
+
+template<std::same_as<jlong> R>
+static jlong callJNIStaticMethod(JNIEnv *env, jmethodID method, jclass cls, auto &&...args)
+{
+	return env->CallStaticLongMethod(cls, method, IG_forward(args)...);
+}
+
+template<std::same_as<jfloat> R>
+static jfloat callJNIStaticMethod(JNIEnv *env, jmethodID method, jclass cls, auto &&...args)
+{
+	return env->CallStaticFloatMethod(cls, method, IG_forward(args)...);
+}
+
+template<std::same_as<jdouble> R>
+static jdouble callJNIStaticMethod(JNIEnv *env, jmethodID method, jclass cls, auto &&...args)
+{
+	return env->CallStaticDoubleMethod(cls, method, IG_forward(args)...);
+}
+#endif
+
+template <class T> class ClassMethod {};
+
+template <class R, class ...Args>
+class ClassMethod<R(Args...)>
 {
 public:
 	jmethodID method{};
 
-	constexpr ClassMethod() {}
+	constexpr ClassMethod() = default;
 
-	template <class JavaObject>
-	ClassMethod(JNIEnv *env, JavaObject obj, const char *fName, const char *sig)
+	[[gnu::nonnull]]
+	ClassMethod(JNIEnv *env, auto obj, const char *fName, const char *sig)
 	{
 		setMethod(env, obj, fName, sig);
 	}
 
-	template <class JavaObject>
-	bool setMethod(JNIEnv *env, JavaObject obj, const char *fName, const char *sig)
+	bool setMethod(JNIEnv *env, jclass obj, const char *fName, const char *sig)
 	{
-		if constexpr(std::is_same_v<JavaObject, jclass>)
-		{
-			method = getJNIStaticMethodID(env, obj, fName, sig);
-		}
-		else
-		{
-			static_assert(std::is_same_v<JavaObject, jobject>, "object type must be a jclass or jobject");
-			method = getJNIStaticMethodID(env, (jclass)env->GetObjectClass(obj), fName, sig);
-		}
-		if(!method)
-		{
-			return false;
-		}
-		return true;
+		method = getJNIStaticMethodID(env, obj, fName, sig);
+		return method;
+	}
+
+	bool setMethod(JNIEnv *env, jobject obj, const char *fName, const char *sig)
+	{
+		return setMethod(env, (jclass)env->GetObjectClass(obj), fName, sig);
 	}
 
 	explicit operator bool() const
@@ -75,55 +218,37 @@ public:
 		return method;
 	}
 
-	R operator()(JNIEnv *env, jclass cls, ARGS ... args) const
+	R operator()(JNIEnv *env, jclass cls, Args ...args) const
 	{
-		return callMethod(env, cls, args...);
-	}
-
-private:
-	R callMethod(JNIEnv *env, jclass cls, ...) const
-	{
-		assert(method);
-		va_list args;
-		va_start(args, cls);
-		auto vaEnd = IG::scopeGuard([&](){ va_end(args); });
-		return callJNIStaticMethodV<R>(env, method, cls, args);
+		return callJNIStaticMethod<R>(env, method, cls, args...);
 	}
 };
 
-template <typename T> class InstMethod {};
+template <class T> class InstMethod {};
 
-template <typename R, typename ...ARGS>
-class InstMethod<R(ARGS...)>
+template <class R, class ...Args>
+class InstMethod<R(Args...)>
 {
 public:
 	jmethodID method{};
 
-	constexpr InstMethod() {}
+	constexpr InstMethod() = default;
 
-	template <class JavaObject>
+	template <class JavaObject> [[gnu::nonnull]]
 	InstMethod(JNIEnv *env, JavaObject obj, const char *fName, const char *sig)
 	{
 		setMethod(env, obj, fName, sig);
 	}
 
-	template <class JavaObject>
-	bool setMethod(JNIEnv *env, JavaObject obj, const char *fName, const char *sig)
+	bool setMethod(JNIEnv *env, jclass obj, const char *fName, const char *sig)
 	{
-		if constexpr(std::is_same_v<JavaObject, jclass>)
-		{
-			method = getJNIMethodID(env, obj, fName, sig);
-		}
-		else
-		{
-			static_assert(std::is_same_v<JavaObject, jobject>, "object type must be a jclass or jobject");
-			method = getJNIMethodID(env, (jclass)env->GetObjectClass(obj), fName, sig);
-		}
-		if(!method)
-		{
-			return false;
-		}
-		return true;
+		method = getJNIMethodID(env, obj, fName, sig);
+		return method;
+	}
+
+	bool setMethod(JNIEnv *env, jobject obj, const char *fName, const char *sig)
+	{
+		return setMethod(env, (jclass)env->GetObjectClass(obj), fName, sig);
 	}
 
 	explicit operator bool() const
@@ -131,96 +256,97 @@ public:
 		return method;
 	}
 
-	R operator()(JNIEnv *env, jobject obj, ARGS ... args) const
+	R operator()(JNIEnv *env, jobject obj, Args ...args) const
 	{
-		return callMethod(env, obj, args...);
-	}
-
-private:
-	R callMethod(JNIEnv *env, jobject obj, ...) const
-	{
-		assert(method);
-		va_list args;
-		va_start(args, obj);
-		auto vaEnd = IG::scopeGuard([&](){ va_end(args); });
-		return callJNIMethodV<R>(env, method, obj, args);
+		return callJNIMethod<R>(env, method, obj, args...);
 	}
 };
 
 class UniqueGlobalRef
 {
 public:
-	constexpr UniqueGlobalRef() {};
+	constexpr UniqueGlobalRef() = default;
+	[[gnu::nonnull]]
 	UniqueGlobalRef(JNIEnv *env, jobject o);
-	UniqueGlobalRef(UniqueGlobalRef &&);
-	UniqueGlobalRef &operator=(UniqueGlobalRef &&);
-	~UniqueGlobalRef();
-	void reset();
-
-	constexpr operator jobject() const
-	{
-		return obj;
-	}
-
-	constexpr explicit operator jclass() const
-	{
-		return (jclass)obj;
-	}
-
-	constexpr JNIEnv *jniEnv() const
-	{
-		return env;
-	}
+	operator jobject() const { return obj.get(); }
+	explicit operator jclass() const { return (jclass)obj.get(); }
+	JNIEnv *jniEnv() const { return obj.get_deleter().env; }
+	void reset() { obj.reset(); }
 
 protected:
-	JNIEnv *env;
-	jobject obj{};
+	struct GlobalRefDeleter
+	{
+		JNIEnv *env;
+
+		void operator()(jobject ptr) const
+		{
+			deleteGlobalRef(env, ptr);
+		}
+	};
+
+	std::unique_ptr<std::remove_pointer_t<jobject>, GlobalRefDeleter> obj;
+
+	static void deleteGlobalRef(JNIEnv *, jobject);
 };
 
-template <size_t S>
-static void stringCopy(JNIEnv *env, std::array<char, S> &dest, jstring jstr)
+class StringChars
 {
-	auto utfChars = env->GetStringUTFChars(jstr, nullptr);
-	if(!utfChars)
-	{
-		return; // OutOfMemoryError thrown
-	}
-	string_copy(dest, utfChars);
-	env->ReleaseStringUTFChars(jstr, utfChars);
-}
+public:
+	constexpr StringChars() = default;
+	[[gnu::nonnull]]
+	StringChars(JNIEnv *, jstring);
+	const char *data() const { return str.get(); }
+	size_t size() const { return std::char_traits<char>::length(data()); }
+	operator const char *() const { return data(); }
+	operator std::string_view() const { return {data(), size()}; }
+	JNIEnv *jniEnv() const { return str.get_deleter().env; }
+	jstring jString() const { return str.get_deleter().jStr; }
 
-template <class CONTAINER>
-static CONTAINER stringCopy(JNIEnv *env, jstring jstr)
-{
-	auto utfChars = env->GetStringUTFChars(jstr, nullptr);
-	if(!utfChars)
+protected:
+	struct JStringCharsDeleter
 	{
-		return {}; // OutOfMemoryError thrown
-	}
-	CONTAINER c;
-	string_copy(c, utfChars);
-	env->ReleaseStringUTFChars(jstr, utfChars);
-	return c;
-}
+		JNIEnv *env;
+		jstring jStr;
+
+		void operator()(const char *charsPtr) const
+		{
+			releaseStringChars(env, jStr, charsPtr);
+		}
+	};
+	using UniqueJStringChars = std::unique_ptr<const char, JStringCharsDeleter>;
+
+	UniqueJStringChars str{};
+
+	static void releaseStringChars(JNIEnv *, jstring, const char *charsPtr);
+};
 
 class LockedLocalBitmap
 {
 public:
-	constexpr LockedLocalBitmap() {}
-	constexpr LockedLocalBitmap(JNIEnv *env, jobject bitmap, JNI::InstMethod<void()> recycle):
-		env{env}, bitmap{bitmap}, jRecycle{recycle} {}
-	LockedLocalBitmap(LockedLocalBitmap &&o);
-	LockedLocalBitmap &operator=(LockedLocalBitmap &&o);
-	~LockedLocalBitmap();
-	constexpr operator jobject() const { return bitmap; }
-	explicit constexpr operator bool() const { return bitmap; }
+	constexpr LockedLocalBitmap() = default;
+	[[gnu::nonnull]]
+	LockedLocalBitmap(JNIEnv *env, jobject bitmap, JNI::InstMethod<void()> recycle):
+		bitmap{bitmap, {env, recycle}} {}
+	operator jobject() const { return bitmap.get(); }
+	explicit operator bool() const { return (bool)bitmap; }
 
 protected:
-	JNIEnv *env{};
-	jobject bitmap{};
-	JNI::InstMethod<void()> jRecycle{};
+	struct BitmapDeleter
+	{
+		JNIEnv *env;
+		JNI::InstMethod<void()> recycle;
 
-	void deinit();
+		void operator()(jobject ptr) const
+		{
+			deleteBitmap(env, ptr, recycle);
+		}
+	};
+
+	std::unique_ptr<std::remove_pointer_t<jobject>, BitmapDeleter> bitmap;
+
+	static void deleteBitmap(JNIEnv *, jobject bitmap, JNI::InstMethod<void()> recycle);
 };
 
 }
+
+#undef DUMMY_JNI_IMPL

@@ -8,9 +8,6 @@ do
 		--name=*)
 			name=$optarg
 		;;
-		--id=*)
-			id=$optarg
-		;;
 		--version=*)
 			version=$optarg
 		;;
@@ -65,6 +62,12 @@ do
 		--legacy-storage)
 			usesLegacyStorage=1
 		;;
+		--app-ext-storage)
+			usesAppExtStorage=1
+		;;
+		--debug)
+			debuggable=1
+		;;
 		# special actions
 		-v | --verbose)
 			verbose=1
@@ -81,12 +84,6 @@ done
 if [ ! "$name" ]
 then
 	echo "error: no name specified"
-	exit 1
-fi
-
-if [ ! $id ]
-then
-	echo "error: no id specified"
 	exit 1
 fi
 
@@ -138,6 +135,16 @@ then
 	applicationOutput="$applicationOutput android:requestLegacyExternalStorage=\"true\""
 fi
 
+if [ $usesAppExtStorage ]
+then
+	applicationOutput="$applicationOutput android:hasFragileUserData=\"true\""
+fi
+
+if [ $debuggable ]
+then
+	applicationOutput="$applicationOutput android:debuggable=\"true\""
+fi
+
 if [ ! $versionCode ]
 then
 	set -- ${version//./ }
@@ -156,8 +163,7 @@ uiChanges='mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|screenL
 
 # start XML
 echo "<?xml version=\"1.0\" encoding=\"utf-8\"?>
-<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\"
-		package=\"$id\""  > $outPath
+<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\"" > $outPath
 
 echo '		android:installLocation="auto"' >> $outPath
 
@@ -165,9 +171,8 @@ echo "		android:versionCode=\"$versionCode\" android:versionName=\"$version\">" 
 
 if [ $writeExtStore ]
 then
-	echo '	<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />' >> $outPath
-	echo '	<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />' >> $outPath
-	echo '	<uses-permission android:name="android.permission.WRITE_MEDIA_STORAGE" />' >> $outPath
+	echo '	<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="29" />' >> $outPath
+	echo '	<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />' >> $outPath
 fi
 
 if [ $bluetooth ]
@@ -200,6 +205,7 @@ fi
 
 echo '	<supports-screens android:largeScreens="true" android:xlargeScreens="true" />' >> $outPath
 echo '	<uses-feature android:name="android.hardware.touchscreen" android:required="false" />' >> $outPath
+echo '	<uses-feature android:name="android.hardware.type.pc" android:required="false" />' >> $outPath
 
 intentFilters="<action android:name=\"android.intent.action.MAIN\" />
 				<category android:name=\"android.intent.category.LAUNCHER\" />
@@ -220,6 +226,7 @@ then
 				<action android:name="android.intent.action.VIEW" />
 				<category android:name="android.intent.category.DEFAULT" />
 				<category android:name="android.intent.category.BROWSABLE" />
+				<category android:name="android.intent.category.OPENABLE" />
 '
 	for type in $intentMimeTypes
 	do
@@ -236,7 +243,9 @@ then
 				<action android:name="android.intent.action.VIEW" />
 				<category android:name="android.intent.category.DEFAULT" />
 				<category android:name="android.intent.category.BROWSABLE" />
+				<category android:name="android.intent.category.OPENABLE" />
 				<data android:scheme="file" />
+				<data android:scheme="content" />
 				<data android:mimeType="*/*" />
 				<data android:host="*" />
 '
@@ -254,7 +263,8 @@ echo "<application android:label=\"@string/app_name\" $applicationOutput>
 				android:label=\"@string/app_name\"
 				android:theme=\"@style/AppTheme\"
 				android:configChanges=\"$uiChanges\"
-				android:launchMode=\"singleInstance\">
+				android:launchMode=\"singleInstance\"
+				android:exported=\"true\">
 			<intent-filter>
 				$intentFilters
 			</intent-filter>

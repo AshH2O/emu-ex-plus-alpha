@@ -13,8 +13,10 @@
 	You should have received a copy of the GNU General Public License
 	along with NEO.emu.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <emuframework/EmuApp.hh>
-#include "internal.hh"
+#include <imagine/util/string.h>
+#include "MainApp.hh"
+#include <emuframework/Option.hh>
+#include <imagine/logger/logger.h>
 
 extern "C"
 {
@@ -22,112 +24,86 @@ extern "C"
 	#include <gngeo/emu.h>
 }
 
-enum
+namespace EmuEx
 {
-	CFGKEY_LIST_ALL_GAMES = 275, CFGKEY_BIOS_TYPE = 276,
-	CFGKEY_MVS_COUNTRY = 277, CFGKEY_TIMER_INT = 278,
-	CFGKEY_CREATE_USE_CACHE = 279,
-	CFGKEY_NEOGEOKEY_TEST_SWITCH = 280, CFGKEY_STRICT_ROM_CHECKING = 281
-};
-
-static bool systemEnumIsValid(uint8_t val)
-{
-	return val < SYS_MAX;
-}
-
-static bool countryEnumIsValid(uint8_t val)
-{
-	return val < CTY_MAX;
-}
 
 const char *EmuSystem::configFilename = "NeoEmu.config";
-const AspectRatioInfo EmuSystem::aspectRatioInfo[]
-{
-		{"4:3 (Original)", 4, 3},
-		EMU_SYSTEM_DEFAULT_ASPECT_RATIO_INFO_INIT
-};
-const unsigned EmuSystem::aspectRatioInfos = std::size(EmuSystem::aspectRatioInfo);
-bool EmuApp::autoSaveStateDefault = false;
-Byte1Option optionListAllGames{CFGKEY_LIST_ALL_GAMES, 0};
-Byte1Option optionBIOSType{CFGKEY_BIOS_TYPE, SYS_UNIBIOS, 0, systemEnumIsValid};
-Byte1Option optionMVSCountry{CFGKEY_MVS_COUNTRY, CTY_USA, 0, countryEnumIsValid};
-Byte1Option optionTimerInt{CFGKEY_TIMER_INT, 2};
-Byte1Option optionCreateAndUseCache{CFGKEY_CREATE_USE_CACHE, 0};
-Byte1Option optionStrictROMChecking{CFGKEY_STRICT_ROM_CHECKING, 0};
 
-void setTimerIntOption()
+std::span<const AspectRatioInfo> NeoSystem::aspectRatioInfos()
 {
-	switch(optionTimerInt)
+	static constexpr AspectRatioInfo aspectRatioInfo[]
 	{
-		bcase 0: conf.raster = 0;
-		bcase 1: conf.raster = 1;
-		bcase 2:
-			bool needsTimer = 0;
-			auto gameName = EmuSystem::fullGameName();
-			auto gameStr = gameName.data();
-			if(EmuSystem::gameIsRunning() && (strstr(gameStr, "Sidekicks 2") || strstr(gameStr, "Sidekicks 3")
-					|| strstr(gameStr, "Ultimate 11") || strstr(gameStr, "Neo-Geo Cup")
-					|| strstr(gameStr, "Spin Master") || strstr(gameStr, "Neo Turf Masters")))
-				needsTimer = 1;
-			if(needsTimer) logMsg("auto enabled timer interrupt");
-			conf.raster = needsTimer;
+		{"4:3 (Original)", {4, 3}},
+		EMU_SYSTEM_DEFAULT_ASPECT_RATIO_INFO_INIT
+	};
+	return aspectRatioInfo;
+}
+
+void NeoSystem::setTimerIntOption()
+{
+	if(optionTimerInt == 2)
+	{
+		bool needsTimer = hasContent() && IG::containsAny(contentDisplayName(),
+			"Sidekicks 2", "Sidekicks 3", "Ultimate 11", "Neo-Geo Cup", "Spin Master", "Neo Turf Masters");
+		if(needsTimer) logMsg("auto enabled timer interrupt");
+		conf.raster = needsTimer;
+	}
+	else
+	{
+		conf.raster = optionTimerInt;
 	}
 }
 
-void EmuSystem::initOptions(EmuApp &app)
+void NeoSystem::onOptionsLoaded()
 {
-	app.setDefaultVControlsButtonSpacing(100);
-	app.setDefaultVControlsButtonStagger(5);
+	conf.system = SYSTEM(optionBIOSType.value());
+	conf.country = COUNTRY(optionMVSCountry.value());
 }
 
-EmuSystem::Error EmuSystem::onOptionsLoaded(Base::ApplicationContext)
-{
-	conf.system = (SYSTEM)optionBIOSType.val;
-	conf.country = (COUNTRY)optionMVSCountry.val;
-	return {};
-}
-
-bool EmuSystem::resetSessionOptions(EmuApp &)
+bool NeoSystem::resetSessionOptions(EmuApp &app)
 {
 	optionTimerInt.reset();
 	setTimerIntOption();
 	return true;
 }
 
-bool EmuSystem::readSessionConfig(IO &io, unsigned key, unsigned readSize)
+bool NeoSystem::readConfig(ConfigType type, MapIO &io, unsigned key)
 {
-	switch(key)
+	if(type == ConfigType::MAIN)
 	{
-		default: return 0;
-		bcase CFGKEY_TIMER_INT: optionTimerInt.readFromIO(io, readSize);
+		switch(key)
+		{
+			case CFGKEY_LIST_ALL_GAMES: return readOptionValue(io, optionListAllGames);
+			case CFGKEY_BIOS_TYPE: return readOptionValue(io, optionBIOSType);
+			case CFGKEY_MVS_COUNTRY: return readOptionValue(io, optionMVSCountry);
+			case CFGKEY_CREATE_USE_CACHE: return readOptionValue(io, optionCreateAndUseCache);
+			case CFGKEY_STRICT_ROM_CHECKING: return readOptionValue(io, optionStrictROMChecking);
+		}
 	}
-	return 1;
-}
-
-void EmuSystem::writeSessionConfig(IO &io)
-{
-	optionTimerInt.writeWithKeyIfNotDefault(io);
-}
-
-bool EmuSystem::readConfig(IO &io, unsigned key, unsigned readSize)
-{
-	switch(key)
+	else if(type == ConfigType::SESSION)
 	{
-		default: return 0;
-		bcase CFGKEY_LIST_ALL_GAMES: optionListAllGames.readFromIO(io, readSize);
-		bcase CFGKEY_BIOS_TYPE: optionBIOSType.readFromIO(io, readSize);
-		bcase CFGKEY_MVS_COUNTRY: optionMVSCountry.readFromIO(io, readSize);
-		bcase CFGKEY_CREATE_USE_CACHE: optionCreateAndUseCache.readFromIO(io, readSize);
-		bcase CFGKEY_STRICT_ROM_CHECKING: optionStrictROMChecking.readFromIO(io, readSize);
+		switch(key)
+		{
+			case CFGKEY_TIMER_INT: return readOptionValue(io, optionTimerInt);
+		}
 	}
-	return 1;
+	return false;
 }
 
-void EmuSystem::writeConfig(IO &io)
+void NeoSystem::writeConfig(ConfigType type, FileIO &io)
 {
-	optionListAllGames.writeWithKeyIfNotDefault(io);
-	optionBIOSType.writeWithKeyIfNotDefault(io);
-	optionMVSCountry.writeWithKeyIfNotDefault(io);
-	optionCreateAndUseCache.writeWithKeyIfNotDefault(io);
-	optionStrictROMChecking.writeWithKeyIfNotDefault(io);
+	if(type == ConfigType::MAIN)
+	{
+		writeOptionValueIfNotDefault(io, optionListAllGames);
+		writeOptionValueIfNotDefault(io, optionBIOSType);
+		writeOptionValueIfNotDefault(io, optionMVSCountry);
+		writeOptionValueIfNotDefault(io, optionCreateAndUseCache);
+		writeOptionValueIfNotDefault(io, optionStrictROMChecking);
+	}
+	else if(type == ConfigType::SESSION)
+	{
+		writeOptionValueIfNotDefault(io, optionTimerInt);
+	}
+}
+
 }

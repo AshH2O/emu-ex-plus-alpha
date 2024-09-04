@@ -1,4 +1,4 @@
-LD := $(CXX)
+LD = $(CXX)
 
 ifdef LINK_MAP
  MAPFILE := link.map
@@ -16,4 +16,4 @@ endif
 linkLoadableModuleAction ?= -shared
 loadableModuleExt := .so
 
-LDFLAGS += $(CFLAGS_TARGET) $(LDFLAGS_SYSTEM) $(EXTRA_LDFLAGS)
+LDFLAGS += $(CFLAGS_TARGET) $(EXTRA_LDFLAGS)

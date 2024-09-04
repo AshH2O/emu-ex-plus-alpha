@@ -18,6 +18,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
+#include <emuframework/EmuSystem.hh>
 #include "types.h"
 #include "x6502.h"
 #include "fceu.h"
@@ -29,6 +30,7 @@
 #include "state.h"
 #include "file.h"
 #include "cart.h"
+#include "ines.h"
 #include "netplay.h"
 #include "driver.h"
 #include "movie.h"
@@ -87,7 +89,6 @@ static int32 DiskSeekIRQ;
 static uint8 SelectDisk, InDisk;
 
 /* 4024(w), 4025(w), 4031(r) by dink(fbneo) */
-#define USE_DINK // remove this and old code after testing phase
 enum FDS_DiskBlockIDs { DSK_INIT = 0, DSK_VOLUME, DSK_FILECNT, DSK_FILEHDR, DSK_FILEDATA };
 static uint8  mapperFDS_control;    // 4025(w) control register
 static uint16 mapperFDS_filesize;	// size of file being read/written
@@ -99,13 +100,20 @@ static uint8  mapperFDS_diskaccess;	// disk needs to be accessed at least once b
 #define fds_disk() (diskdata[InDisk][mapperFDS_blockstart + mapperFDS_diskaddr])
 #define mapperFDS_diskinsert (InDisk != 255)
 
+void setDiskIsAccessing(bool);
 
 #define DC_INC    1
 
 void FDSGI(GI h) {
-	switch (h) {
-	case GI_CLOSE: FDSClose(); break;
-	case GI_POWER: FDSInit(); break;
+	switch (h)
+	{
+		case GI_CLOSE: FDSClose(); break;
+		case GI_POWER: FDSInit(); break;
+
+		// Unhandled Cases
+		case GI_RESETM2:
+		case GI_RESETSAVE:
+			break;
 	}
 }
 
@@ -156,7 +164,6 @@ static void FDSInit(void) {
 	InDisk = 0;
 	SelectDisk = 0;
 
-#ifdef USE_DINK
 	mapperFDS_control = 0;
 	mapperFDS_filesize = 0;
 	mapperFDS_block = 0;
@@ -164,7 +171,7 @@ static void FDSInit(void) {
 	mapperFDS_blocklen = 0;
 	mapperFDS_diskaddr = 0;
 	mapperFDS_diskaccess = 0;
-#endif
+	setDiskIsAccessing(false);
 }
 
 void FCEU_FDSInsert(void)
@@ -220,7 +227,7 @@ void FCEU_FDSSelect(void)
 	FCEU_DispMessage("Disk %d Side %c Selected", 0, SelectDisk >> 1, (SelectDisk & 1) ? 'B' : 'A');
 }
 
-void FCEU_FDSSetDisk(uint8 side)
+void FCEU_FDSSetDisk(uint8 side, EmuEx::NesSystem &sys)
 {
 	if(side >= TotalSides)
 		return;
@@ -228,8 +235,8 @@ void FCEU_FDSSetDisk(uint8 side)
 	if(FCEU_FDSInserted())
 	{
 		FCEU_FDSInsert();
-		for(int i = 0; i < 60; i++)
-			FCEUI_Emulate(nullptr, nullptr, false, nullptr); // wait 1 second in emu time for disk eject
+		for(int i = 0; i < 120; i++)
+			FCEUI_Emulate(sys, nullptr, false, nullptr); // wait 2 seconds in emu time for disk eject
 	}
 
 	while(SelectDisk != side)
@@ -255,16 +262,27 @@ uint8 FCEU_FDSSides()
 	return TotalSides;
 }
 
+#define IRQ_Repeat  0x01
+#define IRQ_Enabled 0x02
+
 static void FDSFix(int a) {
-	if ((IRQa & 2) && IRQCount) {
+	if (IRQa & IRQ_Enabled) {
 		IRQCount -= a;
 		if (IRQCount <= 0) {
-			if (!(IRQa & 1)) {
-				IRQa &= ~2;
-				IRQCount = IRQLatch = 0;
-			} else
 				IRQCount = IRQLatch;
+			/* Puff Puff Golf notes:
+			Game freezes while music playing ingame after inserting Disk Side B.
+			IRQ is usually fired at scanline 169 and 183 for music to work.
+
+			At some point after inserting disk B, an IRQ is fired at scanline 174 which
+			will just freeze game while music plays.
+
+			If you ignore triggering IRQ altogether, game plays but no music
+			*/
 			X6502_IRQBegin(FCEU_IQEXT);
+				if (!(IRQa & IRQ_Repeat)) {
+					IRQa &= ~IRQ_Enabled;
+			}
 		}
 	}
 	if (DiskSeekIRQ > 0) {
@@ -290,22 +308,6 @@ static DECLFR(FDSRead4030) {
 	}
 	return ret;
 }
-
-#ifndef USE_DINK
-static DECLFR(FDSRead4031) {
-	static uint8 z = 0;
-	if (InDisk != 255) {
-		z = diskdata[InDisk][DiskPtr];
-		if (!fceuindbg) {
-			if (DiskPtr < 64999) DiskPtr++;
-			DiskSeekIRQ = 150;
-			X6502_IRQEnd(FCEU_IQEXT2);
-		}
-	}
-	return z;
-}
-
-#else
 
 static DECLFR(FDSRead4031) {
 	static uint8 ret = 0;
@@ -346,8 +348,6 @@ static DECLFR(FDSRead4031) {
 
 	return ret;
 }
-
-#endif
 
 static DECLFR(FDSRead4032) {
 	uint8 ret;
@@ -622,34 +622,31 @@ void FDSSoundReset(void) {
 static DECLFW(FDSWrite) {
 	switch (A) {
 	case 0x4020:
-		X6502_IRQEnd(FCEU_IQEXT);
 		IRQLatch &= 0xFF00;
 		IRQLatch |= V;
 		break;
 	case 0x4021:
-		X6502_IRQEnd(FCEU_IQEXT);
 		IRQLatch &= 0xFF;
 		IRQLatch |= V << 8;
 		break;
 	case 0x4022:
-		X6502_IRQEnd(FCEU_IQEXT);
-		IRQCount = IRQLatch;
-		IRQa = V & 3;
-		break;
-	case 0x4023: break;
-	case 0x4024:
-#ifndef USE_DINK
-		if ((InDisk != 255) && !(FDSRegs[5] & 0x4) && (FDSRegs[3] & 0x1)) {
-			if (DiskPtr >= 0 && DiskPtr < 65500) {
-				if (writeskip)
-					writeskip--;
-				else if (DiskPtr >= 2) {
-					DiskWritten = 1;
-					diskdata[InDisk][DiskPtr - 2] = V;
-				}
+		if (FDSRegs[3] & 1) {
+			IRQa = V & 0x03;
+			if (IRQa & IRQ_Enabled) {
+				IRQCount = IRQLatch;
+			} else {
+				X6502_IRQEnd(FCEU_IQEXT);
 			}
 		}
-#else
+		break;
+	case 0x4023:
+		if (!(V & 0x01)) {
+			IRQa &= ~IRQ_Enabled;
+			X6502_IRQEnd(FCEU_IQEXT);
+			X6502_IRQEnd(FCEU_IQEXT2);
+		}
+		break;
+	case 0x4024:
 		if (mapperFDS_diskinsert && ~mapperFDS_control & 0x04) {
 
 			if (mapperFDS_diskaccess == 0) {
@@ -661,6 +658,8 @@ static DECLFW(FDSWrite) {
 				case DSK_FILEHDR:
 					if (mapperFDS_diskaddr < mapperFDS_blocklen) {
 						fds_disk() = V;
+						DiskWritten = 1;
+						EmuEx::gSystem().onBackupMemoryWritten();
 						switch (mapperFDS_diskaddr) {
 							case 13: mapperFDS_filesize = V; break;
 							case 14:
@@ -676,33 +675,16 @@ static DECLFW(FDSWrite) {
 				default:
 					if (mapperFDS_diskaddr < mapperFDS_blocklen) {
 						fds_disk() = V;
+					DiskWritten = 1;
+					EmuEx::gSystem().onBackupMemoryWritten();
 						mapperFDS_diskaddr++;
 					}
 					break;
 			}
 
 		}
-#endif
 		break;
 	case 0x4025:
-#ifndef USE_DINK
-		X6502_IRQEnd(FCEU_IQEXT2);
-		if (InDisk != 255) {
-			if (!(V & 0x40)) {
-				if ((FDSRegs[5] & 0x40) && !(V & 0x10)) {
-					DiskSeekIRQ = 200;
-					DiskPtr -= 2;
-				}
-				if (DiskPtr < 0) DiskPtr = 0;
-			}
-			if (!(V & 0x4)) writeskip = 2;
-			if (V & 2) {
-				DiskPtr = 0; DiskSeekIRQ = 200;
-			}
-			if (V & 0x40) DiskSeekIRQ = 200;
-		}
-		setmirror(((V >> 3) & 1) ^ 1);
-#else
 		X6502_IRQEnd(FCEU_IQEXT2);
 		if (mapperFDS_diskinsert) {
 			if (V & 0x40 && ~mapperFDS_control & 0x40) {
@@ -742,6 +724,11 @@ static DECLFW(FDSWrite) {
 				mapperFDS_blocklen = 0;
 				mapperFDS_diskaddr = 0;
 				DiskSeekIRQ = 150;
+				setDiskIsAccessing(false);
+			}
+			else if (V & 0x80)
+			{
+				setDiskIsAccessing(true);
 			}
 			if (V & 0x40) { // turn on motor
 				DiskSeekIRQ = 150;
@@ -749,7 +736,6 @@ static DECLFW(FDSWrite) {
 		}
 		mapperFDS_control = V;
 		setmirror(((V >> 3) & 1) ^ 1);
-#endif
 		break;
 	}
 	FDSRegs[A & 7] = V;
@@ -770,6 +756,7 @@ static int SubLoad(FCEUFILE *fp) {
 	uint8 header[16];
 	int x;
 
+	FCEU_fseek(fp, 0, SEEK_SET);
 	FCEU_fread(header, 16, 1, fp);
 
 	if (memcmp(header, "FDS\x1a", 4)) {
@@ -781,7 +768,7 @@ static int SubLoad(FCEUFILE *fp) {
 			TotalSides = t / 65500;
 			FCEU_fseek(fp, 0, SEEK_SET);
 		} else
-			return(0);
+			return 1;
 	} else
 		TotalSides = header[4];
 
@@ -791,18 +778,12 @@ static int SubLoad(FCEUFILE *fp) {
 	if (TotalSides < 1) TotalSides = 1;
 
 	for (x = 0; x < TotalSides; x++) {
-		diskdata[x] = (uint8*)FCEU_malloc(65500);
-		if (!diskdata[x]) {
-			int zol;
-			for (zol = 0; zol < x; zol++)
-				free(diskdata[zol]);
-			return 0;
-		}
+		if (!diskdata[x] && (diskdata[x] = (uint8*)FCEU_malloc(65500)) == NULL) return 2;
 		FCEU_fread(diskdata[x], 1, 65500, fp);
 		md5_update(&md5, diskdata[x], 65500);
 	}
 	md5_finish(&md5, GameInfo->MD5.data);
-	return(1);
+	return 0;
 }
 
 static void PreSave(void) {
@@ -826,6 +807,20 @@ static void PostSave(void) {
 int FDSLoad(const char *name, FCEUFILE *fp) {
 	int x;
 
+	// try to load FDS image first
+	FreeFDSMemory();
+	int load_result = SubLoad(fp);
+	switch (load_result)
+	{
+	case 1:
+		FreeFDSMemory();
+		return LOADER_INVALID_FORMAT;
+	case 2:
+		FreeFDSMemory();
+		FCEU_PrintError("Unable to allocate memory.");
+		return LOADER_HANDLED_ERROR;
+	}
+
 	ResetCartMapping();
 
 	if(FDSBIOS)
@@ -846,46 +841,16 @@ int FDSLoad(const char *name, FCEUFILE *fp) {
 		if(FDSBIOS)
 			free(FDSBIOS);
 		FDSBIOS = NULL;
+		FreeFDSMemory();
 		FCEU_PrintError("Error reading FDS BIOS ROM image.");
-		return 0;
+		return LOADER_HANDLED_ERROR;
 	}
 
-	FCEU_fseek(fp, 0, SEEK_SET);
-
-	FreeFDSMemory();
-	if (!SubLoad(fp)) {
-		if(FDSBIOS)
-			free(FDSBIOS);
-		FDSBIOS = NULL;
-		return(0);
+	for (x = 0; x < TotalSides; x++) {
+		diskdatao[x] = (uint8*)FCEU_malloc(65500);
+		memcpy(diskdatao[x], diskdata[x], 65500);
 	}
 
-	if (!disableBatteryLoading) {
-		FCEUFILE *tp;
-		std::string fn = FCEU_MakeFName(FCEUMKF_FDS, 0, 0);
-
-		int x;
-		for (x = 0; x < TotalSides; x++) {
-			diskdatao[x] = (uint8*)FCEU_malloc(65500);
-			memcpy(diskdatao[x], diskdata[x], 65500);
-		}
-
-		if ((tp = FCEU_fopen(fn.c_str(), 0, "rb", 0))) {
-			FCEU_printf("Disk was written. Auxillary FDS file open \"%s\".\n", fn.c_str());
-			FreeFDSMemory();
-			if (!SubLoad(tp)) {
-				FCEU_PrintError("Error reading auxillary FDS file.");
-				if(FDSBIOS)
-					free(FDSBIOS);
-				FDSBIOS = NULL;
-				return(0);
-			}
-			FCEU_fclose(tp);
-			DiskWritten = 1;  /* For save state handling. */
-		}
-	}
-
-	extern char LoadedRomFName[2048];
 	strcpy(LoadedRomFName, name); //For the debugger list
 
 	GameInfo->type = GIT_FDS;
@@ -899,8 +864,8 @@ int FDSLoad(const char *name, FCEUFILE *fp) {
 	FDSSoundStateAdd();
 
 	for (x = 0; x < TotalSides; x++) {
-		char temp[5];
-		sprintf(temp, "DDT%d", x);
+		char temp[8];
+		snprintf(temp, sizeof(temp), "DDT%d", x);
 		AddExState(diskdata[x], 65500, 0, temp);
 	}
 
@@ -914,7 +879,6 @@ int FDSLoad(const char *name, FCEUFILE *fp) {
 	AddExState(&SelectDisk, 1, 0, "SELD");
 	AddExState(&InDisk, 1, 0, "INDI");
 	AddExState(&DiskWritten, 1, 0, "DSKW");
-#ifdef USE_DINK
 	AddExState(&mapperFDS_control, 1, 0, "CTRG");
 	AddExState(&mapperFDS_filesize, 2, 1, "FLSZ");
 	AddExState(&mapperFDS_block, 1, 0, "BLCK");
@@ -922,7 +886,6 @@ int FDSLoad(const char *name, FCEUFILE *fp) {
 	AddExState(&mapperFDS_blocklen, 2, 1, "BLKL");
 	AddExState(&mapperFDS_diskaddr, 2, 1, "DADR");
 	AddExState(&mapperFDS_diskaccess, 1, 0, "DACC");
-#endif
 
 	CHRRAMSize = 8192;
 	CHRRAM = (uint8*)FCEU_gmalloc(CHRRAMSize);
@@ -940,7 +903,7 @@ int FDSLoad(const char *name, FCEUFILE *fp) {
 
 	FCEUI_SetVidSystem(0);
 
-	return 1;
+	return LOADER_OK;
 }
 
 void FDSClose(void) {
@@ -964,6 +927,22 @@ void FDSClose(void) {
 	if(CHRRAM)
 		free(CHRRAM);
 	CHRRAM = NULL;
+}
+
+void FCEU_FDSReadModifiedDisk() {
+	FCEUFILE *tp;
+	std::string fn = FCEU_MakeFName(FCEUMKF_FDS, 0, 0);
+
+	if ((tp = FCEU_fopen(fn.c_str(), 0, "rb", 0))) {
+		FCEU_printf("Disk was written. Auxiliary FDS file open \"%s\".\n", fn.c_str());
+		if (SubLoad(tp)) {
+			FCEU_PrintError("Error reading auxiliary FDS file.");
+		}
+		else {
+			DiskWritten = 1;  /* For save state handling. */
+		}
+		FCEU_fclose(tp);
+	}
 }
 
 void FCEU_FDSWriteModifiedDisk() {

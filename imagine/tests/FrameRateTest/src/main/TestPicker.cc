@@ -16,36 +16,19 @@
 #include "TestPicker.hh"
 #include "main.hh"
 #include <imagine/util/algorithm.h>
-#include <imagine/util/string.h>
 #include <imagine/gfx/RendererCommands.hh>
 #include <imagine/logger/logger.h>
+#include <format>
 
-TestTableEntry::TestTableEntry(Gfx::GlyphTextureSet *face, SelectDelegate selectDel):
-	DualTextMenuItem{{}, {}, face, selectDel}
-{}
-
-void TestTableEntry::draw(Gfx::RendererCommands &cmds, Gfx::GC xPos, Gfx::GC yPos, Gfx::GC xSize, Gfx::GC ySize,
-	Gfx::GC xIndent, _2DOrigin align, const Gfx::ProjectionPlane &projP, Gfx::Color color) const
+namespace FrameRateTest
 {
-	BaseTextMenuItem::draw(cmds, xPos, yPos, xSize, ySize, xIndent, align, projP, color);
-	if(t2.isVisible())
-	{
-		Gfx::Color color2;
-		if(redText)
-			color2 = Gfx::color(1.f, 0.f, 0.f);
-		else
-			color2 = Gfx::color(1.f, 1.f, 1.f);
-		draw2ndText(cmds, xPos, yPos, xSize, ySize, xIndent, align, projP, color2);
-	}
-}
 
-TestPicker::TestPicker(ViewAttachParams attach):
+TestPicker::TestPicker(IG::ViewAttachParams attach):
 	TableView
 	{
 		attach,
 		testEntry
-	}
-{}
+	} {}
 
 void TestPicker::setTests(const TestDesc *testDesc, unsigned tests)
 {
@@ -53,30 +36,31 @@ void TestPicker::setTests(const TestDesc *testDesc, unsigned tests)
 	testEntry.reserve(tests);
 	testParam.clear();
 	testParam.reserve(tests);
-	iterateTimes(tests, i)
+	for(auto i : iotaCount(tests))
 	{
-		testEntry.emplace_back(&defaultFace(),
-			[this, i](DualTextMenuItem &, View &, Input::Event e)
+		testEntry.emplace_back(testDesc[i].name, u"", attachParams(),
+			[this, i]
 			{
-				auto &app = mainApp(appContext());
+				auto &app = appContext().applicationAs<FrameRateTestApplication>();
 				auto test = app.startTest(window(), testParam[i]);
 				test->onTestFinished =
 					[this, i](TestFramework &test)
 					{
 						IG::FloatSeconds diff = test.endTime - test.startTime;
 						logMsg("ran from %f to %f, took %f",
-							IG::FloatSeconds(test.startTime).count(),
-							IG::FloatSeconds(test.endTime).count(),
+							IG::FloatSeconds(test.startTime.time_since_epoch()).count(),
+							IG::FloatSeconds(test.endTime.time_since_epoch()).count(),
 							diff.count());
 						auto &entry = testEntry[i];
 						auto fps = double(test.frames-1) / diff.count();
-						entry.set2ndName(string_makePrintf<9>("%.2f", fps).data());
-						entry.redText = test.droppedFrames;
+						entry.set2ndName(std::format("{:.2f}", fps).data());
+						entry.text2Color = test.droppedFrames ? Gfx::ColorName::RED : Gfx::ColorName::WHITE;
 					};
 			});
-		testEntry[i].setName(testDesc[i].name.data());
 		testParam.emplace_back(testDesc[i].params);
 	}
 	if(appContext().keyInputIsPresent())
 		highlightCell(0);
+}
+
 }

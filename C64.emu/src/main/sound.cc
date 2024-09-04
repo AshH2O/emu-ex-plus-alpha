@@ -15,12 +15,16 @@
 
 #define LOGTAG "sound"
 #include <emuframework/EmuAudio.hh>
-#include "internal.hh"
+#include "MainSystem.hh"
 
 extern "C"
 {
 	#include "sound.h"
 }
+
+#include <imagine/logger/logger.h>
+
+using namespace EmuEx;
 
 static int soundInit(const char *param, int *speed,
 		   int *fragsize, int *fragnr, int *channels)
@@ -33,6 +37,7 @@ static int soundInit(const char *param, int *speed,
 static int soundWrite(int16_t *pbuf, size_t nr)
 {
 	//logMsg("sound write %zd", nr);
+	auto audioPtr = gC64System().audioPtr;
 	if(audioPtr) [[likely]]
 		audioPtr->writeFrames(pbuf, nr);
 	return 0;
@@ -50,10 +55,11 @@ static sound_device_t soundDevice =
     nullptr,
     nullptr,
     0,
-    2
+    2,
+		true
 };
 
 CLINK int sound_init_dummy_device()
 {
-	return plugin.sound_register_device(&soundDevice);
+	return gC64System().plugin.sound_register_device(&soundDevice);
 }

@@ -16,61 +16,53 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/io/PosixIO.hh>
-#include <imagine/io/BufferMapIO.hh>
-#include <imagine/fs/FSDefs.hh>
+#include <imagine/io/MapIO.hh>
+#include <imagine/util/string/CStringView.hh>
 #include <variant>
+#include <span>
+
+namespace IG
+{
+
+class IO;
 
 class PosixFileIO : public IOUtils<PosixFileIO>
 {
 public:
-	using IOUtils<PosixFileIO>::read;
-	using IOUtils<PosixFileIO>::readAtPos;
-	using IOUtils<PosixFileIO>::write;
-	using IOUtils<PosixFileIO>::seek;
-	using IOUtils<PosixFileIO>::seekS;
-	using IOUtils<PosixFileIO>::seekE;
-	using IOUtils<PosixFileIO>::seekC;
-	using IOUtils<PosixFileIO>::tell;
-	using IOUtils<PosixFileIO>::send;
-	using IOUtils<PosixFileIO>::constBufferView;
-	using IOUtils<PosixFileIO>::get;
+	using IOUtilsBase = IOUtils<PosixFileIO>;
+	using IOUtilsBase::read;
+	using IOUtilsBase::write;
+	using IOUtilsBase::seek;
+	using IOUtilsBase::tell;
+	using IOUtilsBase::send;
+	using IOUtilsBase::buffer;
+	using IOUtilsBase::get;
+	using IOUtilsBase::toFileStream;
 
-	constexpr PosixFileIO() {}
-	explicit operator IO*();
-	operator IO&();
-	GenericIO makeGeneric();
-	std::error_code open(const char *path, IO::AccessHint access, uint32_t mode = 0);
-
-	std::error_code open(FS::PathString path, IO::AccessHint access, uint32_t mode = 0)
-	{
-		return open(path.data(), access, mode);
-	}
-
-	std::error_code create(const char *path, uint32_t mode = 0)
-	{
-		mode |= IO::OPEN_WRITE | IO::OPEN_CREATE;
-		return open(path, IO::AccessHint::NORMAL, mode);
-	}
-
-	std::error_code create(FS::PathString path, uint32_t mode = 0)
-	{
-		return create(path.data(), mode);
-	}
-
-	static BufferMapIO makePosixMapIO(IO::AccessHint access, int fd);
-	ssize_t read(void *buff, size_t bytes, std::error_code *ecOut);
-	ssize_t readAtPos(void *buff, size_t bytes, off_t offset, std::error_code *ecOut);
-	const uint8_t *mmapConst();
-	ssize_t write(const void *buff, size_t bytes, std::error_code *ecOut);
-	std::error_code truncate(off_t offset);
-	off_t seek(off_t offset, IO::SeekMode mode, std::error_code *ecOut);
-	void close();
+	constexpr PosixFileIO() = default;
+	PosixFileIO(UniqueFileDescriptor fd, OpenFlags);
+	PosixFileIO(CStringView path, OpenFlags oFlags = {});
+	PosixFileIO(PosixIO);
+	PosixFileIO(MapIO);
+	ssize_t read(void *buff, size_t bytes, std::optional<off_t> offset = {});
+	ssize_t write(const void *buff, size_t bytes, std::optional<off_t> offset = {});
+	std::span<uint8_t> map();
+	bool truncate(off_t offset);
+	off_t seek(off_t offset, SeekMode mode);
 	void sync();
 	size_t size();
 	bool eof();
-	void advise(off_t offset, size_t bytes, IO::Advice advice);
+	void advise(off_t offset, size_t bytes, Advice advice);
 	explicit operator bool() const;
+	IOBuffer releaseBuffer();
+	UniqueFileDescriptor releaseFd();
+	operator IO();
+	bool tryMap(OpenFlags);
 
-protected:
-	std::variant<PosixIO, BufferMapIO> ioImpl{};
+private:
+	std::variant<PosixIO, MapIO> ioImpl{};
+
+	void initMmap(OpenFlags openFlags);
 };
+
+}

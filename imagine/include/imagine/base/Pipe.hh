@@ -18,24 +18,22 @@
 #include <imagine/config/defs.hh>
 #include <imagine/base/EventLoop.hh>
 #include <imagine/io/PosixIO.hh>
-#include <imagine/util/typeTraits.hh>
+#include <imagine/util/used.hh>
+#include <imagine/util/concepts.hh>
+#include <imagine/util/utility.h>
 #include <array>
-#include <utility>
 
-namespace Base
+namespace IG
 {
 
 class Pipe
 {
 public:
-	struct NullInit{};
-
-	Pipe(uint32_t preferredSize = 0): Pipe(nullptr, preferredSize) {}
-	Pipe(const char *debugLabel, uint32_t preferredSize = 0);
-	explicit constexpr Pipe(NullInit) {}
+	Pipe(int preferredSize = 0): Pipe(nullptr, preferredSize) {}
+	Pipe(const char *debugLabel, int preferredSize = 0);
 	PosixIO &source();
 	PosixIO &sink();
-	void attach(EventLoop loop, PollEventDelegate del);
+	void attach(EventLoop loop);
 	void detach();
 	bool hasData();
 	void dispatchSourceEvents();
@@ -43,35 +41,31 @@ public:
 	void setReadNonBlocking(bool on);
 	bool isReadNonBlocking() const;
 	explicit operator bool() const;
+	const char* debugLabel() const { return fdSrc.debugLabel(); }
 
-	template<class Func>
-	void attach(Func func)
+	void attach(auto &&f)
 	{
-		attach({}, std::forward<Func>(func));
+		attach({}, IG_forward(f));
 	}
 
-	template<class Func>
-	void attach(EventLoop loop, Func func)
+	void attach(EventLoop loop, Callable<bool, PosixIO&> auto &&f)
 	{
-		attach(loop,
-			PollEventDelegate
+		fdSrc.setCallback(PollEventDelegate
 			{
 				[=](int fd, int)
 				{
 					PosixIO io{fd};
-					auto keep = func(io);
-					io.releaseFD();
+					bool keep = f(io);
+					io.releaseFd().release();
 					return keep;
 				}
 			});
+		attach(loop);
 	}
 
 protected:
-	IG_enableMemberIf(Config::DEBUG_BUILD, const char *, debugLabel){};
-	std::array<PosixIO, 2> io{-1, -1};
-	FDEventSource fdSrc{};
-
-	const char *label() const;
+	std::array<PosixIO, 2> io;
+	FDEventSource fdSrc;
 };
 
 }

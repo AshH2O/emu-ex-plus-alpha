@@ -14,28 +14,29 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/base/Timer.hh>
+#include <imagine/util/format.hh>
 #include <imagine/logger/logger.h>
 #include <limits>
 
-namespace Base
+namespace IG
 {
 
-CFTimer::CFTimer(const char *debugLabel, CallbackDelegate c):
-	debugLabel{debugLabel ? debugLabel : "unnamed"},
-	info{std::make_unique<CFTimerInfo>(CFTimerInfo{c, {}})}
-{}
+constexpr SystemLogger log{"Timer"};
 
-CFTimer::CFTimer(CFTimer &&o)
+CFTimer::CFTimer(TimerDesc desc, CallbackDelegate del):
+	debugLabel_{desc.debugLabel ? desc.debugLabel : "unnamed"},
+	info{std::make_unique<CFTimerInfo>(del, CFRunLoopRef{}, desc.eventLoop.nativeObject() ?: EventLoop::forThread().nativeObject())} {}
+
+CFTimer::CFTimer(CFTimer&& o) noexcept
 {
 	*this = std::move(o);
 }
 
-CFTimer &CFTimer::operator=(CFTimer &&o)
+CFTimer& CFTimer::operator=(CFTimer&& o) noexcept
 {
 	deinit();
 	timer = std::exchange(o.timer, {});
 	info = std::move(o.info);
-	debugLabel = o.debugLabel;
 	return *this;
 }
 
@@ -66,8 +67,7 @@ void CFTimer::callbackInCFAbsoluteTime(CFAbsoluteTime absTime, CFTimeInterval re
 		timer = CFRunLoopTimerCreate(nullptr, absTime, realRepeatInterval, 0, 0,
 			[](CFRunLoopTimerRef timer, void *infoPtr)
 			{
-				using namespace Base;
-				logMsg("running callback for timer: %p", timer);
+				log.info("running callback for timer:{}", (void*)timer);
 				auto &info = *((CFTimerInfo*)infoPtr);
 				bool keep = info.callback();
 				if(!keep)
@@ -77,7 +77,7 @@ void CFTimer::callbackInCFAbsoluteTime(CFAbsoluteTime absTime, CFTimeInterval re
 				}
 			}, &context);
 		createdTimer = true;
-		logMsg("created timer:%p (%s)", timer, label());
+		log.info("created timer:{} ({})", (void*)timer, debugLabel());
 	}
 	else
 	{
@@ -85,9 +85,9 @@ void CFTimer::callbackInCFAbsoluteTime(CFAbsoluteTime absTime, CFTimeInterval re
 	}
 	if(Config::DEBUG_BUILD)
 	{
-		logMsg("%stimer:%p (%s) to run in:%.4fs repeats:%.4fs",
+		log.info("{}timer:{} ({}) to run in:{}s repeats:{}s",
 			createdTimer ? "created " : "",
-			timer, label(), makeRelativeSecs(absTime), (double)repeatInterval);
+			(void*)timer, debugLabel(), makeRelativeSecs(absTime), (double)repeatInterval);
 	}
 	if(loop != info->loop)
 	{
@@ -98,16 +98,14 @@ void CFTimer::callbackInCFAbsoluteTime(CFAbsoluteTime absTime, CFTimeInterval re
 	}
 }
 
-void Timer::run(Time time, Time repeatTime, bool isAbsTime, EventLoop loop, CallbackDelegate callback)
+void Timer::run(Time time, Time repeatTime, bool isAbsTime, CallbackDelegate callback)
 {
 	if(callback)
 		setCallback(callback);
-	if(!loop)
-		loop = EventLoop::forThread();
-	CFAbsoluteTime absTime = time.count();
+	CFAbsoluteTime absTime = duration_cast<FloatSeconds>(time).count();
 	if(!isAbsTime)
 		absTime += CFAbsoluteTimeGetCurrent();
-	callbackInCFAbsoluteTime(absTime, repeatTime.count(), loop.nativeObject());
+	callbackInCFAbsoluteTime(absTime, repeatTime.count(), info->setLoop);
 }
 
 void Timer::cancel()
@@ -121,6 +119,12 @@ void Timer::cancel()
 void Timer::setCallback(CallbackDelegate callback)
 {
 	info->callback = callback;
+}
+
+void Timer::setEventLoop(EventLoop loop)
+{
+	cancel();
+	info->setLoop = loop.nativeObject() ?: EventLoop::forThread().nativeObject();
 }
 
 void Timer::dispatchEarly()
@@ -138,16 +142,11 @@ void CFTimer::deinit()
 {
 	if(!timer)
 		return;
-	logMsg("closing timer: %p", timer);
+	log.info("closing timer:{}", (void*)timer);
 	CFRunLoopTimerInvalidate(timer);
 	CFRelease(timer);
 	timer = {};
 	info->loop = {};
-}
-
-const char *CFTimer::label()
-{
-	return debugLabel;
 }
 
 }

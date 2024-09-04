@@ -124,7 +124,6 @@
 	{0x054bd3e9,	 74,	   -1},	/* Di 4 Ci - Ji Qi Ren Dai Zhan (As) */
 	{0x496ac8f7,	 74,	   -1},	/* Ji Jia Zhan Shi (As) */
 	{0xae854cef,	 74,	   -1},	/* Jia A Fung Yun (Chinese) */
-	{0xba51ac6f,	 78,		2},
 	{0x3d1c3137,	 78,		8},	/* Uchuusen - Cosmo Carrier */
 	{0xa4fbb438,	 79,		0},
 	{0xd4a76b07,	 79,		0},	/* F-15 City Wars*/
@@ -256,6 +255,7 @@
 	{0x6bea1235,	245,	   -1},	/* MMC3 cart, but with nobanking applied to CHR-RAM, so let it be there */
 	{0x345ee51a,	245,	   -1},	/* DQ4c */
 	{0x57514c6c,	245,	   -1},	/* Yong Zhe Dou E Long - Dragon Quest VI (Ch) */
+	{0x9bbf3e5d,	 15,	   -1}, /* 168-in-1 [p1][!].nes */
 
 	// added a new mask bit to define these mappers as a dupes of the UNIF format boards
 

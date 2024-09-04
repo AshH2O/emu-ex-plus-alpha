@@ -19,43 +19,50 @@
 #include <imagine/gui/View.hh>
 #include <imagine/gui/MenuItem.hh>
 #include <imagine/gui/TableView.hh>
-#include <utility>
+#include <imagine/gfx/Quads.hh>
+#include <imagine/util/concepts.hh>
+#include <vector>
+#include <array>
+
+namespace IG
+{
 
 class BaseAlertView : public View
 {
 public:
-	BaseAlertView(ViewAttachParams attach, const char *label, TableView::ItemsDelegate items, TableView::ItemDelegate item);
-	template <class Container>
-	BaseAlertView(ViewAttachParams attach, const char *label, Container &item):
-		BaseAlertView
+	BaseAlertView(ViewAttachParams attach, UTF16Convertible auto &&label, TableView::ItemSourceDelegate items):
+		View{attach},
+		bgQuads{attach.rendererTask, {.size = 2}},
+		text{attach.rendererTask, IG_forward(label), &defaultFace()},
+		menu
 		{
 			attach,
-			label,
-			[&item](const ::TableView &) { return std::size(item); },
-			[&item](const ::TableView &, uint32_t idx) -> MenuItem& { return IG::deref(std::data(item)[idx]); }
-		} {}
+			items
+		} { init(); }
+
 	void place() override;
-	bool inputEvent(Input::Event e) override;
+	bool inputEvent(const Input::Event&, ViewInputEventParams p = {}) override;
 	void prepareDraw() override;
-	void draw(Gfx::RendererCommands &cmds) override;
-	void onAddedToController(ViewController *c, Input::Event e) override;
-	void setLabel(const char *label);
+	void draw(Gfx::RendererCommands &__restrict__, ViewDrawParams p = {}) const override;
+	void onAddedToController(ViewController *, const Input::Event &) override;
+	void setLabel(UTF16Convertible auto &&label) { text.resetString(IG_forward(label)); }
 
 protected:
-	Gfx::GCRect labelFrame{};
-	Gfx::Text text{};
+	WRect labelFrame;
+	Gfx::IQuads bgQuads;
+	Gfx::Text text;
 	TableView menu;
+
+	void init();
 };
 
 class AlertView : public BaseAlertView
 {
 public:
-	AlertView(ViewAttachParams attach, const char *label, uint32_t menuItems);
-	void setItem(uint32_t idx, const char *name, TextMenuItem::SelectDelegate del);
-	template<class Func>
-	void setItem(uint32_t idx, const char *name, Func &&func)
+	AlertView(ViewAttachParams attach, UTF16Convertible auto &&label, size_t menuItems):
+		BaseAlertView{attach, IG_forward(label), item}
 	{
-		setItem(idx, name, TextMenuItem::makeSelectDelegate(std::forward<Func>(func)));
+		item.reserve(menuItems);
 	}
 
 protected:
@@ -65,36 +72,30 @@ protected:
 class YesNoAlertView : public BaseAlertView
 {
 public:
-	YesNoAlertView(ViewAttachParams attach, const char *label, const char *yesStr, const char *noStr,
-		TextMenuItem::SelectDelegate onYes, TextMenuItem::SelectDelegate onNo);
-	template<class Func1, class Func2>
-	YesNoAlertView(ViewAttachParams attach, const char *label, const char *yesStr, const char *noStr,
-		Func1 &&onYes, Func2 &&onNo):
-			YesNoAlertView
-			{
-				attach,
-				label,
-				yesStr,
-				noStr,
-				TextMenuItem::makeSelectDelegate(std::forward<Func1>(onYes)),
-				TextMenuItem::makeSelectDelegate(std::forward<Func2>(onNo))
-			} {}
-	YesNoAlertView(ViewAttachParams attach, const char *label, const char *yesStr = {}, const char *noStr = {}):
-		YesNoAlertView{attach, label, yesStr, noStr, {}, {}} {}
+	struct Delegates
+	{
+		TextMenuItem::SelectDelegate onYes{[]{}};
+		TextMenuItem::SelectDelegate onNo{[]{}};
+	};
+
+	YesNoAlertView(ViewAttachParams attach, UTF16Convertible auto &&label,
+		UTF16Convertible auto &&yesStr, UTF16Convertible auto &&noStr,
+		Delegates delegates):
+		BaseAlertView{attach, IG_forward(label), yesNo},
+		yesNo
+		{
+			TextMenuItem{IG_forward(yesStr), attach, delegates.onYes},
+			TextMenuItem{IG_forward(noStr), attach, delegates.onNo}
+		} {}
+
+	YesNoAlertView(ViewAttachParams attach, UTF16Convertible auto &&label, Delegates delegates):
+		YesNoAlertView{attach, IG_forward(label), u"Yes", u"No", delegates} {}
+
 	void setOnYes(TextMenuItem::SelectDelegate del);
-	template<class Func>
-	void setOnYes(Func &&func)
-	{
-		setOnYes(TextMenuItem::makeSelectDelegate(std::forward<Func>(func)));
-	}
 	void setOnNo(TextMenuItem::SelectDelegate del);
-	template<class Func>
-	void setOnNo(Func &&func)
-	{
-		setOnNo(TextMenuItem::makeSelectDelegate(std::forward<Func>(func)));
-	}
 
 protected:
-	TextMenuItem yes, no;
-	TextMenuItem::SelectDelegate makeDefaultSelectDelegate();
+	std::array<TextMenuItem, 2> yesNo;
 };
+
+}

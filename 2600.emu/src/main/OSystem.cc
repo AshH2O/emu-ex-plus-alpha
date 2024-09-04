@@ -16,7 +16,7 @@
 #include <OSystem.hxx>
 #include <FrameBuffer.hxx>
 #include <EventHandler.hxx>
-#include <FSNodeEmuEx.hh>
+#include <FSNode.hxx>
 #include <SoundEmuEx.hh>
 #include <stella/emucore/Console.hxx>
 #include <stella/emucore/PropsSet.hxx>
@@ -28,101 +28,51 @@
 #include <stella/emucore/M6532.hxx>
 // TODO: Some Stella types collide with MacTypes.h
 #define Debugger DebuggerMac
+#include <imagine/base/ApplicationContext.hh>
 #include <imagine/logger/logger.h>
 #include <emuframework/EmuSystem.hh>
+#include <emuframework/EmuApp.hh>
 #undef Debugger
 
-OSystem::OSystem(EmuApp &app):
-	appPtr{&app}
+OSystem::OSystem(EmuEx::EmuApp &app):
+	appPtr{&app},
+	myRandom{uInt32(TimerManager::getTicks())}
 {
-	mySettings = std::make_unique<Settings>();
-	mySettings->setValue(AudioSettings::SETTING_PRESET, static_cast<int>(AudioSettings::Preset::custom));
-	mySettings->setValue(AudioSettings::SETTING_FRAGMENT_SIZE, 128);
-	mySettings->setValue(AudioSettings::SETTING_BUFFER_SIZE, 0);
-	mySettings->setValue(AudioSettings::SETTING_HEADROOM, 0);
-	mySettings->setValue(AudioSettings::SETTING_VOLUME, 100);
-	myAudioSettings = std::make_unique<AudioSettings>(*mySettings);
-	myRandom = std::make_unique<Random>(uInt32(TimerManager::getTicks()));
-	myFrameBuffer = std::make_unique<FrameBuffer>(*this);
-	myEventHandler = std::make_unique<EventHandler>(*this);
-	myPropSet = std::make_unique<PropertiesSet>();
-	myStateManager = std::make_unique<StateManager>(*this);
-	mySound = std::make_unique<SoundEmuEx>(*this);
-}
-
-EventHandler& OSystem::eventHandler() const
-{
-	return *myEventHandler;
-}
-
-Random& OSystem::random() const
-{
-	return *myRandom;
-}
-
-FrameBuffer& OSystem::frameBuffer() const
-{
-	return *myFrameBuffer;
-}
-
-Sound& OSystem::sound() const
-{
-	return *mySound;
-}
-
-Settings& OSystem::settings() const
-{
-	return *mySettings;
-}
-
-PropertiesSet& OSystem::propSet() const
-{
-	return *myPropSet;
-}
-
-StateManager& OSystem::state() const
-{
-	return *myStateManager;
+	mySettings.setValue(AudioSettings::SETTING_PRESET, static_cast<int>(AudioSettings::Preset::custom));
+	mySettings.setValue(AudioSettings::SETTING_FRAGMENT_SIZE, 128);
+	mySettings.setValue(AudioSettings::SETTING_BUFFER_SIZE, 0);
+	mySettings.setValue(AudioSettings::SETTING_HEADROOM, 0);
+	mySettings.setValue(AudioSettings::SETTING_VOLUME, 100);
 }
 
 void OSystem::makeConsole(unique_ptr<Cartridge>& cart, const Properties& props, const char *gamePath)
 {
-	myConsole = std::make_unique<Console>(*this, cart, props, *myAudioSettings);
 	myRomFile = FilesystemNode{gamePath};
+	myConsole.emplace(*this, cart, props, myAudioSettings);
 	myConsole->riot().update();
 }
 
 void OSystem::deleteConsole()
 {
-	myConsole = {};
+	myConsole.reset();
 }
 
-void OSystem::setFrameTime(double frameTime, int rate)
+void OSystem::setSoundMixRate(int mixRate, AudioSettings::ResamplingQuality resampleQ)
 {
-	mySound->setFrameTime(*this, frameTime, rate);
+	mySound.setMixRate(mixRate, resampleQ);
 }
 
-void OSystem::setResampleQuality(AudioSettings::ResamplingQuality quality)
+FilesystemNode OSystem::stateDir() const
 {
-	mySound->setResampleQuality(quality);
+	return FilesystemNode{std::string{appPtr->system().contentSaveDirectory()}};
 }
 
-void OSystem::processAudio(EmuAudio *audio)
+FilesystemNode OSystem::nvramDir(std::string_view name) const
 {
-	mySound->processAudio(*this, audio);
+	return FilesystemNode{std::string{appPtr->system().contentSaveFilePath(name)}};
 }
 
-std::string OSystem::stateDir() const
-{
-	return EmuSystem::savePath();
-}
-
-std::string OSystem::nvramDir() const
-{
-	return EmuSystem::savePath();
-}
-
-EmuApp &OSystem::app()
+EmuEx::EmuApp &OSystem::app()
 {
 	return *appPtr;
 }

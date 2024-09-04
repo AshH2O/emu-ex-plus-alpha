@@ -37,7 +37,7 @@ static uint32 wlookup2[203];
 
 int32 Wave[2048+512];
 int32 WaveHi[40000];
-//int32 WaveFinal[2048+512];
+int32 WaveFinal[2048+512];
 
 EXPSOUND GameExpSound={0,0,0};
 
@@ -180,6 +180,7 @@ void LogDPCM(int romaddress, int dpcmsize){
 
 	for (int dpcmstart = i; dpcmstart < (i + dpcmsize); dpcmstart++) {
 		if(!(cdloggerdata[dpcmstart] & 0x40)) {
+			cdloggerdata[dpcmstart] |= 0x40;
 			cdloggerdata[dpcmstart] |= (romaddress >> 11) & 0x0c;
 
 			if(!(cdloggerdata[dpcmstart] & 2)){
@@ -533,9 +534,10 @@ static INLINE void DMCDMA(void)
      PrepDPCM();
     else
     {
-     SIRQStat|=0x80;
-     if(DMCFormat&0x80)
+     if(DMCFormat&0x80) {
+      SIRQStat|=0x80;
       X6502_IRQBegin(FCEU_IQDPCM);
+     }
     }
    }
  }
@@ -563,9 +565,10 @@ void FCEU_SoundCPUHook(int cycles)
    /* Unbelievably ugly hack */
    if(FSettings.SndRate)
    {
-    soundtsoffs+=DMCacc;
+		const uint32 fudge = std::min<uint32>(-DMCacc, soundtsoffs + timestamp);
+		soundtsoffs -= fudge;
     DoPCM();
-    soundtsoffs-=DMCacc;
+		soundtsoffs += fudge;
    }
    RawDALatch+=t;
    if(RawDALatch&0x80)
@@ -1040,12 +1043,14 @@ int FlushEmulateSound(int32 *WaveFinal)
 
   if(!soundtimestamp) return(0);
 
+#if 0
   if(!FSettings.SndRate)
   {
    left=0;
    end=0;
    goto nosoundo;
   }
+#endif
 
   DoSQ1();
   DoSQ2();
@@ -1108,11 +1113,11 @@ int FlushEmulateSound(int32 *WaveFinal)
   return(end);
 }
 
-/*int GetSoundBuffer(int32 **W)
+int GetSoundBuffer(int32 **W)
 {
  *W=WaveFinal;
  return(inbuf);
-}*/
+}
 
 /* FIXME:  Find out what sound registers get reset on reset.  I know $4001/$4005 don't,
 due to that whole MegaMan 2 Game Genie thing.

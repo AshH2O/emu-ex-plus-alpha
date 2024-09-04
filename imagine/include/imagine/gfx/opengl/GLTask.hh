@@ -19,16 +19,13 @@
 #include <imagine/base/GLContext.hh>
 #include <imagine/base/MessagePort.hh>
 #include <imagine/base/ApplicationContext.hh>
-#include <imagine/util/FunctionTraits.hh>
-#include <imagine/util/NonCopyable.hh>
+#include <imagine/thread/Semaphore.hh>
+#include <imagine/thread/Thread.hh>
+#include <imagine/util/utility.h>
+#include <concepts>
 #include <thread>
 
-namespace IG
-{
-class Semaphore;
-}
-
-namespace Gfx
+namespace IG::Gfx
 {
 
 class Renderer;
@@ -36,115 +33,104 @@ class GLRendererTask;
 
 struct GLTaskConfig
 {
-	Base::GLManager *glManagerPtr{};
-	Base::GLBufferConfig bufferConfig{};
+	GLManager *glManagerPtr{};
+	GLBufferConfig bufferConfig{};
 	Drawable initialDrawable{};
-	int threadPriority{};
 };
 
 // Wraps an OpenGL context in a thread + message port
-class GLTask : private NonCopyable
+class GLTask
 {
 public:
-	class TaskContext
-	{
-	public:
-		constexpr TaskContext(Base::GLDisplay glDpy, IG::Semaphore *semPtr, bool *semaphoreNeedsNotifyPtr):
-			glDpy{glDpy}, semPtr{semPtr}, semaphoreNeedsNotifyPtr{semaphoreNeedsNotifyPtr}
-		{}
-		void notifySemaphore();
-		void markSemaphoreNotified();
-		constexpr Base::GLDisplay glDisplay() const { return glDpy; }
-		constexpr IG::Semaphore *semaphorePtr() const { return semPtr; }
+	struct CommandMessage;
+	using CommandMessages = Messages<CommandMessage>;
 
-	protected:
-		[[no_unique_address]] Base::GLDisplay glDpy{};
-		IG::Semaphore *semPtr{};
-		bool *semaphoreNeedsNotifyPtr{};
-	};
-
-	using FuncDelegate = DelegateFunc2<sizeof(uintptr_t)*4 + sizeof(int)*10, void(Base::GLDisplay glDpy, IG::Semaphore *semPtr)>;
-
-	enum class Command: uint8_t
-	{
-		UNSET,
-		RUN_FUNC,
-		EXIT
-	};
+	// Align delegate data to 16 bytes in case we store SIMD types
+	static constexpr size_t FuncDelegateStorageSize = sizeof(uintptr_t)*2 + sizeof(int)*16;
+	using FuncDelegate = DelegateFuncA<FuncDelegateStorageSize, 16, void(GLDisplay, std::binary_semaphore *, CommandMessages &)>;
 
 	struct CommandMessage
 	{
-		IG::Semaphore *semPtr{};
-		union Args
-		{
-			struct RunArgs
-			{
-				FuncDelegate func;
-			} run;
-		} args{};
-		Command command{Command::UNSET};
+		std::binary_semaphore *semPtr{};
+		FuncDelegate func{};
 
-		constexpr CommandMessage() {}
-		constexpr CommandMessage(Command command, IG::Semaphore *semPtr = nullptr):
-			semPtr{semPtr}, command{command} {}
-		constexpr CommandMessage(Command command, FuncDelegate funcDel, IG::Semaphore *semPtr = nullptr):
-			semPtr{semPtr}, args{funcDel}, command{command} {}
-		explicit operator bool() const { return command != Command::UNSET; }
-		void setReplySemaphore(IG::Semaphore *semPtr_) { assert(!semPtr); semPtr = semPtr_; };
+		void setReplySemaphore(std::binary_semaphore *semPtr_) { assert(!semPtr); semPtr = semPtr_; };
 	};
 
-	GLTask(Base::ApplicationContext);
-	GLTask(Base::ApplicationContext, const char *debugLabel);
+	using CommandMessagePort = MessagePort<CommandMessage>;
+
+	struct TaskContext
+	{
+		[[no_unique_address]] GLDisplay glDisplay{};
+		std::binary_semaphore *semaphorePtr{};
+		bool *semaphoreNeedsNotifyPtr{};
+		CommandMessages *msgsPtr;
+
+		void notifySemaphore();
+		void markSemaphoreNotified();
+	};
+
+	GLTask(ApplicationContext);
+	GLTask(ApplicationContext, const char *debugLabel);
 	~GLTask();
-	Error makeGLContext(GLTaskConfig);
-	void runFunc(FuncDelegate del, bool awaitReply);
-	Base::GLBufferConfig glBufferConfig() const;
-	const Base::GLContext &glContext() const;
-	Base::ApplicationContext appContext() const;
+	GLTask &operator=(GLTask &&) = delete;
+	bool makeGLContext(GLTaskConfig);
+	void runFunc(FuncDelegate del, std::span<const uint8_t> extBuff, MessageReplyMode);
+	GLBufferConfig glBufferConfig() const;
+	const GLContext &glContext() const;
+	ApplicationContext appContext() const;
 	explicit operator bool() const;
 
-	template<class Func>
-	void run(Func &&del, bool awaitReply = false) { runFunc(wrapFuncDelegate(std::forward<Func>(del)), awaitReply); }
-
-	template<class Func>
-	void runSync(Func &&del) { run(std::forward<Func>(del), true); }
-
-	template<class Func>
-	static constexpr FuncDelegate wrapFuncDelegate(Func &&del)
+	void run(std::invocable auto &&f, MessageReplyMode mode = MessageReplyMode::none)
 	{
-		return
-			[=](Base::GLDisplay glDpy, IG::Semaphore *semPtr)
+		runFunc(
+			[=](GLDisplay, std::binary_semaphore *semPtr, CommandMessages &)
 			{
-				constexpr auto args = IG::functionTraitsArity<Func>;
-				if constexpr(args == 0)
+				f();
+				if(semPtr)
 				{
-					del();
-					if(semPtr)
-					{
-						semPtr->notify();
-					}
+					semPtr->release();
 				}
-				else
-				{
-					bool semaphoreNeedsNotify = semPtr;
-					TaskContext ctx{glDpy, semPtr, &semaphoreNeedsNotify};
-					del(ctx);
-					if(semaphoreNeedsNotify) // semaphore wasn't already notified in the delegate
-					{
-						semPtr->notify();
-					}
-				}
-			};
+			}, {}, mode);
 	}
+
+	template<class ExtraData>
+	void run(std::invocable<TaskContext> auto &&f, ExtraData &&extData, MessageReplyMode mode = MessageReplyMode::none)
+	{
+		std::span<const uint8_t> extBuff;
+		if constexpr(!std::is_null_pointer_v<ExtraData>)
+		{
+			extBuff = {reinterpret_cast<const uint8_t*>(&extData), sizeof(extData)};
+		}
+		runFunc(
+			[=](GLDisplay glDpy, std::binary_semaphore *semPtr, CommandMessages &msgs)
+			{
+				bool semaphoreNeedsNotify = semPtr;
+				TaskContext ctx{glDpy, semPtr, &semaphoreNeedsNotify, &msgs};
+				f(ctx);
+				if(semaphoreNeedsNotify) // semaphore wasn't already notified in the delegate
+				{
+					semPtr->release();
+				}
+			}, extBuff, mode);
+	}
+
+	void run(std::invocable<TaskContext> auto &&f, MessageReplyMode mode = MessageReplyMode::none)
+	{
+		run(IG_forward(f), nullptr, mode);
+	}
+
+	void runSync(auto &&f) { run(IG_forward(f), MessageReplyMode::wait); }
 
 protected:
 	std::thread thread{};
-	Base::GLContext context{};
-	Base::GLBufferConfig bufferConfig{};
-	Base::OnExit onExit;
-	Base::MessagePort<CommandMessage> commandPort{Base::MessagePort<CommandMessage>::NullInit{}};
+	GLContext context{};
+	GLBufferConfig bufferConfig{};
+	OnExit onExit;
+	CommandMessagePort commandPort;
+	ThreadId threadId_{};
 
-	Base::GLContext makeGLContext(Base::GLManager &, Base::GLBufferConfig bufferConf);
+	GLContext makeGLContext(GLManager &, GLBufferConfig bufferConf);
 	void deinit();
 };
 

@@ -18,12 +18,34 @@ enum EGIV
 	GIV_USER	= 2,  //What was set by FCEUI_SetVidSys().
 };
 
+enum EGIPPU
+{
+	GIPPU_USER			= 0,
+	GIPPU_RP2C04_0001	= 1,
+	GIPPU_RP2C04_0002	= 2,
+	GIPPU_RP2C04_0003	= 3,
+	GIPPU_RP2C04_0004	= 4,
+	GIPPU_RC2C03B		= 5,
+	GIPPU_RC2C05_01		= 6,
+	GIPPU_RC2C05_02		= 7,
+	GIPPU_RC2C05_03		= 8,
+	GIPPU_RC2C05_04		= 9,
+};
+
+enum EGIVS
+{
+	EGIVS_NORMAL	= 0,
+	EGIVS_RBI		= 1, // RBI Baseball protection
+	EGIVS_TKO		= 2, // TKO Boxing protection
+	EGIVS_XEVIOUS	= 3, // Super Xevious protection
+};
+
 enum ESIS
 {
 	SIS_NONE		= 0,
 	SIS_DATACH		= 1,
 	SIS_NWC			= 2,
-	SIS_VSUNISYSTEM	= 3,
+	SIS_VSUNISYSTEM	= 3, // Is it used?
 	SIS_NSF			= 4,
 };
 
@@ -41,9 +63,12 @@ enum ESI
 	SI_SNES			= 7,
 	SI_SNES_MOUSE	= 8,
 	SI_VIRTUALBOY	= 9,
+	SI_LCDCOMP_ZAPPER  = 10,
 
-	SI_COUNT = SI_VIRTUALBOY
+	SI_COUNT = SI_LCDCOMP_ZAPPER
 };
+
+
 
 inline const char* ESI_Name(ESI esi)
 {
@@ -58,7 +83,8 @@ inline const char* ESI_Name(ESI esi)
 		"Subor Mouse",
 		"SNES Pad",
 		"SNES Mouse",
-		"Virtual Boy"
+		"Virtual Boy",
+		"LCD Zapper (Advance)"
 	};
 
 	if(esi >= SI_NONE && esi <= SI_COUNT)
@@ -87,8 +113,9 @@ enum ESIFC
 	SIFC_BWORLD		= 13,
 	SIFC_TOPRIDER	= 14,
 	SIFC_FAMINETSYS = 15,
+	SIFC_HORI4PLAYER = 16,
 
-	SIFC_COUNT = SIFC_FAMINETSYS
+	SIFC_COUNT = SIFC_HORI4PLAYER
 };
 
 
@@ -111,7 +138,8 @@ inline const char* ESIFC_Name(ESIFC esifc)
 		"Oeka Kids Tablet",
 		"Barcode World",
 		"Top Rider",
-		"Famicom Network Controller"
+		"Famicom Network Controller",
+		"Hori 4-Player Adapter"
 	};
 
 	if(esifc >= SIFC_NONE && esifc <= SIFC_COUNT)
@@ -124,26 +152,29 @@ inline const char* ESIFC_Name(ESIFC esifc)
 
 struct FCEUGI
 {
-	FCEUGI();
-
 	std::string name;	//Game name, UTF8 encoding
-	int mappernum;
+	int mappernum = 0;
 
-	EGIT type;
-	EGIV vidsys;    //Current emulated video system;
-	ESI input[2];   //Desired input for emulated input ports 1 and 2; -1 for unknown desired input.
-	ESIFC inputfc;  //Desired Famicom expansion port device. -1 for unknown desired input.
-	ESIS cspecial;  //Special cart expansion: DIP switches, barcode reader, etc.
+	EGIT type = GIT_CART;
+	EGIV vidsys = GIV_USER;                //Current emulated video system;
+	ESI input[2] = { SI_UNSET, SI_UNSET }; //Desired input for emulated input ports 1 and 2; -1 for unknown desired input.
+	ESIFC inputfc = SIFC_UNSET;            //Desired Famicom expansion port device. -1 for unknown desired input.
+	ESIS cspecial = SIS_NONE;              //Special cart expansion: DIP switches, barcode reader, etc.
+	EGIPPU vs_ppu = GIPPU_USER;            //PPU type for Vs. System
+	EGIVS vs_type = EGIVS_NORMAL;          //Vs. System type
+	uint8 vs_cswitch = SIS_NONE;           // Switch first and second controllers for Vs. System
 
 	MD5DATA MD5;
 
 	//mbg 6/8/08 - ???
-	int soundrate;  //For Ogg Vorbis expansion sound wacky support.  0 for default.
-	int soundchan;  //Number of sound channels.
+	int soundrate = 0;  //For Ogg Vorbis expansion sound wacky support.  0 for default.
+	int soundchan = 0;  //Number of sound channels.
 
 	std::string filename;
 	std::string archiveFilename;
-	int archiveCount;
+	int archiveCount = 0;  // the number of files that were in the archive
+	int archiveIndex = -1; // the index of the file within the archive
+	bool loadedFromTmpFile = false; // Was loaded from temporary file, file most likely no longer exists
 };
 
 #endif

@@ -15,102 +15,117 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
+#include <imagine/util/concepts.hh>
+#include <utility>
 #include <new>
-#include <cstdint>
 #include <cstddef>
+#include <cassert>
 #include <array>
-#include <compare>
-#include <type_traits>
-#include <imagine/util/utility.h>
 
-template <size_t, typename, typename ...> class DelegateFunc2;
+namespace IG
+{
 
-template <size_t STORAGE_SIZE, typename R, typename ...Args> class DelegateFunc2<STORAGE_SIZE, R(Args...)>
+constexpr struct DelegateFuncDefaultInit{} delegateFuncDefaultInit;
+
+template <size_t, size_t, class, class ...> class DelegateFuncBase;
+
+template <size_t StorageSize, size_t Align, class R, class ...Args>
+class DelegateFuncBase<StorageSize, Align, R(Args...)>
 {
 public:
-	constexpr DelegateFunc2() {}
+	using FreeFuncPtr = R (*)(Args...);
 
-	constexpr DelegateFunc2(std::nullptr_t) {}
+	constexpr DelegateFuncBase() = default;
 
-	template<class T>
-	constexpr DelegateFunc2(T const &funcObj) :
+	constexpr DelegateFuncBase(std::nullptr_t) {}
+
+	constexpr DelegateFuncBase(DelegateFuncDefaultInit):
+		DelegateFuncBase{[](Args...){ return R(); }} {}
+
+	template<CallableClass<R, Args...> F>
+	requires (sizeof(F) <= StorageSize && Align >= std::alignment_of_v<F>)
+	constexpr DelegateFuncBase(F const &funcObj) :
 		exec
 		{
-			[](const Storage &funcObj, Args... arguments) -> R
+			[](const Storage &funcObj, Args ...args) -> R
 			{
-				if constexpr(isCompatibleFreeFunc<T>())
-					return callStoredFreeFunc(funcObj, arguments...);
-				else
-					return ((T*)funcObj.data())->operator()(arguments...);
+				return ((F*)funcObj.data())->operator()(std::forward<Args>(args)...);
 			}
 		}
 	{
-		if constexpr(isCompatibleFreeFunc<T>())
-		{
-			// construct from free function
-			new (store.data()) FreeFuncPtr(funcObj);
-		}
-		else
-		{
-			// construct from lambda
-			static_assert(sizeof(T) <= STORAGE_SIZE, "Delegate too big for storage");
-			new (store.data()) T(funcObj);
-		}
+		// construct from lambda/function object
+		new (store.data()) F(funcObj);
 	}
+
+#ifdef IG_DELEGATE_FUNC_POINTER_SUPPORT
+	constexpr DelegateFuncBase(CallableFunctionPointer<R, Args...> auto const &funcObj)
+		requires (StorageSize >= sizeof(void*) && Align >= sizeof(void*)):
+		exec
+		{
+			[](const Storage &funcObj, Args ...args) -> R
+			{
+				return (*((FreeFuncPtr*)funcObj.data()))(std::forward<Args>(args)...);
+			}
+		}
+	{
+		// construct from free function
+		new (store.data()) FreeFuncPtr(funcObj);
+	}
+#endif
 
 	explicit constexpr operator bool() const
 	{
 		return exec;
 	}
 
-	constexpr R operator()(Args... args) const
+	template<class... CallArgs>
+	constexpr R operator()(CallArgs&&... args) const
+		requires ValidInvokeArgs<FreeFuncPtr, CallArgs...>
 	{
 		assert(exec);
-		return exec(store, args...);
+		return exec(store, std::forward<CallArgs>(args)...);
 	}
 
-	constexpr bool operator ==(DelegateFunc2 const&) const = default;
+	constexpr bool operator ==(DelegateFuncBase const&) const = default;
 
-	constexpr R callCopy(Args... args) const
+	template<class... CallArgs>
+	constexpr R callCopy(CallArgs&&... args) const
 	{
 		// Call a copy to avoid trashing captured variables
 		// if delegate's function can modify the delegate
-		return IG::copySelf(*this)(args...);
+		return ({auto copy = *this; copy;})(std::forward<CallArgs>(args)...);
 	}
 
-	constexpr R callSafe(Args... args) const
+	template<class... CallArgs>
+	constexpr R callSafe(CallArgs&&... args) const
 	{
 		if(exec)
-			return this->operator()(args...);
+			return this->operator()(std::forward<CallArgs>(args)...);
 		return R();
 	}
 
-	constexpr R callCopySafe(Args... args) const
+	template<class... CallArgs>
+	constexpr R callCopySafe(CallArgs&&... args) const
 	{
 		if(exec)
-			return callCopy(args...);
+			return callCopy(std::forward<CallArgs>(args)...);
 		return R();
-	}
-
-	template<class T>
-	static constexpr bool isCompatibleFreeFunc()
-	{
-		return std::is_convertible_v<T, FreeFuncPtr>;
 	}
 
 private:
-	using FreeFuncPtr = R (*)(Args...);
-	using Storage = std::array<unsigned char, STORAGE_SIZE>;
-	static_assert(sizeof(STORAGE_SIZE) >= sizeof(uintptr_t), "Storage must be large enough for 1 pointer");
+	using Storage = std::array<unsigned char, StorageSize>;
 
-	alignas(8) Storage store{};
+	alignas(Align) Storage store{};
 	R (*exec)(const Storage &, Args...){};
-
-	static constexpr R callStoredFreeFunc(const Storage &s, Args... args)
-	{
-		return (*((FreeFuncPtr*)s.data()))(args...);
-	}
 };
 
-template <typename R, typename ...Args>
-using DelegateFunc = DelegateFunc2<sizeof(uintptr_t)*2, R, Args...>;
+template <size_t StorageSize, size_t Align, class R, class ...Args>
+using DelegateFuncA = DelegateFuncBase<StorageSize, Align, R, Args...>;
+
+template <size_t StorageSize, class R, class ...Args>
+using DelegateFuncS = DelegateFuncBase<StorageSize, sizeof(void*), R, Args...>;
+
+template <class R, class ...Args>
+using DelegateFunc = DelegateFuncBase<sizeof(void*)*2, sizeof(void*), R, Args...>;
+
+}

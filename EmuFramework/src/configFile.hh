@@ -15,14 +15,30 @@
 	You should have received a copy of the GNU General Public License
 	along with EmuFramework.  If not, see <http://www.gnu.org/licenses/> */
 
+#include <imagine/io/MapIO.hh>
 #include <imagine/io/FileIO.hh>
 #include <imagine/logger/logger.h>
 
-template<class ON_KEY>
-static bool readConfigKeys(IO &io, ON_KEY onKey)
+namespace EmuEx
 {
+
+using namespace IG;
+
+template<class ON_KEY>
+static bool readConfigKeys(MapIO io, ON_KEY onKey)
+{
+	if(!io)
+		return false;
+
+	auto configSize = io.size();
+	if(configSize < 4)
+	{
+		logErr("skipping config of only %d bytes", (int)configSize);
+		return false;
+	}
+
 	auto blockSize = io.get<uint8_t>();
-	auto fileBytesLeft = io.size() - 1;
+	auto fileBytesLeft = configSize - 1;
 
 	if(blockSize != 2)
 	{
@@ -32,7 +48,7 @@ static bool readConfigKeys(IO &io, ON_KEY onKey)
 
 	while(!io.eof() && fileBytesLeft >= 2)
 	{
-		auto size = io.get<uint16_t>();
+		size_t size = io.get<uint16_t>();
 		auto nextBlockPos = io.tell() + size;
 
 		if(!size)
@@ -43,15 +59,15 @@ static bool readConfigKeys(IO &io, ON_KEY onKey)
 
 		if(size > fileBytesLeft)
 		{
-			logErr("size of key exceeds rest of file, skipping rest of config");
+			logErr("size:%zu of key exceeds rest of file (%zu bytes), skipping rest of config", size, fileBytesLeft);
 			return false;
 		}
 		fileBytesLeft -= size;
 
-		if(size < 3) // all blocks are at least a 2 byte key + 1 byte or more of data
+		if(size < 2) // all blocks are at least a 2 byte key
 		{
-			logMsg("skipping %d byte block", size);
-			if(io.seekC(size) == -1)
+			logMsg("skipping %zu byte block", size);
+			if(io.seek(nextBlockPos) == -1)
 			{
 				logErr("unable to seek to next block, skipping rest of config");
 				return false;
@@ -62,10 +78,11 @@ static bool readConfigKeys(IO &io, ON_KEY onKey)
 		auto key = io.get<uint16_t>();
 		size -= 2;
 
-		logMsg("got config key %u, size %u", key, size);
-		onKey(key, size, io);
+		logMsg("got config key %u, size %zu", key, size);
+		auto ioView = io.subView(io.tell(), size);
+		onKey(key, ioView);
 
-		if(io.seekS(nextBlockPos) == -1)
+		if(io.seek(nextBlockPos) == -1)
 		{
 			logErr("unable to seek to next block, skipping rest of config");
 			return false;
@@ -74,8 +91,10 @@ static bool readConfigKeys(IO &io, ON_KEY onKey)
 	return true;
 }
 
-static void writeConfigHeader(IO &io)
+static void writeConfigHeader(FileIO &io)
 {
 	uint8_t blockHeaderSize = 2;
-	io.write(blockHeaderSize);
+	io.put(blockHeaderSize);
+}
+
 }

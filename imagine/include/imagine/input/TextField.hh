@@ -15,6 +15,7 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
+#include <imagine/config/defs.hh>
 #if defined __ANDROID__
 #include <imagine/base/android/AndroidTextField.hh>
 #elif (defined __APPLE__ && TARGET_OS_IPHONE)
@@ -22,12 +23,12 @@
 #else
 #include <imagine/base/ApplicationContext.hh>
 #include <imagine/input/inputDefs.hh>
-namespace Input
+namespace IG::Input
 {
 class TextFieldImpl
 {
 public:
-	constexpr TextFieldImpl(Base::ApplicationContext, TextFieldDelegate, const char *initialText, const char *promptText, int fontSizePixels) {}
+	constexpr TextFieldImpl(ApplicationContext, TextFieldDelegate, const char*, const char*, int) {}
 };
 }
 #endif
@@ -35,7 +36,7 @@ public:
 #include <imagine/config/defs.hh>
 #include <imagine/util/rectangle2.h>
 
-namespace Input
+namespace IG::Input
 {
 
 class TextField : public TextFieldImpl
@@ -44,8 +45,8 @@ public:
 	using TextFieldImpl::TextFieldImpl;
 	void cancel();
 	void finish();
-	void place(IG::WindowRect rect);
-	IG::WindowRect windowRect() const;
+	void place(WRect rect);
+	WRect windowRect() const;
 };
 
 }

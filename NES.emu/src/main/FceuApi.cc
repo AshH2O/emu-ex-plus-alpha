@@ -18,9 +18,10 @@
 #include <imagine/logger/logger.h>
 #include <imagine/fs/FS.hh>
 #include <imagine/fs/ArchiveFS.hh>
+#include <imagine/io/IO.hh>
 #include <emuframework/EmuApp.hh>
 #include <emuframework/FilePicker.hh>
-#include "internal.hh"
+#include "MainSystem.hh"
 #include <fceu/driver.h>
 #include <fceu/video.h>
 #include <fceu/fceu.h>
@@ -35,8 +36,14 @@ bool turbo = 0;
 int closeFinishedMovie = 0;
 int StackAddrBackup = -1;
 int KillFCEUXonFrame = 0;
+int eoptions = 0;
 
-void FCEUI_Emulate(EmuSystemTask *task, EmuVideo *video, int skip, EmuAudio *audio)
+namespace EmuEx
+{
+constexpr SystemLogger log{"NES.emu"};
+}
+
+void FCEUI_Emulate(EmuEx::EmuSystemTaskContext taskCtx, EmuEx::NesSystem &sys, EmuEx::EmuVideo *video, int skip, EmuEx::EmuAudio *audio)
 {
 	#ifdef _S9XLUA_H
 	FCEU_LuaFrameBoundary();
@@ -50,7 +57,7 @@ void FCEUI_Emulate(EmuSystemTask *task, EmuVideo *video, int skip, EmuAudio *aud
 	#endif
 
 	if (geniestage != 1) FCEU_ApplyPeriodicCheats();
-	FCEUPPU_Loop(task, video, skip);
+	FCEUPPU_Loop(taskCtx, sys, video, audio, skip);
 
 	emulateSound(audio);
 
@@ -60,25 +67,59 @@ void FCEUI_Emulate(EmuSystemTask *task, EmuVideo *video, int skip, EmuAudio *aud
 
 	timestampbase += timestamp;
 	timestamp = 0;
-	soundtimestamp = 0;
+}
+
+void FCEUI_Emulate(EmuEx::NesSystem &sys, EmuEx::EmuVideo *video, int skip, EmuEx::EmuAudio *audio)
+{
+	FCEUI_Emulate({}, sys, video, skip, audio);
 }
 
 FILE *FCEUD_UTF8fopen(const char *fn, const char *mode)
 {
-	logMsg("opening file %s mode %s", fn, mode);
-	auto file = fopen(fn,mode);
-//	if(!file)
-//		logErr("error opening %s", fn);
-	return file;
+	EmuEx::log.info("opening file:{} mode:{}", fn, mode);
+	return IG::FileUtils::fopenUri(EmuEx::gAppContext(), fn, mode);
 }
 
-void FCEUD_PrintError(const char *errormsg) { logErr("%s", errormsg); }
+void FCEU_printf(const char *format, ...)
+{
+	if(!Config::DEBUG_BUILD)
+		return;
+	va_list ap;
+	va_start(ap, format);
+	logger_vprintf(0, format, ap);
+	va_end(ap);
+	logger_printf(0, "\n");
+}
 
-#ifndef NDEBUG
-void FCEUD_Message(const char *s) { logger_printf(0, "%s", s); }
+void FCEUD_PrintError(const char *errormsg)
+{
+	if(!Config::DEBUG_BUILD)
+		return;
+	EmuEx::log.error("{}", errormsg);
+}
+
+void FCEUD_Message(const char *s)
+{
+	if(!Config::DEBUG_BUILD)
+		return;
+	logger_printf(0, "%s", s);
+}
+
+void FCEU_PrintError(const char *format, ...)
+{
+	if(!Config::DEBUG_BUILD)
+		return;
+	va_list ap;
+	va_start(ap, format);
+	logger_vprintf(LOGGER_ERROR, format, ap);
+	va_end(ap);
+	logger_printf(LOGGER_ERROR, "\n");
+}
 
 void FCEU_DispMessageOnMovie(const char *format, ...)
 {
+	if(!Config::DEBUG_BUILD)
+		return;
 	va_list ap;
 	va_start(ap, format);
 	logger_vprintf(0, format, ap);
@@ -88,13 +129,14 @@ void FCEU_DispMessageOnMovie(const char *format, ...)
 
 void FCEU_DispMessage(const char *format, int disppos=0, ...)
 {
+	if(!Config::DEBUG_BUILD)
+		return;
 	va_list ap;
 	va_start(ap, disppos);
 	logger_vprintf(0, format, ap);
 	va_end(ap);
 	logger_printf(0, "\n");
 }
-#endif
 
 const char *FCEUD_GetCompilerString() { return ""; }
 
@@ -167,55 +209,53 @@ void FCEUD_SaveStateAs() {}
 
 void FCEUD_LoadStateFrom() {}
 
+void FCEUD_FlushTrace() {}
+
 void FCEUD_SetInput(bool fourscore, bool microphone, ESI port0, ESI port1, ESIFC fcexp)
 {
-	logMsg("called set input");
+	EmuEx::log.info("called set input");
 }
 
 int FCEUD_FDSReadBIOS(void *buff, uint32 size)
 {
-	if(!strlen(fdsBiosPath.data()))
+	using namespace EmuEx;
+	auto &sys = static_cast<NesSystem&>(EmuEx::gSystem());
+	auto appCtx = sys.appContext();
+	const auto &fdsBiosPath = sys.fdsBiosPath;
+	if(fdsBiosPath.empty())
 	{
-		fceuReturnedError = "No FDS BIOS set";
+		sys.loaderErrorString = "No FDS BIOS set";
 		return -1;
 	}
-	if(EmuApp::hasArchiveExtension(fdsBiosPath.data()))
+	EmuEx::log.info("loading FDS BIOS:{}", fdsBiosPath);
+	if(EmuApp::hasArchiveExtension(appCtx.fileUriDisplayName(fdsBiosPath)))
 	{
-		std::error_code ec{};
-		for(auto &entry : FS::ArchiveIterator{fdsBiosPath, ec})
+		for(auto &entry : FS::ArchiveIterator{appCtx.openFileUri(fdsBiosPath)})
 		{
 			if(entry.type() == FS::file_type::directory)
 			{
 				continue;
 			}
-			auto name = entry.name();
-			logMsg("archive file entry:%s", name);
-			if(hasFDSBIOSExtension(name))
+			if(hasFDSBIOSExtension(entry.name()))
 			{
-				auto io = entry.moveIO();
-				if(io.size() != size)
+				EmuEx::log.info("archive file entry:%s", entry.name().data());
+				if(entry.size() != size)
 				{
-					fceuReturnedError = "Incompatible FDS BIOS";
+					sys.loaderErrorString = "Incompatible FDS BIOS";
 					return -1;
 				}
-				return io.read(buff, size);
+				return entry.read(buff, size);
 			}
 		}
-		fceuReturnedError = "Error opening FDS BIOS";
+		sys.loaderErrorString = "Error opening FDS BIOS";
 		return -1;
 	}
 	else
 	{
-		FileIO io{};
-		io.open(fdsBiosPath, IO::AccessHint::ALL);
-		if(!io)
-		{
-			fceuReturnedError = "Error opening FDS BIOS";
-			return -1;
-		}
+		auto io = appCtx.openFileUri(fdsBiosPath, {.accessHint = IOAccessHint::All});
 		if(io.size() != size)
 		{
-			fceuReturnedError = "Incompatible FDS BIOS";
+			sys.loaderErrorString = "Incompatible FDS BIOS";
 			return -1;
 		}
 		return io.read(buff, size);
@@ -223,6 +263,11 @@ int FCEUD_FDSReadBIOS(void *buff, uint32 size)
 }
 
 void RefreshThrottleFPS() {}
+
+void FCEUD_GetPalette(uint8 index, uint8 *r, uint8 *g, uint8 *b)
+{
+	bug_unreachable("called FCEUD_GetPalette()");
+}
 
 // for boards/transformer.cpp
 unsigned int *GetKeyboard(void)
@@ -251,11 +296,6 @@ void FCEU_DrawNumberRow(uint8 *XBuf, int *nstatus, int cur) {}
 void DrawTextTrans(uint8 *dest, uint32 width, uint8 *textmsg, uint8 fgcolor) {}
 void DrawTextTransWH(uint8 *dest, uint32 width, uint8 *textmsg, uint8 fgcolor, int max_w, int max_h, int border) {}
 
-// from nsf.cpp
-NSF_HEADER NSFHeader;
-void DoNSFFrame(void) {}
-int NSFLoad(const char *name, FCEUFILE *fp) { return 0; }
-
 // from debug.cpp
 volatile int datacount, undefinedcount;
 unsigned char *cdloggerdata;
@@ -271,7 +311,7 @@ void NetplayUpdate(uint8 *joyp) { }
 // from fceu.cpp
 bool CheckFileExists(const char* filename)
 {
-	return FS::exists(filename);
+	return IG::FS::exists(filename);
 }
 
 //The code in this function is a modified version
@@ -303,4 +343,36 @@ void EncodeGG(char *str, int a, int v, int c)
 		str[8] = 0;
 	}
 	return;
+}
+
+std::string FCEU_MakeFName(int type, int id1, const char *cd1)
+{
+	using namespace EmuEx;
+	auto &app = gApp();
+	auto &sys = static_cast<NesSystem&>(app.system());
+	switch(type)
+	{
+		case FCEUMKF_SAV:
+			return std::string{app.contentSaveFilePath(".sav")};
+		case FCEUMKF_CHEAT:
+			return std::string{sys.userFilePath(sys.cheatsDir, ".cht")};
+		case FCEUMKF_GGROM:
+			return std::string{sys.contentDirectory("gg.rom")};
+		case FCEUMKF_FDS:
+			return std::string{app.contentSaveFilePath(".fds.sav")};
+		case FCEUMKF_PALETTE:
+			return std::string{sys.userFilePath(sys.palettesDir, ".pal")};
+		case FCEUMKF_IPS:
+		case FCEUMKF_MOVIE:
+		case FCEUMKF_STATE:
+		case FCEUMKF_RESUMESTATE:
+		case FCEUMKF_SNAP:
+		case FCEUMKF_AUTOSTATE:
+		case FCEUMKF_FDSROM:
+		case FCEUMKF_MOVIEGLOB:
+		case FCEUMKF_MOVIEGLOB2:
+		case FCEUMKF_STATEGLOB:
+			EmuEx::log.warn("unused filename type:%d", type);
+	}
+	return {};
 }

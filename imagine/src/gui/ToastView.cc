@@ -15,32 +15,30 @@
 
 #define LOGTAG "ToastView"
 #include <imagine/gui/ToastView.hh>
+#include <imagine/gui/ViewManager.hh>
 #include <imagine/gfx/RendererCommands.hh>
-#include <imagine/gfx/GeomRect.hh>
-#include <imagine/input/Input.hh>
+#include <imagine/gfx/RendererTask.hh>
+#include <imagine/gfx/BasicEffect.hh>
+#include <imagine/gfx/Mat4.hh>
+#include <imagine/input/Event.hh>
 #include <imagine/logger/logger.h>
 #include <imagine/util/ScopeGuard.hh>
-#include <imagine/util/math/int.hh>
+#include <imagine/util/math.hh>
 #include <string>
 
-ToastView::ToastView() {}
+namespace IG
+{
 
 ToastView::ToastView(ViewAttachParams attach): View{attach},
+	text{attach.rendererTask, &attach.viewManager.defaultFace},
 	unpostTimer
 	{
-		"ToastView::unpostTimer",
-		[this]()
-		{
-			unpost();
-		}
-	}
-{
-	text.setMaxLines(6);
-}
+		{.debugLabel = "ToastView::unpostTimer"}, [this]{ unpost(); }
+	},
+	msgFrameQuads{attach.rendererTask, {.size = 1}} {}
 
 void ToastView::setFace(Gfx::GlyphTextureSet &face)
 {
-	waitForDrawFinished();
 	text.setFace(&face);
 }
 
@@ -49,36 +47,25 @@ void ToastView::clear()
 	if(text.stringSize())
 	{
 		unpostTimer.cancel();
-		waitForDrawFinished();
-		text.setString(nullptr);
+		text.resetString();
 	}
 }
 
 void ToastView::place()
 {
-	text.setMaxLineSize(projP.width());
-	text.compile(renderer(), projP);
-
-	int labelYSize = IG::makeEvenRoundedUp(projP.projectYSize(text.fullHeight()));
-	IG::WindowRect viewFrame;
+	text.compile({.maxLineSize = int(viewRect().xSize() * 0.95f), .maxLines = 6, .alignment = Gfx::TextAlignment::center});
+	int labelYSize = IG::makeEvenRoundedUp(text.fullHeight());
 	//logMsg("label y size:%d", labelYSize);
-	viewFrame.setPosRel(viewRect().pos(CB2DO),
+	msgFrame.setPosRel(viewRect().pos(CB2DO),
 		{viewRect().xSize(), labelYSize}, CB2DO);
-	msgFrame = projP.unProjectRect(viewFrame);
+	msgFrameQuads.write(0, {.bounds = msgFrame.as<int16_t>()});
 }
 
 void ToastView::unpost()
 {
 	logMsg("unposting");
-	waitForDrawFinished();
-	text.setString(nullptr);
+	text.resetString();
 	postDraw();
-}
-
-void ToastView::contentUpdated(bool error)
-{
-	place();
-	this->error = error;
 }
 
 void ToastView::postContent(int secs)
@@ -87,76 +74,27 @@ void ToastView::postContent(int secs)
 	unpostTimer.runIn(IG::Seconds{secs});
 }
 
-void ToastView::post(const char *msg, int secs, bool error)
-{
-	{
-		waitForDrawFinished();
-		text.setString(msg);
-		logMsg("posting string:%s", msg);
-		contentUpdated(error);
-	}
-	postContent(secs);
-}
-
-void ToastView::postError(const char *msg, int secs)
-{
-	post(msg, secs, true);
-}
-
-void ToastView::post(const char *prefix, const std::system_error &err, int secs)
-{
-	printf(secs, true, "%s%s", prefix, err.what());
-}
-
-void ToastView::post(const char *prefix, std::error_code ec, int secs)
-{
-	printf(secs, true, "%s%s", prefix, ec.message().c_str());
-}
-
-void ToastView::printf(uint32_t secs, bool error, const char *format, ...)
-{
-	va_list args;
-	va_start(args, format);
-	auto vaEnd = IG::scopeGuard([&](){ va_end(args); });
-	vprintf(secs, error, format, args);
-}
-
-void ToastView::vprintf(uint32_t secs, bool error, const char *format, va_list args)
-{
-	{
-		waitForDrawFinished();
-		std::array<char, 1024> str{};
-		auto result = vsnprintf(str.data(), str.size(), format, args);
-		text.setString(str.data());
-		logMsg("posting formatted string:%s", str.data());
-		contentUpdated(error);
-	}
-	postContent(secs);
-}
-
 void ToastView::prepareDraw()
 {
-	text.makeGlyphs(renderer());
+	text.makeGlyphs();
 }
 
-void ToastView::draw(Gfx::RendererCommands &cmds)
+void ToastView::draw(Gfx::RendererCommands &__restrict__ cmds, ViewDrawParams) const
 {
-	using namespace Gfx;
+	using namespace IG::Gfx;
 	if(!text.isVisible())
 		return;
-	cmds.setCommonProgram(CommonProgram::NO_TEX, projP.makeTranslate());
-	cmds.setBlendMode(BLEND_MODE_ALPHA);
+	auto &basicEffect = cmds.basicEffect();
+	basicEffect.disableTexture(cmds);
+	basicEffect.setModelView(cmds, Gfx::Mat4::ident());
+	cmds.set(BlendMode::ALPHA);
 	if(error)
-		cmds.setColor(1., 0, 0, .7);
+		cmds.setColor({1., 0, 0, .7});
 	else
-		cmds.setColor(0, 0, 1., .7);
-	GeomRect::draw(cmds, msgFrame);
-	cmds.setColor(1., 1., 1., 1.);
-	cmds.setCommonProgram(CommonProgram::TEX_ALPHA);
-	text.draw(cmds, 0, projP.alignYToPixel(msgFrame.pos(C2DO).y), C2DO, projP);
+		cmds.setColor({0, 0, 1., .7});
+	cmds.drawQuad(msgFrameQuads, 0);
+	basicEffect.enableAlphaTexture(cmds);
+	text.draw(cmds, {msgFrame.xCenter(), msgFrame.pos(C2DO).y}, C2DO, ColorName::WHITE);
 }
 
-bool ToastView::inputEvent(Input::Event event)
-{
-	return false;
 }

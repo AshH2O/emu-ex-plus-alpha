@@ -87,7 +87,7 @@ int exos_peek_mem(export_t *ex, uint16_t addr, uint8_t *value)
 
 void exos_config_init(void)
 {
-    cart_config_changed_slotmain(2, 3, CMODE_READ);
+    cart_config_changed_slotmain(CMODE_RAM, CMODE_ULTIMAX, CMODE_READ);
 }
 
 /* ---------------------------------------------------------------------*/
@@ -150,7 +150,7 @@ void exos_detach(void)
    ARRAY | ROMH | 8192 BYTES of ROMH data
  */
 
-static char snap_module_name[] = "CARTEXOS";
+static const char snap_module_name[] = "CARTEXOS";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   0
 

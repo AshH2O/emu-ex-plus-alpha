@@ -32,6 +32,9 @@ public:
 	void loadState(SaveState const &state);
 	void loadSavedata() { mem_.loadSavedata(); }
 	void saveSavedata() { mem_.saveSavedata(); }
+	std::span<unsigned char> srambank() { return mem_.srambank(); }
+	std::optional<std::time_t> rtcTime() const { return mem_.rtcTime(); }
+	void setRtcTime(std::time_t time) { mem_.setRtcTime(time); }
 
 	void setVideoBuffer(uint_least32_t *videoBuf, std::ptrdiff_t pitch) {
 		mem_.setVideoBuffer(videoBuf, pitch);
@@ -71,6 +74,7 @@ public:
 	}
 
 	void refreshPalettes() { mem_.refreshPalettes(); }
+	void setColorConversionFlags(unsigned flags) { mem_.setColorConversionFlags(flags); }
 
 	void setGameGenie(std::string const &codes) { mem_.setGameGenie(codes); }
 	void setGameShark(std::string const &codes) { mem_.setGameShark(codes); }

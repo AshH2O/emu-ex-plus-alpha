@@ -86,7 +86,8 @@ static io_source_t final1_io1_device = {
     final_v1_dump,          /* device state information dump function */
     CARTRIDGE_FINAL_I,      /* cartridge ID */
     IO_PRIO_NORMAL,         /* normal priority, device read needs to be checked for collisions */
-    0                       /* insertion order, gets filled in by the registration function */
+    0,                      /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE          /* NO mirroring */
 };
 
 static io_source_t final1_io2_device = {
@@ -102,7 +103,8 @@ static io_source_t final1_io2_device = {
     final_v1_dump,          /* device state information dump function */
     CARTRIDGE_FINAL_I,      /* cartridge ID */
     IO_PRIO_NORMAL,         /* normal priority, device read needs to be checked for collisions */
-    0                       /* insertion order, gets filled in by the registration function */
+    0,                      /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE          /* NO mirroring */
 };
 
 static io_source_list_t *final1_io1_list_item = NULL;
@@ -180,14 +182,14 @@ uint8_t final_v1_romh_read(uint16_t addr)
 void final_v1_freeze(void)
 {
     DBG(("freeze enable\n"));
-    cart_config_changed_slotmain(3, 3, CMODE_READ | CMODE_RELEASE_FREEZE);
+    cart_config_changed_slotmain(CMODE_ULTIMAX, CMODE_ULTIMAX, CMODE_READ | CMODE_RELEASE_FREEZE);
     final_v1_active = 1;
     cartridge_release_freeze();
 }
 
 void final_v1_config_init(void)
 {
-    cart_config_changed_slotmain(1, 1, CMODE_READ);
+    cart_config_changed_slotmain(CMODE_16KGAME, CMODE_16KGAME, CMODE_READ);
     final_v1_active = 1;
 }
 
@@ -195,7 +197,7 @@ void final_v1_config_setup(uint8_t *rawcart)
 {
     memcpy(roml_banks, rawcart, 0x2000);
     memcpy(romh_banks, &rawcart[0x2000], 0x2000);
-    cart_config_changed_slotmain(1, 1, CMODE_READ);
+    cart_config_changed_slotmain(CMODE_16KGAME, CMODE_16KGAME, CMODE_READ);
     final_v1_active = 1;
 }
 
@@ -261,7 +263,7 @@ void final_v1_detach(void)
    ARRAY | ROMH   |   0.0+  | 8192 BYTES of ROMH data
  */
 
-static char snap_module_name[] = "CARTFINALV1";
+static const char snap_module_name[] = "CARTFINALV1";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   1
 

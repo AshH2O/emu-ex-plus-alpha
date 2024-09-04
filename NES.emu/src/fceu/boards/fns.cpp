@@ -28,17 +28,19 @@
 static uint8 DRegs[4];
 static uint8 Buffer, BufferShift;
 
-static uint32 WRAMSIZE;
+static uint32 WRAMSIZE=0;
 static uint8 *WRAM = NULL;
 
 static int kanji_pos, kanji_page, r40C0;
 static int IRQa, IRQCount;
 
+FCEU_MAYBE_UNUSED
 static DECLFW(MBWRAM) {
 	if (!(DRegs[3] & 0x10))
 		Page[A >> 11][A] = V;
 }
 
+FCEU_MAYBE_UNUSED
 static DECLFR(MAWRAM) {
 	if (DRegs[3] & 0x10)
 		return X.DB;
@@ -52,7 +54,9 @@ static void MMC1CHR(void) {
 static void MMC1PRG(void) {
 	uint8 offs_16banks = DRegs[1] & 0x10;
 	uint8 prg_reg = DRegs[3] & 0xF;
+
 	setprg8r(0x10, 0x6000, DRegs[1] & 3);
+
 	switch (DRegs[0] & 0xC) {
 	case 0xC:
 		setprg16(0x8000, (prg_reg + offs_16banks));
@@ -96,13 +100,13 @@ static DECLFW(MMC1_write) {
 	Buffer |= (V & 1) << (BufferShift++);
 
 	if (BufferShift == 5) {
+		FCEU_printf("MMC1 REG%d:%02x (PC %04x)\n", n, Buffer, X.PC);
 		DRegs[n] = Buffer;
-		//		FCEU_printf("MMC1 REG%d:%02x\n", n, Buffer);
 		BufferShift = Buffer = 0;
 		switch (n) {
-		case 0: MMC1MIRROR(); [[fallthrough]]; // break;
-		case 1: [[fallthrough]]; // break;
-//		case 2: MMC1CHR(); break;
+		case 0: MMC1MIRROR(); [[fallthrough]];
+		case 1: 
+		case 2: 
 		case 3: MMC1PRG(); break;
 		}
 	}
@@ -151,13 +155,13 @@ static DECLFW(FNC_cmd_write) {
 		break;
 	}
 	case 0x40C0: {
-//		FCEU_printf("FNS W %04x:%02x\n", A, V);
+		FCEU_printf("FNS W %04x:%02x (PC %04x)\n", A, V, X.PC);
 		r40C0 = V;
 		MMC1CHR();
 		break;
 	}
-//	default:
-//		FCEU_printf("FNS W %04x:%02x\n", A, V);
+	default:
+		FCEU_printf("FNS W %04x:%02x (PC %04x)\n", A, V, X.PC);
 	}
 }
 
@@ -169,22 +173,31 @@ static DECLFR(FNC_stat_read) {
 		IRQa = 0;
 		return ret;
 	}
+	case 0x40AC: {	// NMI/IRQ state reset (lookalike)
+		return 0;
+	}
 	case 0x40B0: {
 		kanji_pos = 0;
 		return 0;
 	}
 	case 0x40C0: {
-//		FCEU_printf("FNS R %04x\n", A);
+		FCEU_printf("FNS R %04x (PC %04x)\n", A, X.PC);
 		int ret = r40C0;
 		r40C0 &= 0;
 		return ret;
 	}
 	default: {
-//		FCEU_printf("FNS R %04x\n", A);
+		FCEU_printf("FNS R %04x (PC %04x)\n", A, X.PC);
 		return 0xff;
 	}
 	}
 }
+
+static DECLFR(FNC_cart_i2c_read) {
+	FCEU_printf("I2C R %04x (PC %04x)\n", A, X.PC);
+	return 0;
+}
+
 
 static DECLFR(FNC_kanji_read) {
 	int32 ofs = ((A & 0xFFF) << 5) + kanji_pos;
@@ -217,8 +230,9 @@ static void FNS_Power(void) {
 	SetReadHandler(0x4080, 0x40FF, FNC_stat_read);
 	SetReadHandler(0x5000, 0x5FFF, FNC_kanji_read);
 
-	SetReadHandler(0x6000, 0x7FFF, MAWRAM);
-	SetWriteHandler(0x6000, 0x7FFF, MBWRAM);
+	SetReadHandler(0x6000, 0x6000, FNC_cart_i2c_read);
+	SetReadHandler(0x6001, 0x7FFF, CartBR);
+	SetWriteHandler(0x6000, 0x7FFF, CartBW);
 
 	FCEU_CheatAddRAM(8, 0x6000, WRAM);
 	MMC1CMReset();
@@ -242,8 +256,7 @@ void FNS_Init(CartInfo *info) {
 	SetupCartPRGMapping(0x10, WRAM, WRAMSIZE, 1);
 	AddExState(WRAM, WRAMSIZE, 0, "WRAM");
 
-	info->SaveGame[0] = WRAM;
-	info->SaveGameLen[0] = WRAMSIZE;
+	info->addSaveGameBuf( WRAM, WRAMSIZE );
 
 	AddExState(DRegs, 4, 0, "DREG");
 	AddExState(&lreset, 8, 1, "LRST");

@@ -101,7 +101,8 @@ static io_source_t dinamic_io1_device = {
     dinamic_dump,           /* device state information dump function */
     CARTRIDGE_DINAMIC,      /* cartridge ID */
     IO_PRIO_NORMAL,         /* normal priority, device read needs to be checked for collisions */
-    0                       /* insertion order, gets filled in by the registration function */
+    0,                      /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE          /* NO mirroring */
 };
 
 static io_source_list_t *dinamic_io1_list_item = NULL;
@@ -114,13 +115,13 @@ static const export_resource_t export_res = {
 
 void dinamic_config_init(void)
 {
-    cart_config_changed_slotmain(0, 0, CMODE_READ);
+    cart_config_changed_slotmain(CMODE_8KGAME, CMODE_8KGAME, CMODE_READ);
 }
 
 void dinamic_config_setup(uint8_t *rawcart)
 {
     memcpy(roml_banks, rawcart, 0x2000 * 16);
-    cart_config_changed_slotmain(0, 0, CMODE_READ);
+    cart_config_changed_slotmain(CMODE_8KGAME, CMODE_8KGAME, CMODE_READ);
 }
 
 /* ---------------------------------------------------------------------*/
@@ -180,7 +181,7 @@ void dinamic_detach(void)
    ARRAY | ROML | 8192 BYTES of ROML data
  */
 
-static char snap_module_name[] = "CARTDINAMIC";
+static const char snap_module_name[] = "CARTDINAMIC";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   0
 

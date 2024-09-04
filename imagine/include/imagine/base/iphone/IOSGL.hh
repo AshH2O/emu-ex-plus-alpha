@@ -16,11 +16,8 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/config/defs.hh>
-#include <imagine/base/iphone/config.h>
 #include <imagine/base/iphone/IOSWindow.hh>
-#include <imagine/base/Error.hh>
-#include <imagine/util/UniqueCFObject.hh>
-#include <compare>
+#include <imagine/util/memory/UniqueCFObject.hh>
 #include <type_traits>
 
 #ifdef __OBJC__
@@ -28,16 +25,18 @@
 #import <imagine/base/iphone/EAGLView.hh>
 #endif
 
-namespace Base
+namespace IG
 {
 
 class GLDisplay;
 class GLContext;
-class GLContextAttributes;
+struct GLContextAttributes;
 
 class GLManagerImpl
 {
 public:
+	static constexpr bool hasSwapInterval{};
+
 	explicit constexpr operator bool() const { return true; }
 	constexpr bool operator ==(GLManagerImpl const&) const = default;
 };
@@ -54,8 +53,8 @@ using NativeGLContext = void *; // EAGLContext in ObjC
 class IOSGLContext
 {
 public:
-	constexpr IOSGLContext() {}
-	IOSGLContext(GLContextAttributes, NativeGLContext shareContext, IG::ErrorCode &);
+	constexpr IOSGLContext() = default;
+	IOSGLContext(GLContextAttributes, NativeGLContext shareContext);
 	operator NativeGLContext() const { return context_.get(); }
 	#ifdef __OBJC__
 	EAGLContext *context() const { return (__bridge EAGLContext*)context_.get(); }
@@ -89,14 +88,14 @@ struct GLBufferConfig
 {
 	bool useRGB565 = false;
 
-	Base::NativeWindowFormat windowFormat(Base::ApplicationContext, GLDisplay display) const;
-	bool maySupportGLES(GLDisplay, unsigned majorVersion) const;
+	NativeWindowFormat windowFormat(ApplicationContext, GLDisplay display) const;
+	bool maySupportGLES(GLDisplay, int majorVersion) const;
 	constexpr bool operator ==(GLBufferConfig const&) const = default;
 };
 
 using GLDrawableImpl = EAGLViewDrawable;
 using GLContextImpl = IOSGLContext;
-using EAGLViewMakeRenderbufferDelegate = DelegateFunc<IG::Point2D<int>(void *, unsigned int &, unsigned int &)>;
+using EAGLViewMakeRenderbufferDelegate = DelegateFunc<WSize(void *, unsigned int &, unsigned int &)>;
 using EAGLViewDeleteRenderbufferDelegate = DelegateFunc<void(unsigned int colorRenderbuffer, unsigned int depthRenderbuffer)>;
 
 extern EAGLViewMakeRenderbufferDelegate makeRenderbuffer;

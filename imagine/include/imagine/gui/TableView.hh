@@ -16,76 +16,81 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/config/defs.hh>
-#include <imagine/util/rectangle2.h>
 #include <imagine/gfx/defs.hh>
+#include <imagine/gfx/Quads.hh>
 #include <imagine/gui/ScrollView.hh>
-#include <iterator>
+#include <imagine/util/rectangle2.h>
+#include <imagine/util/concepts.hh>
+#include <imagine/util/variant.hh>
+#include <string_view>
 
-namespace Base
-{
-class Window;
-}
-
-namespace Input
+namespace IG::Input
 {
 class Event;
 }
 
-namespace Gfx
+namespace IG
 {
-class RendererCommands;
-}
 
-class MenuItem;
+class Window;
 
 class TableView : public ScrollView
 {
 public:
-	using ItemsDelegate = DelegateFunc<int (const TableView &view)>;
-	using ItemDelegate = DelegateFunc<MenuItem& (const TableView &view, uint32_t idx)>;
-	using SelectElementDelegate = DelegateFunc<void (Input::Event e, uint32_t i, MenuItem &item)>;
+	struct ItemsMessage {const TableView& item;};
+	struct GetItemMessage {const TableView& item; size_t idx;};
+	using ItemMessageVariant = std::variant<GetItemMessage, ItemsMessage>;
+	class ItemMessage: public ItemMessageVariant, public AddVisit
+	{
+	public:
+		using ItemMessageVariant::ItemMessageVariant;
+		using AddVisit::visit;
+	};
+	using ItemReply = std::variant<MenuItem*, size_t>;
+	using ItemSourceDelegate = MenuItemSourceDelegate<ItemMessage, ItemReply, ItemsMessage, GetItemMessage>;
+	using SelectElementDelegate = DelegateFunc<void (const Input::Event &, int i, MenuItem &)>;
 
-	TableView(ViewAttachParams attach, ItemsDelegate items, ItemDelegate item);
-	TableView(NameString name, ViewAttachParams attach, ItemsDelegate items, ItemDelegate item);
-	TableView(const char *name, ViewAttachParams attach, ItemsDelegate items, ItemDelegate item):
-		TableView{makeNameString(name), attach, items, item} {}
-	template <class Container>
-	TableView(ViewAttachParams attach, Container &item):
-		TableView{{}, attach, item} {}
-	template <class Container>
-	TableView(NameString name, ViewAttachParams attach, Container &item):
-		TableView
-		{
-			std::move(name),
-			attach,
-			[&item](const TableView &) { return std::size(item); },
-			[&item](const TableView &, uint32_t idx) -> MenuItem& { return IG::deref(std::data(item)[idx]); }
-		} {}
-	template <class Container>
-	TableView(const char *name, ViewAttachParams attach, Container &item):
-		TableView{makeNameString(name), attach, item} {}
+	TableView(UTF16Convertible auto &&name, ViewAttachParams attach, ItemSourceDelegate itemSrc):
+		ScrollView{attach}, itemSrc{itemSrc}, nameStr{IG_forward(name)},
+		selectQuads{attach.rendererTask, {.size = 1}},
+		separatorQuads{attach.rendererTask, {.size = maxSeparators, .usageHint = Gfx::BufferUsageHint::streaming}} {}
+
+	TableView(ViewAttachParams attach, ItemSourceDelegate itemSrc):
+		TableView{UTF16String{}, attach, itemSrc} {}
+
 	void prepareDraw() override;
-	void draw(Gfx::RendererCommands &cmds) override;
+	void draw(Gfx::RendererCommands &__restrict__, ViewDrawParams p = {}) const override;
 	void place() override;
 	void setScrollableIfNeeded(bool yes);
 	void scrollToFocusRect();
 	void resetScroll();
-	bool inputEvent(Input::Event event) override;
+	bool inputEvent(const Input::Event&, ViewInputEventParams p = {}) override;
 	void clearSelection() override;
 	void onShow() override;
 	void onHide() override;
-	void onAddedToController(ViewController *c, Input::Event e) override;
+	void onAddedToController(ViewController *, const Input::Event &) override;
 	void setFocus(bool focused) override;
 	void setOnSelectElement(SelectElementDelegate del);
-	uint32_t cells() const;
-	IG::WP cellSize() const;
+	auto& item(this auto&& self, size_t idx) { return self.item(self.itemSrc, idx); }
+	size_t cells() const;
+	WSize cellSize() const;
 	void highlightCell(int idx);
+	int highlightedCell() const { return selected; }
+	[[nodiscard]] TableUIState saveUIState() const;
+	void restoreUIState(TableUIState);
 	void setAlign(_2DOrigin align);
+	std::u16string_view name() const override;
+	void resetName(UTF16Convertible auto &&name) { nameStr = IG_forward(name); }
+	void resetName() { nameStr.clear(); }
+	void resetItemSource(ItemSourceDelegate src = [](ItemMessage) -> ItemReply { return 0uz; }) { itemSrc = src; }
 
 protected:
-	ItemsDelegate items{};
-	ItemDelegate item{};
+	static constexpr size_t maxSeparators = 32;
+	ItemSourceDelegate itemSrc;
 	SelectElementDelegate selectElementDel{};
+	UTF16String nameStr{};
+	Gfx::IQuads selectQuads;
+	Gfx::IColQuads separatorQuads;
 	int yCellSize = 0;
 	int selected = -1;
 	int visibleCells = 0;
@@ -95,11 +100,17 @@ protected:
 	bool hasFocus = true;
 
 	void setYCellSize(int s);
-	IG::WindowRect focusRect();
-	void onSelectElement(Input::Event e, uint32_t i, MenuItem &item);
-	bool elementIsSelectable(MenuItem &item);
+	WRect focusRect();
+	void onSelectElement(const Input::Event &, size_t i, MenuItem &);
 	int nextSelectableElement(int start, int items);
 	int prevSelectableElement(int start, int items);
-	bool handleTableInput(Input::Event e, bool &movedSelected);
-	virtual void drawElement(Gfx::RendererCommands &cmds, uint32_t i, MenuItem &item, Gfx::GCRect rect, Gfx::GC xIndent) const;
+	bool handleTableInput(const Input::Event &, bool &movedSelected);
+	virtual void drawElement(Gfx::RendererCommands &__restrict__, size_t i, MenuItem &item, WRect rect, int xIndent) const;
+
+	auto& item(this auto&& self, ItemSourceDelegate src, size_t idx)
+	{
+		return *getAs<MenuItem*>(src(GetItemMessage{self, idx}));
+	}
 };
+
+}

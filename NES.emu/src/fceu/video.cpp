@@ -37,7 +37,7 @@
 #include "fceulua.h"
 #endif
 
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
 #include "drivers/win/common.h" //For DirectX constants
 #include "drivers/win/input.h"
 #endif
@@ -72,6 +72,8 @@ static u8 *xbsave=NULL;
 GUIMESSAGE guiMessage;
 GUIMESSAGE subtitleMessage;
 
+bool vidGuiMsgEna = true;
+
 //for input display
 extern int input_display;
 extern uint32 cur_input_display;
@@ -85,25 +87,27 @@ std::string AsSnapshotName ="";			//adelikat:this will set the snapshot name whe
 void FCEUI_SetSnapshotAsName(std::string name) { AsSnapshotName = name; }
 std::string FCEUI_GetSnapshotAsName() { return AsSnapshotName; }
 
+static void FCEU_DrawPauseCountDown(uint8 *XBuf);
+
 void FCEU_KillVirtualVideo(void)
 {
-	//mbg merge TODO 7/17/06 temporarily removed
-	//if(xbsave)
-	//{
-	// free(xbsave);
-	// xbsave=0;
-	//}
-	//if(XBuf)
-	//{
-	//UnmapViewOfFile(XBuf);
-	//CloseHandle(mapXBuf);
-	//mapXBuf=NULL;
-	//}
-	//if(XBackBuf)
-	//{
-	// free(XBackBuf);
-	// XBackBuf=0;
-	//}
+	if ( XBuf )
+	{
+		FCEU_afree(XBuf); XBuf = NULL;
+	}
+	if ( XBackBuf )
+	{
+		FCEU_afree(XBackBuf); XBackBuf = NULL;
+	}
+	if ( XDBuf )
+	{
+		FCEU_afree(XDBuf); XDBuf = NULL;
+	}
+	if ( XDBackBuf )
+	{
+		FCEU_afree(XDBackBuf); XDBackBuf = NULL;
+	}
+	//printf("Video Core Cleanup\n");
 }
 
 /**
@@ -114,32 +118,22 @@ void FCEU_KillVirtualVideo(void)
 int FCEU_InitVirtualVideo(void)
 {
 	//Some driver code may allocate XBuf externally.
-	//256 bytes per scanline, * 240 scanline maximum, +16 for alignment,
+	//256 bytes per scanline, * 240 scanline maximum
 	if(XBuf)
 		return 1;
 	
-	XBuf = (u8*)FCEU_malloc(256 * 256 + 16);
-	XBackBuf = (u8*)FCEU_malloc(256 * 256 + 16);
-	XDBuf = (u8*)FCEU_malloc(256 * 256 + 16);
-	XDBackBuf = (u8*)FCEU_malloc(256 * 256 + 16);
-	if(!XBuf || !XBackBuf || !XDBuf || !XDBackBuf)
-	{
-		return 0;
-	}
+	XBuf = (u8*)FCEU_amalloc(256 * 256);
+	XBackBuf = (u8*)FCEU_amalloc(256 * 256);
+	XDBuf = (u8*)FCEU_amalloc(256 * 256);
+	XDBackBuf = (u8*)FCEU_amalloc(256 * 256);
+
 
 	xbsave = XBuf;
 
-	if( sizeof(uint8*) == 4 )
-	{
-		uintptr_t m = (uintptr_t)XBuf;
-		m = ( 8 - m) & 7;
-		XBuf+=m;
-	}
-
 	memset(XBuf,128,256*256);
 	memset(XBackBuf,128,256*256);
-	memset(XBuf,128,256*256);
-	memset(XBackBuf,128,256*256);
+	memset(XDBuf,0,256*256);
+	memset(XDBackBuf,0,256*256);
 
 	return 1;
 }
@@ -262,6 +256,7 @@ void FCEU_PutImage(void)
 		FCEU_DrawLagCounter(XBuf);
 		FCEU_DrawNTSCControlBars(XBuf);
 		FCEU_DrawRecordingStatus(XBuf);
+		FCEU_DrawPauseCountDown(XBuf);
 		ShowFPS();
 	}
 
@@ -271,7 +266,6 @@ void FCEU_PutImage(void)
 	//Fancy input display code
 	if(input_display)
 	{
-		extern uint32 JSAutoHeld;
 		int i, j;
 		uint8 *t = XBuf+(FSettings.LastSLine-9)*256 + 20;		//mbg merge 7/17/06 changed t to uint8*
 		if(input_display > 4) input_display = 4;
@@ -289,7 +283,8 @@ void FCEU_PutImage(void)
 			uint32 ci = 0;
 			uint32 color;
 
-#ifdef WIN32
+#ifdef __WIN_DRIVER__
+			extern uint32 JSAutoHeld;
 			// This doesn't work in anything except windows for now.
 			// It doesn't get set anywhere in other ports.
 			if (!oldInputDisplay)
@@ -398,7 +393,7 @@ void snapAVI()
 		FCEUI_AviVideoUpdate(XBuf);
 }
 
-void FCEU_DispMessageOnMovie(char *format, ...)
+void FCEU_DispMessageOnMovie( __FCEU_PRINTF_FORMAT const char *format, ...)
 {
 	va_list ap;
 
@@ -406,7 +401,10 @@ void FCEU_DispMessageOnMovie(char *format, ...)
 	vsnprintf(guiMessage.errmsg,sizeof(guiMessage.errmsg),format,ap);
 	va_end(ap);
 
-	guiMessage.howlong = 180;
+	if ( vidGuiMsgEna )
+	{
+		guiMessage.howlong = 180;
+	}
 	guiMessage.isMovieMessage = true;
 	guiMessage.linesFromBottom = 0;
 
@@ -414,7 +412,7 @@ void FCEU_DispMessageOnMovie(char *format, ...)
 		guiMessage.howlong = 0;
 }
 
-void FCEU_DispMessage(char *format, int disppos=0, ...)
+void FCEU_DispMessage( __FCEU_PRINTF_FORMAT const char *format, int disppos=0, ...)
 {
 	va_list ap;
 
@@ -427,9 +425,12 @@ void FCEU_DispMessage(char *format, int disppos=0, ...)
 	vsnprintf(temp,sizeof(temp),format,ap);
 	va_end(ap);
 	strcat(temp, "\n");
-	FCEU_printf(temp);
+	FCEU_printf("%s",temp);
 
-	guiMessage.howlong = 180;
+	if ( vidGuiMsgEna )
+	{
+		guiMessage.howlong = 180;
+	}
 	guiMessage.isMovieMessage = false;
 
 	guiMessage.linesFromBottom = disppos;
@@ -455,7 +456,7 @@ void FCEU_ResetMessages()
 }
 
 
-static int WritePNGChunk(FILE *fp, uint32 size, char *type, uint8 *data)
+static int WritePNGChunk(FILE *fp, uint32 size, const char *type, uint8 *data)
 {
 	uint32 crc;
 
@@ -582,7 +583,7 @@ int SaveSnapshot(void)
 			dest++;
 			for(x=256;x;x--)
 			{
-				u32 color = ModernDeemphColorMap(tmp,XBuf,1,1);
+				u32 color = ModernDeemphColorMap(tmp,XBuf,1);
 				*dest++=(color>>0x10)&0xFF;
 				*dest++=(color>>0x08)&0xFF;
 				*dest++=(color>>0x00)&0xFF;
@@ -724,27 +725,84 @@ bool FCEUI_ShowFPS()
 }
 void FCEUI_SetShowFPS(bool showFPS)
 {
+	if ( Show_FPS != showFPS )
+	{
+		ResetFPS();
+	}
 	Show_FPS = showFPS;
 }
 void FCEUI_ToggleShowFPS()
 {
 	Show_FPS ^= 1;
+
+	ResetFPS();
 }
 
-static uint64 boop[60];
-static int boopcount = 0;
+static uint64 boop_ts = 0;
+static unsigned int boopcount = 0;
+
+void ResetFPS(void)
+{
+	boop_ts = 0;
+	boopcount = 0;
+}
 
 void ShowFPS(void)
 {
-	if(Show_FPS == false)
+	if (Show_FPS == false)
+	{
 		return;
-	uint64 da = FCEUD_GetTime() - boop[boopcount];
-	char fpsmsg[16];
-	int booplimit = PAL?50:60;
-	boop[boopcount] = FCEUD_GetTime();
+	}
+	static char fpsmsg[16] = { 0 };
+	uint64 ts = FCEUD_GetTime();
+	uint64 da;
 
-	sprintf(fpsmsg, "%.1f", (double)booplimit / ((double)da / FCEUD_GetTimeFreq()));
+	if ( boop_ts == 0 )
+	{
+		boop_ts = ts;
+	}
+	da = ts - boop_ts;
+
+	if ( da > FCEUD_GetTimeFreq() )
+	{
+		snprintf(fpsmsg, sizeof(fpsmsg), "%.1f", (double)boopcount / ((double)da / FCEUD_GetTimeFreq()));
+
+		boopcount = 0;
+		boop_ts = ts;
+	}
+	boopcount++;
+
 	DrawTextTrans(XBuf + ((256 - ClipSidesOffset) - 40) + (FSettings.FirstSLine + 4) * 256, 256, (uint8*)fpsmsg, 0xA0);
-	// It's not averaging FPS over exactly 1 second, but it's close enough.
-	boopcount = (boopcount + 1) % booplimit;
+}
+
+bool showPauseCountDown = true;
+
+static void FCEU_DrawPauseCountDown(uint8 *XBuf)
+{
+	if (EmulationPaused & EMULATIONPAUSED_TIMER)
+	{
+		int pauseFramesLeft = FCEUI_PauseFramesRemaining();
+
+		if (showPauseCountDown && (pauseFramesLeft > 0) )
+		{
+			char text[32];
+			int framesPerSec;
+
+			if (PAL || dendy)
+			{
+				framesPerSec = 50;
+			}
+			else
+			{
+				framesPerSec = 60;
+			}
+
+			snprintf(text, sizeof(text), "Unpausing in %d...", (pauseFramesLeft / framesPerSec) + 1);
+
+			if (text[0])
+			{
+				DrawTextTrans(XBuf + ClipSidesOffset + (FSettings.FirstSLine) * 256, 256, (uint8*)text, 0xA0);
+			}
+		}
+	}
 }

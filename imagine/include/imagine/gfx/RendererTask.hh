@@ -15,52 +15,54 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/config/defs.hh>
+#include <imagine/gfx/defs.hh>
+#include <imagine/util/utility.h>
+#include <concepts>
+#include <chrono>
 
 #ifdef CONFIG_GFX_OPENGL
 #include <imagine/gfx/opengl/GLRendererTask.hh>
 #endif
 
-#include <imagine/gfx/defs.hh>
-#include <imagine/gfx/SyncFence.hh>
-#include <imagine/base/baseDefs.hh>
-#include <utility>
-
 namespace IG
 {
-class Semaphore;
+struct WindowDrawParams;
+class Window;
+class Viewport;
 }
 
-namespace Gfx
+namespace IG::Gfx
 {
+
+WISE_ENUM_CLASS((PresentMode, uint8_t),
+	Auto, Immediate, FIFO
+);
 
 class RendererTask : public RendererTaskImpl
 {
 public:
 	using RendererTaskImpl::RendererTaskImpl;
-	void updateDrawableForSurfaceChange(Base::Window &, Base::WindowSurfaceChange);
+	void updateDrawableForSurfaceChange(Window &, WindowSurfaceChange);
+	void setPresentMode(Window &, PresentMode);
+	void setDefaultViewport(Window &, Viewport);
 	void releaseShaderCompiler();
 	void flush();
 	void setDebugOutput(bool on);
 	Renderer &renderer() const;
 	explicit operator bool() const;
 
-	// Run a delegate on the renderer thread with signature:
-	// void()
-	template<class Func>
-	void run(Func &&del, bool awaitReply = false)
+	// Run a delegate on the renderer thread
+	void run(std::invocable auto &&f, MessageReplyMode mode = MessageReplyMode::none)
 	{
-		RendererTaskImpl::run(std::forward<Func>(del), awaitReply);
+		RendererTaskImpl::run(IG_forward(f), mode);
 	}
 
-	// Run a delegate for drawing on the renderer thread with signature:
-	// void(Base::Window &win, RendererCommands &cmds)
-	// Returns true if the window's contents were presented synchronously
-	template<class Func>
-	bool draw(Base::Window &win, Base::WindowDrawParams winParams, DrawParams params,
-		const Viewport &viewport, const Mat4 &projMat, Func &&del)
+	// Run a delegate for drawing on the renderer thread
+	// Returns true if the window's contents were presented asynchronously
+	bool draw(Window &win, WindowDrawParams winParams, DrawParams params,
+		std::invocable<Window &, RendererCommands &> auto &&f)
 	{
-		return RendererTaskImpl::draw(win, winParams, params, viewport, projMat, std::forward<Func>(del));
+		return RendererTaskImpl::draw(win, winParams, params, IG_forward(f));
 	}
 
 	// synchronization
@@ -70,5 +72,28 @@ public:
 	SyncFence clientWaitSyncReset(SyncFence fence, int flags = 0, std::chrono::nanoseconds timeout = SyncFence::IGNORE_TIMEOUT);
 	void waitSync(SyncFence fence);
 	void awaitPending();
+	ThreadId threadId() const;
+
+	// buffers
+	void write(auto &buff, auto &&data, ssize_t offset)
+	{
+		if constexpr(sizeof(&buff) + sizeof(offset) + sizeof(data) <= FuncDelegateStorageSize)
+		{
+			RendererTaskImpl::run([&buff, offset, data]()
+			{
+				buff.writeSubData(offset * buff.elemSize, sizeof(data), &data);
+			});
+		}
+		else
+		{
+			RendererTaskImpl::run([&buff, offset](TaskContext ctx)
+			{
+				std::remove_cvref_t<decltype(data)> data;
+				ctx.msgsPtr->readExtraData(std::span{&data, 1});
+				buff.writeSubData(offset * buff.elemSize, sizeof(data), &data);
+			}, IG_forward(data));
+		}
+	}
 };
+
 }

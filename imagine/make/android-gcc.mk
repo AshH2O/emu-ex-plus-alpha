@@ -8,83 +8,92 @@ ifeq ($(ANDROID_NDK_PATH),)
  $(error setAndroidNDKPath.mk was not included in base makefile)
 endif
 
-ANDROID_CLANG_TOOLCHAIN_PATH ?= $(wildcard $(ANDROID_NDK_PATH)/toolchains/llvm/prebuilt/*)
+ifeq ($(ANDROID_CLANG_TOOLCHAIN_PATH),)
+ ANDROID_CLANG_TOOLCHAIN_PATH := $(wildcard $(ANDROID_NDK_PATH)/toolchains/llvm/prebuilt/*)
+endif
 ANDROID_CLANG_TOOLCHAIN_BIN_PATH := $(ANDROID_CLANG_TOOLCHAIN_PATH)/bin
+
+ifneq ($(wildcard $(ANDROID_CLANG_TOOLCHAIN_PATH)/sysroot),)
+ ANDROID_CLANG_SYSROOT_PATH := $(ANDROID_CLANG_TOOLCHAIN_PATH)/sysroot
+ android_implicitSysroot := 1
+else # Custom toolchain without sysroot, use one from NDK
+ ANDROID_CLANG_SYSROOT_PATH := $(wildcard $(ANDROID_NDK_PATH)/toolchains/llvm/prebuilt/*/sysroot)
+endif
+
+ifeq ($(ANDROID_CLANG_SYSROOT_PATH),)
+ $(error ANDROID_CLANG_SYSROOT_PATH not found in NDK or in ANDROID_CLANG_TOOLCHAIN_PATH: $(ANDROID_CLANG_TOOLCHAIN_PATH))
+endif
 
 ifdef V
  $(info NDK Clang path: $(ANDROID_CLANG_TOOLCHAIN_BIN_PATH))
 endif
 
 ifneq ($(wildcard $(ANDROID_NDK_PATH)/sysroot),)
- $(error your NDK contains a deprecated sysroot directory, please upgrade to at least r22)
+ $(error your NDK contains a deprecated sysroot directory, please upgrade to at least r23)
 endif
 
-ifeq ($(android_ndkSDK), 9)
- android_ndkLinkSysroot := $(IMAGINE_PATH)/bundle/android-$(android_ndkSDK)/arch-$(android_ndkArch)
+ifneq ($(filter 9 16, $(android_ndkSDK)),)
+ # SDK 9 no longer supported since NDK r16 & SDK 16 since NDK r24, use bundled system lib stubs
+ CPPFLAGS += -DANDROID_COMPAT_API=$(android_ndkSDK)
+ android_ndkLinkSysroot := $(IMAGINE_PATH)/bundle/android/$(CHOST)/$(android_ndkSDK)
 endif
 
 ifdef android_ndkLinkSysroot
- VPATH += $(android_ndkLinkSysroot)/usr/lib$(android_libDirExt)
-else
- VPATH += $(ANDROID_CLANG_TOOLCHAIN_PATH)/sysroot/usr/lib/$(CHOST)/$(android_ndkSDK)
-endif
-
-config_compiler ?= clang
-
-ifeq ($(origin CC), default)
- CC := $(ANDROID_CLANG_TOOLCHAIN_BIN_PATH)/clang
- CXX := $(CC)++
- AR := $(ANDROID_CLANG_TOOLCHAIN_BIN_PATH)/llvm-ar
- RANLIB := $(ANDROID_CLANG_TOOLCHAIN_BIN_PATH)/llvm-ar s
- STRIP := $(ANDROID_CLANG_TOOLCHAIN_BIN_PATH)/llvm-strip
- OBJDUMP := $(ANDROID_CLANG_TOOLCHAIN_BIN_PATH)/llvm-objdump
- toolchainEnvParams += RANLIB="$(RANLIB)" STRIP="$(STRIP)" OBJDUMP="$(OBJDUMP)"
-else
- # TODO: user-defined compiler
- ifneq ($(findstring $(shell $(CC) -v), "clang version"),)
-  $(info detected clang compiler)
-  config_compiler = clang
+ VPATH += $(android_ndkLinkSysroot)/usr/lib
+ ifdef V
+  $(info NDK link sysroot path: $(android_ndkLinkSysroot))
  endif
- $(error user-defined compiler not yet supported)
+else
+ VPATH += $(ANDROID_CLANG_SYSROOT_PATH)/usr/lib/$(CHOST)/$(android_ndkSDK)
 endif
 
-CFLAGS_OPTIMIZE_DEBUG_DEFAULT ?= -O2
-
-ifneq ($(config_compiler),clang)
- $(error config_compiler must be set to clang)
-endif
+config_compiler := clang
+CC := $(ANDROID_CLANG_TOOLCHAIN_BIN_PATH)/clang
+CXX := $(CC)++
+AR := $(ANDROID_CLANG_TOOLCHAIN_BIN_PATH)/llvm-ar
+RANLIB := $(AR) s
+STRIP := $(ANDROID_CLANG_TOOLCHAIN_BIN_PATH)/llvm-strip
+OBJDUMP := $(ANDROID_CLANG_TOOLCHAIN_BIN_PATH)/llvm-objdump
+CLANG_TIDY := $(ANDROID_CLANG_TOOLCHAIN_BIN_PATH)/clang-tidy
+toolchainEnvParams += STRIP="$(STRIP)" OBJDUMP="$(OBJDUMP)"
 
 include $(buildSysPath)/clang.mk
 CFLAGS_TARGET += -target $(clangTarget)
 
 # libc++
-STDCXXLIB = -static-libstdc++
-
-ifdef ANDROID_APK_SIGNATURE_HASH
- CPPFLAGS += -DANDROID_APK_SIGNATURE_HASH=$(ANDROID_APK_SIGNATURE_HASH)
+android_useExternalLibcxx := 1
+ifdef android_useExternalLibcxx
+ ifneq ($(pkgName),libcxx) # check we aren't building lib++ itself
+  STDCXXLIB = -nostdlib++ -lc++ -lc++abi -lc++experimental $(android_cxxSupportLibs)
+  CPPFLAGS += -nostdinc++ -I$(IMAGINE_SDK_PLATFORM_PATH)/include/c++/v1
+  android_staticLibcxxName := libc++.a
+ endif
+else
+ STDCXXLIB = -static-libstdc++
+ android_staticLibcxxName := libc++_static.a
 endif
+android_staticLibcxxExperimentalName := libc++experimental.a
 
 CFLAGS_TARGET += $(android_cpuFlags) -no-canonical-prefixes
-CFLAGS_CODEGEN += -ffunction-sections -fdata-sections
 ASMFLAGS ?= $(CFLAGS_TARGET) -Wa,--noexecstack
 ifdef android_ndkLinkSysroot
  LDFLAGS_SYSTEM += --sysroot=$(android_ndkLinkSysroot)
+else
+ ifndef android_implicitSysroot
+  LDFLAGS_SYSTEM += --sysroot=$(ANDROID_CLANG_SYSROOT_PATH)
+ endif
 endif
-LDFLAGS_SYSTEM += -no-canonical-prefixes \
--Wl,--no-undefined,-z,noexecstack,-z,relro,-z,now
 linkAction = -Wl,-soname,lib$(android_metadata_soName).so -shared
-LDLIBS_SYSTEM += -lm
-LDLIBS += $(LDLIBS_SYSTEM)
 CPPFLAGS += -DANDROID
-LDFLAGS_SYSTEM += -s \
--Wl,-O3,--gc-sections,--compress-debug-sections=$(COMPRESS_DEBUG_SECTIONS),--icf=all,--as-needed,--warn-shared-textrel,--fatal-warnings \
--Wl,--exclude-libs,libgcc.a,--exclude-libs,libgcc_real.a -Wl,--exclude-libs,libatomic.a
-
-ifeq ($(android_ndkSDK), 9)
- # SDK 9 no longer supported since NDK r16, enable compatibilty work-arounds
- CPPFLAGS += -DANDROID_COMPAT_API
+ifndef android_implicitSysroot
+ CPPFLAGS += --sysroot=$(ANDROID_CLANG_SYSROOT_PATH)
 endif
+LDFLAGS_SYSTEM += -s -no-canonical-prefixes \
+-Wl,--no-undefined,-z,noexecstack,-z,relro,-z,now \
+-Wl,-O3,--gc-sections,--compress-debug-sections=$(COMPRESS_DEBUG_SECTIONS),--icf=all,--as-needed,--warn-shared-textrel,--fatal-warnings \
+-Wl,--exclude-libs,libgcc.a,--exclude-libs,libgcc_real.a -Wl,--exclude-libs,libatomic.a,--lto-whole-program-visibility
 
-ifndef RELEASE
- CFLAGS_CODEGEN += -funwind-tables
+# Don't include public libc++ symbols in main shared object file unless other linked objects need them  
+ifndef cxxStdLibLinkedObjects
+ LDFLAGS_SYSTEM += -Wl,--exclude-libs,libc++abi.a,--exclude-libs,$(android_staticLibcxxName),--exclude-libs,$(android_staticLibcxxExperimentalName)
 endif

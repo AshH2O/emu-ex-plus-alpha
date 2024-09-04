@@ -5,18 +5,15 @@ include $(imagineSrcDir)/base/Base.mk
 include $(imagineSrcDir)/input/build.mk
 include $(imagineSrcDir)/util/fdUtils.mk
 
-LDLIBS += -lpthread -ldl
+LDLIBS += -ldl
 
-SRC += base/linux/linux.cc \
- base/linux/DRMFrameTimer.cc \
+SRC += base/linux/Application.cc \
+ base/linux/ApplicationContext.cc \
  base/linux/FBDevFrameTimer.cc \
  base/common/SimpleFrameTimer.cc \
  base/common/timer/TimerFD.cc \
  base/common/PosixPipe.cc \
- base/common/eventloop/FDCustomEvent.cc \
- util/string/glibc.c
-
-include $(IMAGINE_PATH)/make/package/libdrm.mk
+ base/common/eventloop/FDCustomEvent.cc
 
 linuxWinSystem ?= x11
 
@@ -24,17 +21,14 @@ ifeq ($(linuxWinSystem), x11)
  include $(imagineSrcDir)/base/x11/build.mk
 endif
 
-linuxEventLoop ?= glib
+SRC += base/common/eventloop/GlibEventLoop.cc
+include $(IMAGINE_PATH)/make/package/glib.mk
 
-ifeq ($(linuxEventLoop), glib)
- configDefs += CONFIG_BASE_GLIB
- SRC += base/common/eventloop/GlibEventLoop.cc
- include $(IMAGINE_PATH)/make/package/glib.mk
-endif
-
-ifneq ($(SUBENV), pandora)
- configDefs += CONFIG_BASE_DBUS
- SRC += base/linux/dbus.cc
+ifeq ($(SUBENV), pandora)
+ SRC += base/linux/compat.c
+else # Linux Desktop
+ SRC += base/linux/dbus.cc base/linux/DRMFrameTimer.cc
+ include $(IMAGINE_PATH)/make/package/libdrm.mk
  include $(IMAGINE_PATH)/make/package/gio.mk
 endif
 

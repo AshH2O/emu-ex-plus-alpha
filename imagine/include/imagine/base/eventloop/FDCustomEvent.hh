@@ -16,52 +16,48 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/base/EventLoop.hh>
-#include <imagine/util/typeTraits.hh>
-#include <utility>
+#include <imagine/util/used.hh>
+#include <imagine/util/utility.h>
+#include <concepts>
+#include <optional>
 
-namespace Base
+namespace IG
 {
+
+struct FDCustomEventDesc
+{
+	const char* debugLabel{};
+	std::optional<EventLoop> eventLoop;
+};
 
 class FDCustomEvent
 {
 public:
-	struct NullInit{};
-
-	explicit constexpr FDCustomEvent(NullInit) {}
-	FDCustomEvent() : FDCustomEvent{nullptr} {}
-	FDCustomEvent(const char *debugLabel);
-	FDCustomEvent(FDCustomEvent &&o);
-	FDCustomEvent &operator=(FDCustomEvent &&o);
-	~FDCustomEvent();
-	void attach(EventLoop loop, PollEventDelegate del);
-
-	template<class Func>
-	void attach(Func func)
+	static constexpr PollEventDelegate wrapDelegate(std::invocable auto&& del)
 	{
-		attach({}, std::forward<Func>(func));
+		return [=](int fd, int)
+		{
+			if(shouldPerformCallback(fd))
+				del();
+			return true;
+		};
 	}
 
-	template<class Func>
-	void attach(EventLoop loop, Func func)
+	FDCustomEvent(FDEventSourceDesc, PollEventDelegate);
+	FDCustomEvent(FDEventSourceDesc desc, std::invocable auto&& del):FDCustomEvent{desc, wrapDelegate(IG_forward(del))} {}
+
+	void attach(EventLoop loop = {}) { fdSrc.attach(loop); }
+
+	void setCallback(std::invocable auto&& del)
 	{
-		attach(loop,
-			PollEventDelegate
-			{
-				[=](int fd, int)
-				{
-					if(shouldPerformCallback(fd))
-						func();
-					return true;
-				}
-			});
+		fdSrc.setCallback(wrapDelegate(IG_forward(del)));
 	}
+
+	const char* debugLabel() const { return fdSrc.debugLabel(); }
 
 protected:
-	IG_enableMemberIf(Config::DEBUG_BUILD, const char *, debugLabel){};
-	FDEventSource fdSrc{};
+	FDEventSource fdSrc;
 
-	const char *label();
-	void deinit();
 	static bool shouldPerformCallback(int fd);
 };
 

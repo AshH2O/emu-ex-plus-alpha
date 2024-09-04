@@ -55,13 +55,20 @@ int fsimage_read_gcr_image(const disk_image_t *image)
     unsigned int half_track;
 
     for (half_track = 0; half_track < MAX_GCR_TRACKS; half_track++) {
+        /* free existing track */
         if (image->gcr->tracks[half_track].data) {
             lib_free(image->gcr->tracks[half_track].data);
             image->gcr->tracks[half_track].data = NULL;
             image->gcr->tracks[half_track].size = 0;
         }
+        /* load new track from image */
         if (half_track < image->max_half_tracks) {
             fsimage_gcr_read_half_track(image, half_track + 2, &image->gcr->tracks[half_track]);
+        } else {
+            /* create empty tracks for non existing tracks */
+            image->gcr->tracks[half_track].size = disk_image_raw_track_size(image->type, half_track / 2);
+            image->gcr->tracks[half_track].data = lib_malloc(image->gcr->tracks[half_track].size);
+            memset(image->gcr->tracks[half_track].data, 0, image->gcr->tracks[half_track].size);
         }
     }
     return 0;
@@ -178,7 +185,9 @@ static int fsimage_gcr_read_track(const disk_image_t *image, unsigned int track,
 int fsimage_gcr_write_half_track(disk_image_t *image, unsigned int half_track,
                                  const disk_track_t *raw)
 {
-    int gap, extend = 0, res;
+    int gap;
+    int extend = 0;
+    long res;
     uint16_t max_track_length;
     uint8_t buf[4];
     long offset;
@@ -242,7 +251,12 @@ int fsimage_gcr_write_half_track(disk_image_t *image, unsigned int half_track,
         }
 
         if (extend) {
-            util_dword_to_le_buf(buf, offset);
+            /* FIXME: danger zone: 'DWORD' is a loose term, doesn't indicate
+             *        a size, just that's the next bigger size of 'WORD'.
+             *        Probably these terms are taken from the horrible Win API.
+             *        -- compyx 2020-07-24
+             */
+            util_dword_to_le_buf(buf, (uint32_t)offset);
             if (util_fpwrite(fsimage->fd, buf, 4, 12 + (half_track - 2) * 4) < 0) {
                 log_error(fsimage_gcr_log, "Could not write GCR disk image.");
                 return -1;

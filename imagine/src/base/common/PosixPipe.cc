@@ -13,18 +13,20 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "Pipe"
 #include <imagine/base/Pipe.hh>
 #include <imagine/util/fd-utils.h>
+#include <imagine/util/format.hh>
 #include <imagine/logger/logger.h>
 #include <cstring>
 #include <fcntl.h>
-#include <errno.h>
+#include <cerrno>
 
-namespace Base
+namespace IG
 {
 
-static std::array<PosixIO, 2> makePipe()
+constexpr SystemLogger log{"Pipe"};
+
+static auto makePipe()
 {
 	std::array<int, 2> fd{-1, -1};
 	#ifdef __linux__
@@ -34,17 +36,16 @@ static std::array<PosixIO, 2> makePipe()
 	#endif
 	if(res == -1)
 	{
-		logErr("error creating pipe");
+		log.error("error creating pipe");
 	}
-	return {fd[0], fd[1]};
+	return std::array<PosixIO, 2>{UniqueFileDescriptor{fd[0]}, UniqueFileDescriptor{fd[1]}};
 }
 
-Pipe::Pipe(const char *debugLabel, uint32_t preferredSize):
-	debugLabel{debugLabel ? debugLabel : "unnamed"},
+Pipe::Pipe(const char *debugLabel, int preferredSize):
 	io{makePipe()},
-	fdSrc{label(), io[0].fd()}
+	fdSrc{io[0].fd(), {.debugLabel = debugLabel}, {}}
 {
-	logMsg("opened fds:%d,%d (%s)", io[0].fd(), io[1].fd(), label());
+	log.info("opened fds:{},{} ({})", io[0].fd(), io[1].fd(), debugLabel);
 	if(preferredSize)
 	{
 		setPreferredSize(preferredSize);
@@ -61,14 +62,14 @@ PosixIO &Pipe::sink()
 	return io[1];
 }
 
-void Pipe::attach(EventLoop loop, PollEventDelegate callback)
+void Pipe::attach(EventLoop loop)
 {
 	if(io[0].fd() == -1)
 	{
-		logMsg("can't add null pipe to event loop");
+		log.info("can't add null pipe to event loop");
 		return;
 	}
-	fdSrc.attach(loop, callback);
+	fdSrc.attach(loop);
 }
 
 void Pipe::detach()
@@ -83,14 +84,14 @@ bool Pipe::hasData()
 
 void Pipe::dispatchSourceEvents()
 {
-	fdSrc.dispatchEvents(POLLEV_IN);
+	fdSrc.dispatchEvents(pollEventInput);
 }
 
-void Pipe::setPreferredSize(int size)
+void Pipe::setPreferredSize([[maybe_unused]] int size)
 {
 	#ifdef __linux__
 	fcntl(io[1].fd(), F_SETPIPE_SZ, size);
-	logDMsg("set size:%d (%s)", size, label());
+	log.debug("set size:{} ({})", size, fdSrc.debugLabel());
 	#endif
 }
 
@@ -107,11 +108,6 @@ bool Pipe::isReadNonBlocking() const
 Pipe::operator bool() const
 {
 	return io[0].fd() != -1;
-}
-
-const char *Pipe::label() const
-{
-	return debugLabel;
 }
 
 }

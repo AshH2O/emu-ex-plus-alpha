@@ -23,49 +23,9 @@
 
 using namespace gambatte;
 
-uint_least32_t gbcToRgb32(unsigned const bgr15);
+uint_least32_t gbcToRgb32(unsigned const bgr15, unsigned flags);
 
 namespace {
-
-/*unsigned long gbcToRgb32(unsigned const bgr15) {
-	unsigned long const r = bgr15       & 0x1F;
-	unsigned long const g = bgr15 >>  5 & 0x1F;
-	unsigned long const b = bgr15 >> 10 & 0x1F;
-
-	return ((r * 13 + g * 2 + b) >> 1) << 16
-	| (g * 3 + b) << 9
-	| (r * 3 + g * 2 + b * 11) >> 1;
-}*/
-
-/*unsigned long gbcToRgb16(unsigned const bgr15) {
-	unsigned const r = bgr15 & 0x1F;
-	unsigned const g = bgr15 >> 5 & 0x1F;
-	unsigned const b = bgr15 >> 10 & 0x1F;
-
-	return (((r * 13 + g * 2 + b + 8) << 7) & 0xF800)
-	     | ((g * 3 + b + 1) >> 1) << 5
-	     | ((r * 3 + g * 2 + b * 11 + 8) >> 4);
-}
-
-unsigned long gbcToUyvy(unsigned const bgr15) {
-	unsigned const r5 = bgr15 & 0x1F;
-	unsigned const g5 = bgr15 >> 5 & 0x1F;
-	unsigned const b5 = bgr15 >> 10 & 0x1F;
-
-	// y = (r5 * 926151 + g5 * 1723530 + b5 * 854319) / 510000 + 16;
-	// u = (b5 * 397544 - r5 * 68824 - g5 * 328720) / 225930 + 128;
-	// v = (r5 * 491176 - g5 * 328720 - b5 * 162456) / 178755 + 128;
-
-	unsigned long const y = (r5 * 116 + g5 * 216 + b5 * 107 + 16 * 64 + 32) >> 6;
-	unsigned long const u = (b5 * 225 - r5 * 39 - g5 * 186 + 128 * 128 + 64) >> 7;
-	unsigned long const v = (r5 * 176 - g5 * 118 - b5 * 58 + 128 * 64 + 32) >> 6;
-
-#ifdef WORDS_BIGENDIAN
-	return u << 24 | y << 16 | v << 8 | y;
-#else
-	return y << 24 | v << 16 | y << 8 | u;
-#endif
-}*/
 
 // TODO: simplify cycle offsets.
 
@@ -104,10 +64,10 @@ bool isHdmaPeriod(LyCounter const &lyCounter,
 }
 
 void doCgbColorChange(unsigned char *pdata,
-		unsigned long *palette, unsigned index, unsigned data) {
+		unsigned long *palette, unsigned index, unsigned data, unsigned flags) {
 	pdata[index] = data;
 	index /= 2;
-	palette[index] = gbcToRgb32(pdata[index * 2] | pdata[index * 2 + 1] * 0x100l);
+	palette[index] = gbcToRgb32(pdata[index * 2] | pdata[index * 2 + 1] * 0x100l, flags);
 }
 
 } // unnamed namespace.
@@ -195,8 +155,8 @@ void LCD::loadState(SaveState const &state, unsigned char const *const oamram) {
 void LCD::refreshPalettes() {
 	if (ppu_.cgb()) {
 		for (int i = 0; i < max_num_palettes * num_palette_entries; ++i) {
-			ppu_.bgPalette()[i] = gbcToRgb32( bgpData_[2 * i] |  bgpData_[2 * i + 1] * 0x100l);
-			ppu_.spPalette()[i] = gbcToRgb32(objpData_[2 * i] | objpData_[2 * i + 1] * 0x100l);
+			ppu_.bgPalette()[i] = gbcToRgb32( bgpData_[2 * i] |  bgpData_[2 * i + 1] * 0x100l, colorConvFlags);
+			ppu_.spPalette()[i] = gbcToRgb32(objpData_[2 * i] | objpData_[2 * i + 1] * 0x100l, colorConvFlags);
 		}
 	} else {
 		setDmgPalette(ppu_.bgPalette(), dmgColorsRgb32_[0],  bgpData_[0]);
@@ -381,14 +341,14 @@ bool LCD::cgbpAccessible(unsigned long const cc) {
 void LCD::doCgbBgColorChange(unsigned index, unsigned data, unsigned long cc) {
 	if (cgbpAccessible(cc)) {
 		update(cc);
-		doCgbColorChange(bgpData_, ppu_.bgPalette(), index, data);
+		doCgbColorChange(bgpData_, ppu_.bgPalette(), index, data, colorConvFlags);
 	}
 }
 
 void LCD::doCgbSpColorChange(unsigned index, unsigned data, unsigned long cc) {
 	if (cgbpAccessible(cc)) {
 		update(cc);
-		doCgbColorChange(objpData_, ppu_.spPalette(), index, data);
+		doCgbColorChange(objpData_, ppu_.spPalette(), index, data, colorConvFlags);
 	}
 }
 

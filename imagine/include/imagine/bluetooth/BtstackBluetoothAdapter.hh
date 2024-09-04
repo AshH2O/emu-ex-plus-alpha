@@ -15,36 +15,30 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/config/defs.hh>
-#include "BluetoothAdapter.hh"
-#include <imagine/base/Error.hh>
+#include <imagine/bluetooth/defs.hh>
+#include <imagine/base/ApplicationContext.hh>
 #import <btstack/btstack.h>
 
-class BtstackBluetoothAdapter : public BluetoothAdapter
+namespace IG
+{
+
+class BtstackBluetoothAdapter
 {
 public:
-	constexpr BtstackBluetoothAdapter() {}
-	static BtstackBluetoothAdapter *defaultAdapter(Base::ApplicationContext);
-	bool startScan(OnStatusDelegate onResult, OnScanDeviceClassDelegate onDeviceClass, OnScanDeviceNameDelegate onDeviceName) final;
-	void cancelScan() final;
-	void close() final;
-	void setL2capService(uint32_t psm, bool active, OnStatusDelegate onResult) final;
-	State state() final;
-	void setActiveState(bool on, OnStateChangeDelegate onStateChange) final;
-	void requestName(BluetoothPendingSocket &pending, OnScanDeviceNameDelegate onDeviceName);
 	void packetHandler(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size);
 	static void processCommands();
 
-private:
-	uint32_t state_ = HCI_STATE_OFF, scanResponses = 0;
-	bool isOpen = false;
+protected:
+	uint32_t state_ = HCI_STATE_OFF, scanResponses{};
 	static bool cmdActive;
-	OnStatusDelegate setL2capServiceOnResult;
-	OnStateChangeDelegate onStateChangeD;
+	bool inDetect{};
+	BTOnStatusDelegate setL2capServiceOnResult;
+	BTOnStateChangeDelegate onStateChange;
 
-	IG::ErrorCode openDefault();
 	bool isInactive();
 };
+
+using BluetoothAdapterImpl = BtstackBluetoothAdapter;
 
 class BluetoothPendingSocket
 {
@@ -54,12 +48,12 @@ public:
 	uint16_t ch = 0;
 	uint16_t localCh = 0;
 
-	constexpr BluetoothPendingSocket() {}
+	constexpr BluetoothPendingSocket() = default;
 	constexpr BluetoothPendingSocket(uint32_t type, BluetoothAddr addr, uint16_t ch, uint16_t localCh):
 		type(type), addr(addr), ch(ch), localCh(localCh) {}
 	void close();
 	uint32_t channel() { return ch; }
-	void requestName(BluetoothAdapter::OnScanDeviceNameDelegate onDeviceName);
+	void requestName(BluetoothAdapter&, BTOnScanDeviceNameDelegate);
 
 	explicit operator bool() const
 	{
@@ -67,33 +61,33 @@ public:
 	}
 };
 
-class BtstackBluetoothSocket : public BluetoothSocket
+class BtstackBluetoothSocket
 {
 public:
-	constexpr BtstackBluetoothSocket(Base::ApplicationContext) {}
-	IG::ErrorCode openL2cap(BluetoothAdapter &, BluetoothAddr addr, uint32_t psm) final;
-	IG::ErrorCode openRfcomm(BluetoothAdapter &, BluetoothAddr addr, uint32_t channel) final;
-	#ifdef CONFIG_BLUETOOTH_SERVER
-	IG::ErrorCode open(BluetoothAdapter &, BluetoothPendingSocket &pending) final;
-	#endif
-	void close() final;
-	IG::ErrorCode write(const void *data, size_t size) final;
+	constexpr BtstackBluetoothSocket() = default;
+	BtstackBluetoothSocket(ApplicationContext) {}
+	~BtstackBluetoothSocket();
+	void close();
 	const void *pin(uint32_t &size);
 	void setPin(const void *pin, uint32_t size);
-	static BtstackBluetoothSocket *findSocket(const bd_addr_t addr, uint16_t ch);
-	static BtstackBluetoothSocket *findSocket(const bd_addr_t addr);
-	static BtstackBluetoothSocket *findSocket(uint16_t localCh);
+	static BluetoothSocket *findSocket(const bd_addr_t addr, uint16_t ch);
+	static BluetoothSocket *findSocket(const bd_addr_t addr);
+	static BluetoothSocket *findSocket(uint16_t localCh);
 	static void handleL2capChannelOpened(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size);
 	static void handleRfcommChannelOpened(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size);
 
-private:
+protected:
 	uint32_t type = 0;
-	BluetoothAddr addr;
+	BluetoothAddr addr{};
 	uint16_t ch = 0;
 	uint16_t localCh = 0;
 public:
 	uint16_t handle = 0;
-private:
+protected:
 	const void *pinCode = nullptr;
 	uint32_t pinSize = 0;
 };
+
+using BluetoothSocketImpl = BtstackBluetoothSocket;
+
+}

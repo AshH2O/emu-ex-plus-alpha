@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -34,7 +34,7 @@ void FBSurface::readPixels(uInt8* buffer, uInt32 pitch, const Common::Rect& rect
     std::copy_n(src, width() * height() * 4, buffer);
   else
   {
-    uInt32 w = std::min(rect.w(), width());
+    const uInt32 w = std::min(rect.w(), width());
     uInt32 h = std::min(rect.h(), height());
 
     // Copy 'height' lines of width 'pitch' (in bytes for both)
@@ -77,7 +77,7 @@ void FBSurface::line(uInt32 x, uInt32 y, uInt32 x2, uInt32 y2, ColorId color)
       dx = -dx;
       dy = -dy;
     }
-    Int32 yd = dy > 0 ? 1 : -1;
+    const Int32 yd = dy > 0 ? 1 : -1;
     dy = abs(dy);
     Int32 err = dx / 2;
     // now draw the line
@@ -102,7 +102,7 @@ void FBSurface::line(uInt32 x, uInt32 y, uInt32 x2, uInt32 y2, ColorId color)
       dx = -dx;
       dy = -dy;
     }
-    Int32 xd = dx > 0 ? 1 : -1;
+    const Int32 xd = dx > 0 ? 1 : -1;
     dx = abs(dx);
     Int32 err = dy / 2;
     // now draw the line
@@ -136,7 +136,7 @@ void FBSurface::vLine(uInt32 x, uInt32 y, uInt32 y2, ColorId color)
   if(!checkBounds(x, y) || !checkBounds(x, y2))
     return;
 
-  uInt32* buffer = static_cast<uInt32*>(myPixels + y * myPitch + x);
+  uInt32* buffer = myPixels + y * myPitch + x;
   while(y++ <= y2)
   {
     *buffer = myPalette[color];
@@ -174,7 +174,7 @@ void FBSurface::drawChar(const GUI::Font& font, uInt8 chr,
   chr -= desc.firstchar;
 
   // Get the bounding box of the character
-  int bbw, bbh, bbx, bby;
+  int bbw = 0, bbh = 0, bbx = 0, bby = 0;
   if(!desc.bbx)
   {
     bbw = desc.fbbw;
@@ -184,10 +184,10 @@ void FBSurface::drawChar(const GUI::Font& font, uInt8 chr,
   }
   else
   {
-    bbw = desc.bbx[chr].w;
-    bbh = desc.bbx[chr].h;
-    bbx = desc.bbx[chr].x;
-    bby = desc.bbx[chr].y;
+    bbw = desc.bbx[chr].w;  // NOLINT
+    bbh = desc.bbx[chr].h;  // NOLINT
+    bbx = desc.bbx[chr].x;  // NOLINT
+    bby = desc.bbx[chr].y;  // NOLINT
   }
 
   uInt32 cx = tx + bbx;
@@ -296,72 +296,84 @@ void FBSurface::frameRect(uInt32 x, uInt32 y, uInt32 w, uInt32 h,
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-void FBSurface::wrapString(const string& inStr, int pos, string& leftStr, string& rightStr) const
+void FBSurface::splitString(const GUI::Font& font, const string& s, int w,
+                            string& left, string& right) const
 {
-  for(int i = pos; i > 0; --i)
+#ifdef GUI_SUPPORT
+  uInt32 pos = 0;
+  int w2 = 0;
+  bool split = false;
+
+  // SLOW algorithm to find the acceptable length. But it is good enough for now.
+  for(pos = 0; pos < s.size(); ++pos)
   {
-    if(isWhiteSpace(inStr[i]))
+    const int charWidth = font.getCharWidth(s[pos]);
+    if(w2 + charWidth > w || s[pos] == '\n')
     {
-      leftStr = inStr.substr(0, i);
-      if(inStr[i] == ' ') // skip leading space after line break
-        i++;
-      rightStr = inStr.substr(i);
-      return;
+      split = true;
+      break;
     }
+    w2 += charWidth;
   }
-  leftStr = inStr.substr(0, pos);
-  rightStr = inStr.substr(pos);
+
+  if(split)
+    for(int i = pos; i > 0; --i)
+    {
+      if(isWhiteSpace(s[i]))
+      {
+        left = s.substr(0, i);
+        if(s[i] == ' ' || s[pos] == '\n') // skip leading space after line break
+          i++;
+        right = s.substr(i);
+        return;
+      }
+    }
+  left = s.substr(0, pos);
+  right = s.substr(pos);
+#endif
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-bool FBSurface::isWhiteSpace(const char s) const
+bool FBSurface::isWhiteSpace(const char c) const
 {
-  const string WHITESPACES = " ,.;:+-";
-
-  for(size_t i = 0; i < WHITESPACES.length(); ++i)
-    if(s == WHITESPACES[i])
-      return true;
-
-  return false;
+  return string(" ,.;:+-*/\\'([\n").find(c) != string::npos;
 }
 
 // - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 int FBSurface::drawString(const GUI::Font& font, const string& s,
-  int x, int y, int w, int h,
-  ColorId color, TextAlign align,
-  int deltax, bool useEllipsis, ColorId shadowColor)
+                          int x, int y, int w, int h,
+                          ColorId color, TextAlign align,
+                          int deltax, bool useEllipsis, ColorId shadowColor,
+                          size_t linkStart, size_t linkLen, bool underline)
 {
-  int lines = 1;
+  int lines = 0;
 
 #ifdef GUI_SUPPORT
   string inStr = s;
 
   // draw multiline string
-  while (font.getStringWidth(inStr) > w && h >= font.getFontHeight() * 2)
+  while(inStr.length() && h >= font.getFontHeight() * 2)
   {
     // String is too wide.
-    uInt32 i;
     string leftStr, rightStr;
-    int w2 = 0;
 
-    // SLOW algorithm to find the acceptable length. But it is good enough for now.
-    for(i = 0; i < inStr.size(); ++i)
-    {
-      int charWidth = font.getCharWidth(inStr[i]);
-      if(w2 + charWidth > w)
-        break;
+    splitString(font, inStr, w, leftStr, rightStr);
+    drawString(font, leftStr, x, y, w, color, align, deltax, false, shadowColor,
+               linkStart, linkLen, underline);
+    if(linkStart != string::npos)
+      linkStart = std::max(0, int(linkStart - leftStr.length()));
 
-      w2 += charWidth;
-      //str += inStr[i];
-    }
-    wrapString(inStr, i, leftStr, rightStr);
-    drawString(font, leftStr, x, y, w, color, align, deltax, false, shadowColor);
     h -= font.getFontHeight();
     y += font.getFontHeight();
     inStr = rightStr;
     lines++;
   }
-  drawString(font, inStr, x, y, w, color, align, deltax, useEllipsis, shadowColor);
+  if(inStr.length())
+  {
+    drawString(font, inStr, x, y, w, color, align, deltax, useEllipsis, shadowColor,
+               linkStart, linkLen, underline);
+    lines++;
+  }
 #endif
   return lines;
 }
@@ -370,12 +382,12 @@ int FBSurface::drawString(const GUI::Font& font, const string& s,
 void FBSurface::drawString(const GUI::Font& font, const string& s,
                            int x, int y, int w,
                            ColorId color, TextAlign align,
-                           int deltax, bool useEllipsis, ColorId shadowColor)
+                           int deltax, bool useEllipsis, ColorId shadowColor,
+                           size_t linkStart, size_t linkLen, bool underline)
 {
 #ifdef GUI_SUPPORT
   const string ELLIPSIS = "\x1d"; // "..."
   const int leftX = x, rightX = x + w;
-  uInt32 i;
   int width = font.getStringWidth(s);
   string str;
 
@@ -389,9 +401,9 @@ void FBSurface::drawString(const GUI::Font& font, const string& s,
     int w2 = font.getStringWidth(ELLIPSIS);
 
     // SLOW algorithm to find the acceptable length. But it is good enough for now.
-    for(i = 0; i < s.size(); ++i)
+    for(size_t i = 0; i < s.size(); ++i)
     {
-      int charWidth = font.getCharWidth(s[i]);
+      const int charWidth = font.getCharWidth(s[i]);
       if(w2 + charWidth > w)
         break;
 
@@ -411,16 +423,30 @@ void FBSurface::drawString(const GUI::Font& font, const string& s,
     x = x + w - width;
 
   x += deltax;
-  for(i = 0; i < str.size(); ++i)
+
+  int x0 = x, x1 = 0;
+
+  for(size_t i = 0; i < str.size(); ++i)
   {
     w = font.getCharWidth(str[i]);
-    if(x+w > rightX)
+    if(x + w > rightX)
       break;
     if(x >= leftX)
-      drawChar(font, str[i], x, y, color, shadowColor);
+    {
+      if(i == linkStart)
+        x0 = x;
+      else if(i < linkStart + linkLen)
+        x1 = x + w;
 
+      drawChar(font, str[i], x, y,
+               (i >= linkStart && i < linkStart + linkLen) ? kTextColorLink : color,
+               shadowColor);
+    }
     x += w;
   }
+  if(underline && x1 > 0)
+    hLine(x0, y + font.getFontHeight() - 1, x1, kTextColorLink);
+
 #endif
 }
 

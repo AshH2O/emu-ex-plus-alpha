@@ -13,7 +13,6 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "RendererTask"
 #include <imagine/gfx/RendererCommands.hh>
 #include <imagine/gfx/RendererTask.hh>
 #include <imagine/gfx/Renderer.hh>
@@ -24,49 +23,16 @@
 #include "internalDefs.hh"
 #include "utils.hh"
 
-namespace Gfx
+namespace IG::Gfx
 {
 
-GLRendererTask::GLRendererTask(Base::ApplicationContext ctx, Renderer &r):
-	GLRendererTask{ctx, nullptr, r}
-{}
+constexpr SystemLogger log{"RendererTask"};
 
-GLRendererTask::GLRendererTask(Base::ApplicationContext ctx, const char *debugLabel, Renderer &r):
-	GLTask{ctx, debugLabel}, r{&r}
-{}
+GLRendererTask::GLRendererTask(ApplicationContext ctx, Renderer &r):
+	GLRendererTask{ctx, nullptr, r} {}
 
-void GLRendererTask::initVBOs()
-{
-	#ifndef CONFIG_GFX_OPENGL_ES
-	if(streamVBO[0]) [[likely]]
-		return;
-	logMsg("making stream VBO");
-	glGenBuffers(streamVBO.size(), streamVBO.data());
-	#endif
-}
-
-GLuint GLRendererTask::getVBO()
-{
-	#ifndef CONFIG_GFX_OPENGL_ES
-	assert(streamVBO[streamVBOIdx]);
-	auto vbo = streamVBO[streamVBOIdx];
-	streamVBOIdx = (streamVBOIdx+1) % streamVBO.size();
-	return vbo;
-	#else
-	return 0;
-	#endif
-}
-
-void GLRendererTask::initVAO()
-{
-	#ifndef CONFIG_GFX_OPENGL_ES
-	if(streamVAO) [[likely]]
-		return;
-	logMsg("making stream VAO");
-	glGenVertexArrays(1, &streamVAO);
-	glBindVertexArray(streamVAO);
-	#endif
-}
+GLRendererTask::GLRendererTask(ApplicationContext ctx, const char *debugLabel, Renderer &r):
+	GLTask{ctx, debugLabel}, r{&r} {}
 
 void GLRendererTask::initDefaultFramebuffer()
 {
@@ -75,7 +41,7 @@ void GLRendererTask::initDefaultFramebuffer()
 		glContext().setCurrentContext({});
 		GLuint fb;
 		glGenFramebuffers(1, &fb);
-		logMsg("created default framebuffer:%u", fb);
+		log.info("created default framebuffer:{}", fb);
 		glBindFramebuffer(GL_FRAMEBUFFER, fb);
 		defaultFB = fb;
 	}
@@ -87,7 +53,7 @@ GLuint GLRendererTask::bindFramebuffer(Texture &tex)
 	if(!fbo) [[unlikely]]
 	{
 		glGenFramebuffers(1, &fbo);
-		logMsg("init FBO:0x%X", fbo);
+		log.info("init FBO:{:X}", fbo);
 	}
 	glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex.texName(), 0);
@@ -104,21 +70,21 @@ Renderer &RendererTask::renderer() const
 	return *r;
 }
 
-void GLRendererTask::doPreDraw(Base::Window &win, Base::WindowDrawParams winParams, DrawParams &params) const
+void GLRendererTask::doPreDraw(Window &win, WindowDrawParams winParams, DrawParams &params) const
 {
 	if(!context) [[unlikely]]
 	{
-		logWarn("draw() called without context");
+		log.warn("draw() called without context");
 		return;
 	}
 	assumeExpr(winData(win).drawable);
-	if(params.asyncMode() == DrawAsyncMode::AUTO)
+	if(params.asyncMode == DrawAsyncMode::AUTO)
 	{
-		params.setAsyncMode(DrawAsyncMode::PRESENT);
+		params.asyncMode = DrawAsyncMode::PRESENT;
 	}
-	if(winParams.needsSync()) [[unlikely]]
+	if(winParams.needsSync) [[unlikely]]
 	{
-		params.setAsyncMode(DrawAsyncMode::NONE);
+		params.asyncMode = DrawAsyncMode::NONE;
 	}
 }
 
@@ -127,43 +93,84 @@ RendererTask::operator bool() const
 	return GLTask::operator bool();
 }
 
-void RendererTask::updateDrawableForSurfaceChange(Base::Window &win, Base::WindowSurfaceChange change)
+void GLRendererTask::updateDrawable(Drawable drawable, IRect viewportRect, int swapInterval)
 {
-	auto &drawable = winData(win).drawable;
-	switch(change.action())
+	context.setCurrentDrawable(drawable);
+	context.setSwapInterval(swapInterval);
+	glViewport(viewportRect.x, viewportRect.y, viewportRect.x2, viewportRect.y2);
+}
+
+void RendererTask::updateDrawableForSurfaceChange(Window &win, WindowSurfaceChange change)
+{
+	auto &data = winData(win);
+	auto &drawable = data.drawable;
+	switch(change.action)
 	{
-		case Base::WindowSurfaceChange::Action::CREATED:
-			r->makeWindowDrawable(*this, win, winData(win).bufferConfig, winData(win).colorSpace);
+		case WindowSurfaceChange::Action::CREATED:
+			r->makeWindowDrawable(*this, win, data.bufferConfig, data.colorSpace);
 			return;
-		case Base::WindowSurfaceChange::Action::CHANGED:
-			if(change.surfaceResized())
+		case WindowSurfaceChange::Action::CHANGED:
+			if(change.flags.surfaceResized)
 			{
-				run(
-					[this, drawable = (Drawable)drawable](TaskContext ctx)
+				GLTask::run(
+					[this, drawable = (Drawable)drawable, v = data.viewportRect, swapInterval = data.swapInterval]()
 					{
-						// reset the drawable if it's currently in use
-						if(Base::GLManager::hasCurrentDrawable(drawable))
-							context.setCurrentDrawable(drawable);
+						// reset and clear the drawable
+						updateDrawable(drawable, v, swapInterval);
+						glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 					});
 			}
 			return;
-		case Base::WindowSurfaceChange::Action::DESTROYED:
+		case WindowSurfaceChange::Action::DESTROYED:
 			destroyDrawable(drawable);
 			return;
 	}
 }
 
-void GLRendererTask::destroyDrawable(Base::GLDrawable &drawable)
+void RendererTask::setPresentMode(Window &win, PresentMode mode)
+{
+	if(!GLManager::hasSwapInterval)
+		return;
+	auto swapInterval = renderer().toSwapInterval(win, mode);
+	auto &data = winData(win);
+	if(data.swapInterval == swapInterval)
+		return;
+	data.swapInterval = swapInterval;
+	if(!data.drawable)
+		return;
+	log.info("setting swap interval:{} for drawable:{}", swapInterval, Drawable(data.drawable));
+	GLTask::run([this, drawable = Drawable(data.drawable), v = data.viewportRect, swapInterval]()
+	{
+		updateDrawable(drawable, v, swapInterval);
+	});
+}
+
+void RendererTask::setDefaultViewport(Window &win, Viewport v)
+{
+	renderer().setDefaultViewport(win, v);
+	auto &data = winData(win);
+	GLTask::run(
+		[drawable = (Drawable)data.drawable, v = v.asYUpRelRect()]()
+		{
+			// update viewport if drawable is currently in use
+			if(GLManager::hasCurrentDrawable(drawable))
+			{
+				glViewport(v.x, v.y, v.x2, v.y2);
+			}
+		});
+}
+
+void GLRendererTask::destroyDrawable(GLDrawable &drawable)
 {
 	if(!drawable)
 		return;
-	run(
-		[this, drawable = (Drawable)drawable](TaskContext ctx)
+	GLTask::runSync(
+		[this, drawable = (Drawable)drawable](TaskContext)
 		{
 			// unset the drawable if it's currently in use
-			if(Base::GLManager::hasCurrentDrawable(drawable))
+			if(GLManager::hasCurrentDrawable(drawable))
 				context.setCurrentDrawable({});
-		}, true);
+		});
 	drawable = {};
 }
 
@@ -175,17 +182,21 @@ void GLRendererTask::runInitialCommandsInGL(TaskContext ctx, DrawContextSupport 
 		debugEnabled = true;
 		support.setGLDebugOutput(true);
 	}
-	if(support.hasVBOFuncs)
-		initVBOs();
-	#ifndef CONFIG_GFX_OPENGL_ES
-	if(!support.useFixedFunctionPipeline)
-		initVAO();
-	#endif
 	ctx.notifySemaphore();
-	runGLCheckedVerbose([&]()
+	if(!Config::Gfx::OPENGL_ES && !support.hasVAOFuncs())
 	{
-		glEnableVertexAttribArray(VATTR_POS);
-	}, "glEnableVertexAttribArray(VATTR_POS)");
+		log.debug("creating global VAO for testing non-VAO code paths");
+		GLuint name;
+		support.glGenVertexArrays(1, &name);
+		support.glBindVertexArray(name);
+	}
+	if(!support.hasVAOFuncs())
+	{
+		runGLCheckedVerbose([&]()
+		{
+			glEnableVertexAttribArray(VATTR_POS);
+		}, "glEnableVertexAttribArray(VATTR_POS)");
+	}
 	glClearColor(0., 0., 0., 1.);
 	if constexpr((bool)Config::Gfx::OPENGL_ES)
 	{
@@ -200,10 +211,10 @@ void GLRendererTask::verifyCurrentContext() const
 {
 	if(!Config::DEBUG_BUILD)
 		return;
-	auto currentCtx = Base::GLManager::currentContext();
+	auto currentCtx = GLManager::currentContext();
 	if(currentCtx != glContext()) [[unlikely]]
 	{
-		bug_unreachable("expected GL context:%p but current is:%p", (Base::NativeGLContext)glContext(), currentCtx);
+		bug_unreachable("expected GL context:%p but current is:%p", (NativeGLContext)glContext(), currentCtx);
 	}
 }
 
@@ -211,11 +222,11 @@ SyncFence RendererTask::addSyncFence()
 {
 	if(!r->support.hasSyncFences())
 		return {}; // no-op
-	GLsync sync;
+	GLsync sync{};
 	runSync(
 		[&support = r->support, &sync](TaskContext ctx)
 		{
-			sync = support.fenceSync(ctx.glDisplay());
+			sync = support.fenceSync(ctx.glDisplay);
 		});
 	return sync;
 }
@@ -225,7 +236,7 @@ void RendererTask::deleteSyncFence(SyncFence fence)
 	if(!fence.sync)
 		return;
 	assumeExpr(r->support.hasSyncFences());
-	const bool canPerformInCurrentThread = Config::Base::GL_PLATFORM_EGL;
+	const bool canPerformInCurrentThread = Config::GL_PLATFORM_EGL;
 	if(canPerformInCurrentThread)
 	{
 		auto dpy = renderer().glDisplay();
@@ -233,10 +244,10 @@ void RendererTask::deleteSyncFence(SyncFence fence)
 	}
 	else
 	{
-		run(
+		GLTask::run(
 			[&support = r->support, sync = fence.sync](TaskContext ctx)
 			{
-				support.deleteSync(ctx.glDisplay(), sync);
+				support.deleteSync(ctx.glDisplay, sync);
 			});
 	}
 }
@@ -246,10 +257,10 @@ void RendererTask::clientWaitSync(SyncFence fence, int flags, std::chrono::nanos
 	if(!fence.sync)
 		return;
 	assumeExpr(r->support.hasSyncFences());
-	const bool canPerformInCurrentThread = Config::Base::GL_PLATFORM_EGL && !flags;
+	const bool canPerformInCurrentThread = Config::GL_PLATFORM_EGL && !flags;
 	if(canPerformInCurrentThread)
 	{
-		//logDMsg("waiting on sync:%p flush:%s timeout:0%llX", fence.sync, flags & 1 ? "yes" : "no", (unsigned long long)timeout);
+		//log.debug("waiting on sync:{} flush:{} timeout:{}", fence.sync, flags & 1 ? "yes" : "no", timeout);
 		auto dpy = renderer().glDisplay();
 		renderer().support.clientWaitSync(dpy, fence.sync, 0, timeout.count());
 		renderer().support.deleteSync(dpy, fence.sync);
@@ -259,9 +270,9 @@ void RendererTask::clientWaitSync(SyncFence fence, int flags, std::chrono::nanos
 		runSync(
 			[&support = r->support, sync = fence.sync, timeout, flags](TaskContext ctx)
 			{
-				support.clientWaitSync(ctx.glDisplay(), sync, flags, timeout.count());
+				support.clientWaitSync(ctx.glDisplay, sync, flags, timeout.count());
 				ctx.notifySemaphore();
-				support.deleteSync(ctx.glDisplay(), sync);
+				support.deleteSync(ctx.glDisplay, sync);
 			});
 	}
 }
@@ -277,11 +288,11 @@ void RendererTask::waitSync(SyncFence fence)
 	if(!fence.sync)
 		return;
 	assumeExpr(r->support.hasSyncFences());
-	run(
+	GLTask::run(
 		[&support = r->support, sync = fence.sync](TaskContext ctx)
 		{
-			support.waitSync(ctx.glDisplay(), sync);
-			support.deleteSync(ctx.glDisplay(), sync);
+			support.waitSync(ctx.glDisplay, sync);
+			support.deleteSync(ctx.glDisplay, sync);
 		});
 }
 
@@ -303,13 +314,11 @@ void RendererTask::flush()
 
 void RendererTask::releaseShaderCompiler()
 {
-	#ifdef CONFIG_GFX_OPENGL_SHADER_PIPELINE
 	run(
 		[]()
 		{
 			glReleaseShaderCompiler();
 		});
-	#endif
 }
 
 void RendererTask::setDebugOutput(bool on)
@@ -318,7 +327,7 @@ void RendererTask::setDebugOutput(bool on)
 	{
 		return;
 	}
-	logMsg("set context:%p debug output:%s", (Base::NativeGLContext)glContext(), on ? "on" : "off");
+	log.info("set context:{} debug output:{}", (NativeGLContext)glContext(), on ? "on" : "off");
 	debugEnabled = on;
 	run(
 		[&support = renderer().support, on]()
@@ -327,16 +336,16 @@ void RendererTask::setDebugOutput(bool on)
 		});
 }
 
+ThreadId RendererTask::threadId() const { return threadId_; }
+
 RendererCommands GLRendererTask::makeRendererCommands(GLTask::TaskContext taskCtx, bool manageSemaphore,
-	bool notifyWindowAfterPresent, Base::Window &win, Viewport viewport, Mat4 projMat)
+	bool notifyWindowAfterPresent, Window &win)
 {
 	initDefaultFramebuffer();
 	auto &drawable = winData(win).drawable;
 	RendererCommands cmds{*static_cast<RendererTask*>(this),
-		notifyWindowAfterPresent ? &win : nullptr, drawable, taskCtx.glDisplay(),
-		glContext(), manageSemaphore ? taskCtx.semaphorePtr() : nullptr};
-	cmds.setViewport(viewport);
-	cmds.setProjectionMatrix(projMat);
+		notifyWindowAfterPresent ? &win : nullptr, drawable, winData(win).viewportRect, taskCtx.glDisplay,
+		glContext(), manageSemaphore ? taskCtx.semaphorePtr : nullptr};
 	if(manageSemaphore)
 		taskCtx.markSemaphoreNotified(); // semaphore will be notified in RendererCommands::present()
 	return cmds;

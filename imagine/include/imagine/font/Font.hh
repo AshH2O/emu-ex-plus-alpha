@@ -28,27 +28,25 @@
 #include <imagine/font/FontSettings.hh>
 #include <imagine/font/GlyphMetrics.hh>
 #include <imagine/base/ApplicationContext.hh>
-#include <system_error>
-
-class GenericIO;
+#include <imagine/pixmap/Pixmap.hh>
 
 namespace IG
 {
+
+class IO;
 
 namespace Data
 {
 class PixmapSource;
 }
 
-class Pixmap;
-
 class GlyphImage: public GlyphImageImpl
 {
 public:
 	using GlyphImageImpl::GlyphImageImpl;
-	IG::Pixmap pixmap();
+	PixmapView pixmap();
 	explicit operator bool() const;
-	operator IG::Data::PixmapSource();
+	operator Data::PixmapSource();
 };
 
 class Font : public FontImpl
@@ -63,20 +61,20 @@ public:
 	using FontImpl::FontImpl;
 	operator bool() const;
 	int minUsablePixels() const;
-	Glyph glyph(int idx, FontSize &size, std::errc &ec);
-	GlyphMetrics metrics(int idx, FontSize &size, std::errc &ec);
-	FontSize makeSize(FontSettings settings, std::errc &ec);
+	Glyph glyph(int idx, FontSize &);
+	GlyphMetrics metrics(int idx, FontSize &);
+	FontSize makeSize(FontSettings settings);
 };
 
 class FontManager : public FontManagerImpl
 {
 public:
 	using FontManagerImpl::FontManagerImpl;
-	Font makeFromFile(GenericIO io) const;
+	Font makeFromFile(IO) const;
 	Font makeFromFile(const char *name) const;
 	Font makeSystem() const;
 	Font makeBoldSystem() const;
-	Font makeFromAsset(const char *name, const char *appName = Base::ApplicationContext::applicationName) const;
+	Font makeFromAsset(const char *name, const char *appName = ApplicationContext::applicationName) const;
 };
 
 

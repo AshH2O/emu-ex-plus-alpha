@@ -21,9 +21,6 @@ enum LuaMemHookType
 	LUAMEMHOOK_WRITE,
 	LUAMEMHOOK_READ,
 	LUAMEMHOOK_EXEC,
-	LUAMEMHOOK_WRITE_SUB,
-	LUAMEMHOOK_READ_SUB,
-	LUAMEMHOOK_EXEC_SUB,
 
 	LUAMEMHOOK_COUNT
 };
@@ -72,10 +69,11 @@ void FCEU_ReloadLuaCode();
 void FCEU_LuaStop();
 int FCEU_LuaRunning();
 
+void FCEU_LuaReadZapper(const uint32* mouse_in, uint32* mouse_out);
 uint8 FCEU_LuaReadJoypad(int,uint8); // HACK - Function needs controller input
 int FCEU_LuaSpeed();
 int FCEU_LuaFrameskip();
-int FCEU_LuaRerecordCountSkip();
+bool FCEU_LuaRerecordCountSkip();
 
 void FCEU_LuaGui(uint8 *XBuf);
 void FCEU_LuaUpdatePalette();

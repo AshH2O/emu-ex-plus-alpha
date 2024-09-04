@@ -6,7 +6,7 @@
 
 #include <EGL/egl.h>
 #include <imagine/logger/logger.h>
-#include <imagine/util/algorithm.h>
+#include <span>
 
 #ifndef EGL_CONTEXT_MAJOR_VERSION_KHR
 #define EGL_CONTEXT_MAJOR_VERSION_KHR 0x3098
@@ -82,65 +82,72 @@ static const char* eglConfigCaveatToStr(EGLint cav)
 	return "unknown";
 }
 
+static EGLint eglConfigAttrib(EGLDisplay display, EGLConfig config, EGLint attrId)
+{
+	EGLint val{};
+	eglGetConfigAttrib(display, config, attrId, &val);
+	return val;
+}
+
 static void printEGLConf(EGLDisplay display, EGLConfig config)
 {
-	EGLint id, buffSize, redSize, greenSize, blueSize, alphaSize, cav, depthSize, stencilSize, nID, nRend,
-		sType, minSwap, maxSwap, sampleBuff, renderType;
-	eglGetConfigAttrib(display, config, EGL_CONFIG_ID, &id);
-	eglGetConfigAttrib(display, config, EGL_BUFFER_SIZE, &buffSize);
-	eglGetConfigAttrib(display, config, EGL_RED_SIZE, &redSize);
-	eglGetConfigAttrib(display, config, EGL_GREEN_SIZE, &greenSize);
-	eglGetConfigAttrib(display, config, EGL_BLUE_SIZE, &blueSize);
-	eglGetConfigAttrib(display, config, EGL_ALPHA_SIZE, &alphaSize);
-	eglGetConfigAttrib(display, config, EGL_CONFIG_CAVEAT, &cav);
-	eglGetConfigAttrib(display, config, EGL_DEPTH_SIZE, &depthSize);
-	eglGetConfigAttrib(display, config, EGL_STENCIL_SIZE, &stencilSize);
-	eglGetConfigAttrib(display, config, EGL_NATIVE_VISUAL_ID, &nID);
-	eglGetConfigAttrib(display, config, EGL_NATIVE_RENDERABLE, &nRend);
-	eglGetConfigAttrib(display, config, EGL_SURFACE_TYPE, &sType);
-	eglGetConfigAttrib(display, config, EGL_RENDERABLE_TYPE, &renderType);
-	eglGetConfigAttrib(display, config, EGL_MIN_SWAP_INTERVAL, &minSwap);
-	eglGetConfigAttrib(display, config, EGL_MAX_SWAP_INTERVAL, &maxSwap);
-	eglGetConfigAttrib(display, config, EGL_SAMPLE_BUFFERS, &sampleBuff);
-	logMsg("config:0x%X %d:%d:%d:%d (%d) cav:%s(0x%X) d:%d sten:%d nid:%d nrend:%d stype:%s(0x%X) rtype:%s(0x%X) sampleBuff:%d swap:%d-%d",
+	EGLint id = eglConfigAttrib(display, config, EGL_CONFIG_ID);
+	EGLint buffSize = eglConfigAttrib(display, config, EGL_BUFFER_SIZE);
+	EGLint redSize = eglConfigAttrib(display, config, EGL_RED_SIZE);
+	EGLint greenSize = eglConfigAttrib(display, config, EGL_GREEN_SIZE);
+	EGLint blueSize = eglConfigAttrib(display, config, EGL_BLUE_SIZE);
+	EGLint alphaSize = eglConfigAttrib(display, config, EGL_ALPHA_SIZE);
+	EGLint cav = eglConfigAttrib(display, config, EGL_CONFIG_CAVEAT);
+	EGLint depthSize = eglConfigAttrib(display, config, EGL_DEPTH_SIZE);
+	EGLint stencilSize = eglConfigAttrib(display, config, EGL_STENCIL_SIZE);
+	EGLint nID = eglConfigAttrib(display, config, EGL_NATIVE_VISUAL_ID);
+	EGLint nRend = eglConfigAttrib(display, config, EGL_NATIVE_RENDERABLE);
+	EGLint nType = eglConfigAttrib(display, config, EGL_NATIVE_VISUAL_TYPE);
+	EGLint sType = eglConfigAttrib(display, config, EGL_SURFACE_TYPE);
+	EGLint renderType = eglConfigAttrib(display, config, EGL_RENDERABLE_TYPE);
+	EGLint minSwap = eglConfigAttrib(display, config, EGL_MIN_SWAP_INTERVAL);
+	EGLint maxSwap = eglConfigAttrib(display, config, EGL_MAX_SWAP_INTERVAL);
+	EGLint samples = eglConfigAttrib(display, config, EGL_SAMPLES);
+	EGLint sampleBuffs = eglConfigAttrib(display, config, EGL_SAMPLE_BUFFERS);
+	logMsg("config:0x%X %d:%d:%d:%d (%d) cav:%s(0x%X) ds:%d-%d nid:0x%X nrend:%d ntype:0x%X stype:%s(0x%X) rtype:%s(0x%X) ms:%d %d swap:%d-%d",
 			id, redSize, greenSize, blueSize, alphaSize, buffSize,
 			eglConfigCaveatToStr(cav), cav, depthSize, stencilSize,
-			nID, nRend,eglSurfaceTypeToStr(sType), sType,
-			eglRenderableTypeToStr(renderType), renderType, sampleBuff,
+			nID, nRend, nType, eglSurfaceTypeToStr(sType), sType,
+			eglRenderableTypeToStr(renderType), renderType, samples, sampleBuffs,
 			minSwap, maxSwap);
 }
 
-static void printEGLConfs(EGLDisplay display)
+inline void printEGLConfs(EGLDisplay display)
 {
 	EGLConfig conf[96];
 	EGLint num = 0;
 	eglGetConfigs(display, conf, std::size(conf), &num);
 	logMsg("EGLDisplay has %d configs:", num);
-	iterateTimes(num, i)
+	for(auto c : std::span<EGLConfig>{conf, (size_t)num})
 	{
-		printEGLConf(display, conf[i]);
+		printEGLConf(display, c);
 	}
 }
 
-static void printEGLConfsWithAttr(EGLDisplay display, const EGLint *attr)
+inline void printEGLConfsWithAttr(EGLDisplay display, const EGLint *attr)
 {
 	EGLConfig conf[96];
 	EGLint num = 0;
 	eglChooseConfig(display, attr, conf, std::size(conf), &num);
 	logMsg("got %d configs", num);
-	iterateTimes(num, i)
+	for(auto c : std::span<EGLConfig>{conf, (size_t)num})
 	{
-		printEGLConf(display, conf[i]);
+		printEGLConf(display, c);
 	}
 }
 
-static EGLBoolean eglSurfaceIsValid(EGLDisplay display, EGLSurface surface)
+inline EGLBoolean eglSurfaceIsValid(EGLDisplay display, EGLSurface surface)
 {
 	EGLint dummy;
 	return eglQuerySurface(display, surface, EGL_CONFIG_ID, &dummy);
 }
 
-static EGLSurface makeDummyPbuffer(EGLDisplay display, EGLConfig config)
+inline EGLSurface makeDummyPbuffer(EGLDisplay display, EGLConfig config)
 {
 	const EGLint attribs[]{EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
 	return eglCreatePbufferSurface(display, config, attribs);

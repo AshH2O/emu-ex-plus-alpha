@@ -15,41 +15,78 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/config/defs.hh>
-#include <imagine/io/IO.hh>
-#include <imagine/io/BufferMapIO.hh>
-#include <imagine/fs/FSDefs.hh>
+#include <imagine/io/IOUtils.hh>
+#include <imagine/util/string/CStringView.hh>
 #include <memory>
 
 struct archive;
 struct archive_entry;
-class ArchiveIO;
+
+namespace IG::FS
+{
+enum class file_type : int8_t;
+}
+
+namespace IG
+{
 
 // data used by libarchive callbacks allocated in its own memory block
-struct ArchiveControlBlock
-{
-	ArchiveControlBlock(GenericIO io): io{std::move(io)} {}
-	GenericIO io;
-};
+struct ArchiveControlBlock;
 
-class ArchiveEntry
+class ArchiveIO : public IOUtils<ArchiveIO>
 {
 public:
-	constexpr ArchiveEntry() {}
-	ArchiveEntry(const char *path, std::error_code &result);
-	ArchiveEntry(const char *path);
-	ArchiveEntry(GenericIO io, std::error_code &result);
-	ArchiveEntry(GenericIO io);
-	const char *name() const;
+	using IOUtilsBase = IOUtils<ArchiveIO>;
+	using IOUtilsBase::read;
+	using IOUtilsBase::write;
+	using IOUtilsBase::seek;
+	using IOUtilsBase::tell;
+	using IOUtilsBase::send;
+	using IOUtilsBase::buffer;
+	using IOUtilsBase::get;
+	using IOUtilsBase::toFileStream;
+
+	ArchiveIO();
+	~ArchiveIO();
+	ArchiveIO(CStringView path);
+	ArchiveIO(FileIO);
+	explicit ArchiveIO(IO);
+	ArchiveIO(ArchiveIO&&) noexcept;
+	ArchiveIO &operator=(ArchiveIO&&) noexcept;
+	std::string_view name() const;
 	FS::file_type type() const;
-	size_t size() const;
 	uint32_t crc32() const;
-	ArchiveIO moveIO();
-	void moveIO(ArchiveIO io);
 	bool readNextEntry();
 	bool hasEntry() const;
+	bool hasArchive() const { return arch.get(); }
 	void rewind();
 	struct archive* archive() const { return arch.get(); }
+	ssize_t read(void *buff, size_t bytes, std::optional<off_t> offset = {});
+	ssize_t write(const void *buff, size_t bytes, std::optional<off_t> offset = {});
+	off_t seek(off_t offset, SeekMode mode);
+	size_t size();
+	bool eof();
+	explicit operator bool() const;
+
+	bool forEachEntry(std::predicate<const ArchiveIO &> auto &&pred)
+	{
+		while(hasEntry())
+		{
+			if(pred(*this))
+				return true;
+			readNextEntry();
+		}
+		return false;
+	}
+
+	void forAllEntries(std::invocable<const ArchiveIO &> auto &&f)
+	{
+		while(hasEntry())
+		{
+			f(*this);
+			readNextEntry();
+		}
+	}
 
 protected:
 	struct ArchiveDeleter
@@ -61,46 +98,12 @@ protected:
 	};
 	using UniqueArchive = std::unique_ptr<struct archive, ArchiveDeleter>;
 
-	UniqueArchive arch{};
+	UniqueArchive arch;
 	struct archive_entry *ptr{};
-	std::unique_ptr<ArchiveControlBlock> ctrlBlock{};
+	std::unique_ptr<ArchiveControlBlock> ctrlBlock;
 
-	ArchiveEntry(const char *path, std::error_code *ec);
-	ArchiveEntry(GenericIO io, std::error_code *ec);
-	bool init(GenericIO io);
+	void init(IO);
 	static void freeArchive(struct archive *);
 };
 
-class ArchiveIO final : public IO
-{
-public:
-	using IO::read;
-	using IO::readAtPos;
-	using IO::write;
-	using IO::seek;
-	using IO::seekS;
-	using IO::seekE;
-	using IO::seekC;
-	using IO::tell;
-	using IO::send;
-	using IO::constBufferView;
-	using IO::get;
-
-	constexpr ArchiveIO() {}
-	ArchiveIO(ArchiveEntry entry);
-	GenericIO makeGeneric();
-	ArchiveEntry releaseArchive();
-	const char *name();
-	BufferMapIO moveToMapIO();
-
-	ssize_t read(void *buff, size_t bytes, std::error_code *ecOut) final;
-	ssize_t write(const void *buff, size_t bytes, std::error_code *ecOut) final;
-	off_t seek(off_t offset, SeekMode mode, std::error_code *ecOut) final;
-	void close() final;
-	size_t size() final;
-	bool eof() final;
-	explicit operator bool() const final;
-
-private:
-	ArchiveEntry entry{};
-};
+}

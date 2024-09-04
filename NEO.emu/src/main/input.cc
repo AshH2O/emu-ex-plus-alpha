@@ -13,178 +13,264 @@
 	You should have received a copy of the GNU General Public License
 	along with NEO.emu.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <emuframework/EmuApp.hh>
 #include <emuframework/EmuInput.hh>
-#include "internal.hh"
+#include <emuframework/keyRemappingUtils.hh>
+#include "MainSystem.hh"
+#include "MainApp.hh"
 
 extern "C"
 {
 	#include <gngeo/memory.h>
 }
 
-enum
+namespace EmuEx
 {
-	neogeoKeyIdxUp = EmuControls::systemKeyMapStart,
-	neogeoKeyIdxRight,
-	neogeoKeyIdxDown,
-	neogeoKeyIdxLeft,
-	neogeoKeyIdxLeftUp,
-	neogeoKeyIdxRightUp,
-	neogeoKeyIdxRightDown,
-	neogeoKeyIdxLeftDown,
-	neogeoKeyIdxSelect,
-	neogeoKeyIdxStart,
-	neogeoKeyIdxA,
-	neogeoKeyIdxB,
-	neogeoKeyIdxX,
-	neogeoKeyIdxY,
-	neogeoKeyIdxATurbo,
-	neogeoKeyIdxBTurbo,
-	neogeoKeyIdxXTurbo,
-	neogeoKeyIdxYTurbo,
-	neogeoKeyIdxABC,
-	neogeoKeyIdxTestSwitch = EmuControls::systemKeyMapStart + EmuControls::joystickKeys*2
+
+const int EmuSystem::maxPlayers = 2;
+
+enum class NeoKey : KeyCode
+{
+	Up = 1,
+	Right = 4,
+	Down = 2,
+	Left = 3,
+	A = 5,
+	B = 6,
+	C = 7,
+	D = 8,
+	Select = 9,
+	Start = 10,
+	TestSwitch = 11
 };
 
-const char *EmuSystem::inputFaceBtnName = "A/B/C/D";
-const char *EmuSystem::inputCenterBtnName = "Select/Start";
-const unsigned EmuSystem::inputFaceBtns = 4;
-const unsigned EmuSystem::inputCenterBtns = 2;
-const unsigned EmuSystem::maxPlayers = 2;
+constexpr auto dpadKeyInfo = makeArray<KeyInfo>
+(
+	NeoKey::Up,
+	NeoKey::Right,
+	NeoKey::Down,
+	NeoKey::Left
+);
 
-namespace NGKey
+constexpr auto centerKeyInfo = makeArray<KeyInfo>
+(
+	NeoKey::Select,
+	NeoKey::Start
+);
+
+constexpr auto faceKeyInfo = makeArray<KeyInfo>
+(
+	NeoKey::A,
+	NeoKey::B,
+	NeoKey::C,
+	NeoKey::D
+);
+
+constexpr auto turboFaceKeyInfo = turbo(faceKeyInfo);
+
+constexpr std::array comboKeyInfo{KeyInfo{std::array{NeoKey::A, NeoKey::B, NeoKey::C}}};
+
+constexpr auto gpKeyInfo = concatToArrayNow<dpadKeyInfo, centerKeyInfo, faceKeyInfo, turboFaceKeyInfo, comboKeyInfo>;
+constexpr auto gp2KeyInfo = transpose(gpKeyInfo, 1);
+
+std::span<const KeyCategory> NeoApp::keyCategories()
 {
-
-using namespace IG;
-
-static const unsigned COIN1 = bit(0), COIN2 = bit(1), SERVICE = bit(2),
-	START1 = bit(0), SELECT1 = bit(1),
-	START2 = bit(2), SELECT2 = bit(3),
-
-	UP = bit(0), DOWN = bit(1), LEFT = bit(2), RIGHT = bit(3),
-	A = bit(4), B = bit(5), C = bit(6), D = bit(7),
-
-	START_EMU_INPUT = bit(8),
-	SELECT_COIN_EMU_INPUT = bit(9),
-	SERVICE_EMU_INPUT = bit(10);
-
-}
-
-void updateVControllerMapping(unsigned player, VController::Map &map)
-{
-	using namespace NGKey;
-	unsigned playerMask = player << 11;
-	map[VController::F_ELEM] = A | playerMask;
-	map[VController::F_ELEM+1] = B | playerMask;
-	map[VController::F_ELEM+2] = C | playerMask;
-	map[VController::F_ELEM+3] = D | playerMask;
-
-	map[VController::C_ELEM] = SELECT_COIN_EMU_INPUT | playerMask;
-	map[VController::C_ELEM+1] = START_EMU_INPUT | playerMask;
-
-	map[VController::D_ELEM] = UP | LEFT | playerMask;
-	map[VController::D_ELEM+1] = UP | playerMask;
-	map[VController::D_ELEM+2] = UP | RIGHT | playerMask;
-	map[VController::D_ELEM+3] = LEFT | playerMask;
-	map[VController::D_ELEM+5] = RIGHT | playerMask;
-	map[VController::D_ELEM+6] = DOWN | LEFT | playerMask;
-	map[VController::D_ELEM+7] = DOWN | playerMask;
-	map[VController::D_ELEM+8] = DOWN | RIGHT | playerMask;
-}
-
-unsigned EmuSystem::translateInputAction(unsigned input, bool &turbo)
-{
-	turbo = 0;
-	using namespace NGKey;
-	if(input == neogeoKeyIdxTestSwitch) [[unlikely]]
+	static constexpr std::array categories
 	{
-		return SERVICE_EMU_INPUT;
-	}
-	assert(input >= neogeoKeyIdxUp);
-	unsigned player = (input - neogeoKeyIdxUp) / EmuControls::joystickKeys;
-	unsigned playerMask = player << 11;
-	input -= EmuControls::joystickKeys * player;
-	switch(input)
-	{
-		case neogeoKeyIdxUp: return UP | playerMask;
-		case neogeoKeyIdxRight: return RIGHT | playerMask;
-		case neogeoKeyIdxDown: return DOWN | playerMask;
-		case neogeoKeyIdxLeft: return LEFT | playerMask;
-		case neogeoKeyIdxLeftUp: return LEFT | UP | playerMask;
-		case neogeoKeyIdxRightUp: return RIGHT | UP | playerMask;
-		case neogeoKeyIdxRightDown: return RIGHT | DOWN | playerMask;
-		case neogeoKeyIdxLeftDown: return LEFT | DOWN | playerMask;
-		case neogeoKeyIdxSelect: return SELECT_COIN_EMU_INPUT | playerMask;
-		case neogeoKeyIdxStart: return START_EMU_INPUT | playerMask;
-		case neogeoKeyIdxXTurbo: turbo = 1; [[fallthrough]];
-		case neogeoKeyIdxX: return C | playerMask;
-		case neogeoKeyIdxYTurbo: turbo = 1; [[fallthrough]];
-		case neogeoKeyIdxY: return D | playerMask;
-		case neogeoKeyIdxATurbo: turbo = 1; [[fallthrough]];
-		case neogeoKeyIdxA: return A | playerMask;
-		case neogeoKeyIdxBTurbo: turbo = 1; [[fallthrough]];
-		case neogeoKeyIdxB: return B | playerMask;
-		case neogeoKeyIdxABC: return A | B | C | playerMask;
-		default: bug_unreachable("input == %d", input);
-	}
-	return 0;
+		KeyCategory{"Gamepad", gpKeyInfo},
+		KeyCategory{"Gamepad 2", gp2KeyInfo, 1},
+	};
+	return categories;
 }
 
-void EmuSystem::handleInputAction(EmuApp *, Input::Action action, unsigned emuKey)
+std::string_view NeoApp::systemKeyCodeToString(KeyCode c)
 {
-	auto player = emuKey >> 11;
+	switch(NeoKey(c))
+	{
+		case NeoKey::Up: return "Up";
+		case NeoKey::Right: return "Right";
+		case NeoKey::Down: return "Down";
+		case NeoKey::Left: return "Left";
+		case NeoKey::Select: return "Select";
+		case NeoKey::Start: return "Start";
+		case NeoKey::TestSwitch: return "Test Switch";
+		case NeoKey::A: return "A";
+		case NeoKey::B: return "B";
+		case NeoKey::C: return "C";
+		case NeoKey::D: return "D";
+		default: return "";
+	}
+}
 
-	if(emuKey & 0xFF) // joystick
+std::span<const KeyConfigDesc> NeoApp::defaultKeyConfigs()
+{
+	using namespace IG::Input;
+
+	static constexpr std::array pcKeyboardMap
+	{
+		KeyMapping{NeoKey::Up, Keycode::UP},
+		KeyMapping{NeoKey::Right, Keycode::RIGHT},
+		KeyMapping{NeoKey::Down, Keycode::DOWN},
+		KeyMapping{NeoKey::Left, Keycode::LEFT},
+		KeyMapping{NeoKey::Select, Keycode::SPACE},
+		KeyMapping{NeoKey::Start, Keycode::ENTER},
+		KeyMapping{NeoKey::B, Keycode::Z},
+		KeyMapping{NeoKey::D, Keycode::X},
+		KeyMapping{NeoKey::A, Keycode::A},
+		KeyMapping{NeoKey::C, Keycode::S},
+	};
+
+	static constexpr std::array genericGamepadMap
+	{
+		KeyMapping{NeoKey::Up, Keycode::UP},
+		KeyMapping{NeoKey::Right, Keycode::RIGHT},
+		KeyMapping{NeoKey::Down, Keycode::DOWN},
+		KeyMapping{NeoKey::Left, Keycode::LEFT},
+		KeyMapping{NeoKey::Select, Keycode::GAME_SELECT},
+		KeyMapping{NeoKey::Start, Keycode::GAME_START},
+		KeyMapping{NeoKey::B, Keycode::GAME_A},
+		KeyMapping{NeoKey::D, Keycode::GAME_B},
+		KeyMapping{NeoKey::A, Keycode::GAME_X},
+		KeyMapping{NeoKey::C, Keycode::GAME_Y},
+	};
+
+	static constexpr std::array wiimoteMap
+	{
+		KeyMapping{NeoKey::Up, WiimoteKey::UP},
+		KeyMapping{NeoKey::Right, WiimoteKey::RIGHT},
+		KeyMapping{NeoKey::Down, WiimoteKey::DOWN},
+		KeyMapping{NeoKey::Left, WiimoteKey::LEFT},
+		KeyMapping{NeoKey::B, WiimoteKey::_1},
+		KeyMapping{NeoKey::D, WiimoteKey::_2},
+		KeyMapping{NeoKey::A, WiimoteKey::B},
+		KeyMapping{NeoKey::C, WiimoteKey::A},
+		KeyMapping{NeoKey::Select, WiimoteKey::MINUS},
+		KeyMapping{NeoKey::Start, WiimoteKey::PLUS},
+	};
+
+	return genericKeyConfigs<pcKeyboardMap, genericGamepadMap, wiimoteMap>();
+}
+
+bool NeoApp::allowsTurboModifier(KeyCode c)
+{
+	switch(NeoKey(c))
+	{
+		case NeoKey::A ... NeoKey::D:
+			return true;
+		default: return false;
+	}
+}
+
+constexpr FRect gpImageCoords(IRect cellRelBounds)
+{
+	constexpr F2Size imageSize{256, 256};
+	constexpr int cellSize = 32;
+	return (cellRelBounds.relToAbs() * cellSize).as<float>() / imageSize;
+}
+
+AssetDesc NeoApp::vControllerAssetDesc(KeyInfo key) const
+{
+	static constexpr struct VirtualControllerAssets
+	{
+		AssetDesc dpad{AssetFileID::gamepadOverlay, gpImageCoords({{}, {4, 4}})},
+
+		a{AssetFileID::gamepadOverlay,      gpImageCoords({{4, 0}, {2, 2}})},
+		b{AssetFileID::gamepadOverlay,      gpImageCoords({{6, 0}, {2, 2}})},
+		c{AssetFileID::gamepadOverlay,      gpImageCoords({{4, 2}, {2, 2}})},
+		d{AssetFileID::gamepadOverlay,      gpImageCoords({{6, 2}, {2, 2}})},
+		abc{AssetFileID::gamepadOverlay,    gpImageCoords({{0, 4}, {2, 2}})},
+		select{AssetFileID::gamepadOverlay, gpImageCoords({{0, 6}, {2, 1}}), {1, 2}},
+		start{AssetFileID::gamepadOverlay,  gpImageCoords({{0, 7}, {2, 1}}), {1, 2}},
+		test{AssetFileID::gamepadOverlay,   gpImageCoords({{2, 6}, {2, 1}}), {1, 2}},
+
+		blank{AssetFileID::gamepadOverlay, gpImageCoords({{2, 4}, {2, 2}})};
+	} virtualControllerAssets;
+
+	if(key[0] == 0)
+		return virtualControllerAssets.dpad;
+	switch(NeoKey(key[0]))
+	{
+		case NeoKey::A: return NeoKey(key[1]) == NeoKey::B && NeoKey(key[2]) == NeoKey::C ? virtualControllerAssets.abc : virtualControllerAssets.a;
+		case NeoKey::B: return virtualControllerAssets.b;
+		case NeoKey::C: return virtualControllerAssets.c;
+		case NeoKey::D: return virtualControllerAssets.d;
+		case NeoKey::Select: return virtualControllerAssets.select;
+		case NeoKey::Start: return virtualControllerAssets.start;
+		case NeoKey::TestSwitch: return virtualControllerAssets.test;
+		default: return virtualControllerAssets.blank;
+	}
+}
+
+void NeoSystem::handleInputAction(EmuApp *, InputAction a)
+{
+	auto player = a.flags.deviceId;
+	bool isPushed = a.state == Input::Action::PUSHED;
+	auto neoKey = NeoKey(a.code);
+	if(a.code <= 8) // joystick bit index
 	{
 		auto &p = player ? memory.intern_p2 : memory.intern_p1;
 		// Don't permit simultaneous left + right input, locks up Metal Slug 3
-		if(action == Input::Action::PUSHED && (emuKey & 0xFF) == NGKey::LEFT)
+		if(isPushed && neoKey == NeoKey::Left)
 		{
-			p = IG::setBits(p, (Uint8)NGKey::RIGHT);
+			p |= bit(to_underlying(NeoKey::Right) - 1);
 		}
-		else if(action == Input::Action::PUSHED && (emuKey & 0xFF) == NGKey::RIGHT)
+		else if(isPushed && neoKey == NeoKey::Right)
 		{
-			p = IG::setBits(p, (Uint8)NGKey::LEFT);
+			p |= bit(to_underlying(NeoKey::Left) - 1);
 		}
-		p = IG::setOrClearBits(p, (Uint8)(emuKey & 0xFF), action != Input::Action::PUSHED);
-		return;
+		p = setOrClearBits(p, Uint8((bit(a.code - 1))), !isPushed);
 	}
-
-	if(emuKey & NGKey::SELECT_COIN_EMU_INPUT)
+	else if(neoKey == NeoKey::Select)
 	{
+		constexpr unsigned coin1Bit = bit(0), coin2Bit = bit(1),
+			select1Bit = bit(1), select2Bit = bit(3);
 		if(conf.system == SYS_ARCADE)
 		{
-			unsigned bits = player ? NGKey::COIN2 : NGKey::COIN1;
-			memory.intern_coin = IG::setOrClearBits(memory.intern_coin, (Uint8)bits, action != Input::Action::PUSHED);
+			unsigned bits = player ? coin2Bit : coin1Bit;
+			memory.intern_coin = setOrClearBits(memory.intern_coin, (Uint8)bits, !isPushed);
 		}
 		else
 		{
 			// convert COIN to SELECT
-			unsigned bits = player ? NGKey::SELECT2 : NGKey::SELECT1;
-			memory.intern_start = IG::setOrClearBits(memory.intern_start, (Uint8)bits, action != Input::Action::PUSHED);
+			unsigned bits = player ? select2Bit : select1Bit;
+			memory.intern_start = setOrClearBits(memory.intern_start, (Uint8)bits, !isPushed);
 		}
-		return;
 	}
-
-	if(emuKey & NGKey::START_EMU_INPUT)
+	else if(neoKey == NeoKey::Start)
 	{
-		unsigned bits = player ? NGKey::START2 : NGKey::START1;
-		memory.intern_start = IG::setOrClearBits(memory.intern_start, (Uint8)bits, action != Input::Action::PUSHED);
-		return;
+		constexpr unsigned start1Bit = bit(0), start2Bit = bit(2);
+		unsigned bits = player ? start2Bit : start1Bit;
+		memory.intern_start = IG::setOrClearBits(memory.intern_start, (Uint8)bits, !isPushed);
 	}
-
-	if(emuKey & NGKey::SERVICE_EMU_INPUT)
+	else if(neoKey == NeoKey::TestSwitch)
 	{
-		if(action == Input::Action::PUSHED)
+		if(isPushed)
 			conf.test_switch = 1; // Test Switch is reset to 0 after every frame
 		return;
 	}
 }
 
-void EmuSystem::clearInputBuffers(EmuInputView &)
+void NeoSystem::clearInputBuffers(EmuInputView &)
 {
 	memory.intern_coin = 0x7;
 	memory.intern_start = 0x8F;
 	memory.intern_p1 = 0xFF;
 	memory.intern_p2 = 0xFF;
+}
+
+SystemInputDeviceDesc NeoSystem::inputDeviceDesc(int idx) const
+{
+	static constexpr std::array gamepadComponents
+	{
+		InputComponentDesc{"D-Pad", dpadKeyInfo, InputComponent::dPad, LB2DO},
+		InputComponentDesc{"Face Buttons", faceKeyInfo, InputComponent::button, RB2DO, {.staggeredLayout = true}},
+		InputComponentDesc{"Select", {&centerKeyInfo[0], 1}, InputComponent::button, LB2DO},
+		InputComponentDesc{"Start", {&centerKeyInfo[1], 1}, InputComponent::button, RB2DO},
+		InputComponentDesc{"Select/Start", centerKeyInfo, InputComponent::button, CB2DO, {.altConfig = true}},
+	};
+
+	static constexpr SystemInputDeviceDesc gamepadDesc{"Gamepad", gamepadComponents};
+
+	return gamepadDesc;
+}
+
 }

@@ -125,7 +125,8 @@ static io_source_t kingsoft_device = {
     kingsoft_dump,           /* device state information dump function */
     CARTRIDGE_KINGSOFT,      /* cartridge ID */
     IO_PRIO_NORMAL,          /* normal priority, device read needs to be checked for collisions */
-    0                        /* insertion order, gets filled in by the registration function */
+    0,                       /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE           /* NO mirroring */
 };
 
 static io_source_list_t *kingsoft_list_item = NULL;
@@ -219,7 +220,7 @@ void kingsoft_detach(void)
    ARRAY | ROMH | 16384 BYTES of ROMH data
  */
 
-static char snap_module_name[] = "CARTKINGSOFT";
+static const char snap_module_name[] = "CARTKINGSOFT";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   0
 

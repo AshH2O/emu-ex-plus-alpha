@@ -18,123 +18,248 @@
 #include <imagine/config/defs.hh>
 #include <imagine/pixmap/PixmapDesc.hh>
 #include <imagine/util/rectangle2.h>
-#include <imagine/util/FunctionTraits.hh>
 #include <imagine/util/algorithm.h>
-#include <imagine/util/container/array.hh>
+#include <imagine/util/ranges.hh>
+#include <imagine/util/mdspan.hh>
+#include <imagine/util/concepts.hh>
+#include <cstring>
 
 namespace IG
 {
 
-// TODO: rename this class to PixmapView
-class Pixmap : public PixmapDesc
+using RGBTripleArray = std::array<unsigned char, 3>;
+
+RGBTripleArray transformRGB565ToRGB888(uint16_t p);
+uint16_t transformRGB888ToRGB565(RGBTripleArray p);
+uint32_t transformRGBA8888ToBGRA8888(uint32_t p);
+uint16_t transformRGBX8888ToRGB565(uint32_t p);
+uint16_t transformBGRX8888ToRGB565(uint32_t p);
+RGBTripleArray transformRGBX8888ToRGB888(uint32_t p);
+RGBTripleArray transformBGRX8888ToRGB888(uint32_t p);
+uint32_t transformRGB565ToRGBX8888(uint16_t p);
+uint32_t transformRGB565ToBGRX8888(uint16_t p);
+uint32_t transformRGB888ToRGBX8888(RGBTripleArray p);
+uint32_t transformRGB888ToBGRX8888(RGBTripleArray p);
+
+template <class Func>
+concept PixmapTransformFunc =
+		requires (Func &&f, unsigned data){ f(data); } ||
+		requires (Func &&f, RGBTripleArray data){ f(data); };
+
+enum class PixmapUnits : uint8_t { PIXEL, BYTE };
+struct PitchInit
+{
+	int val;
+	PixmapUnits units;
+};
+
+template <class PixData>
+class PixmapViewBase
 {
 public:
-	enum PitchUnits { PIXEL_UNITS, BYTE_UNITS };
-	class PitchInit
+	using Units = PixmapUnits;
+	static constexpr bool dataIsMutable = !std::is_const_v<PixData>;
+
+	constexpr PixmapViewBase() = default;
+
+	constexpr PixmapViewBase(PixmapDesc desc, Pointer auto data, PitchInit pitch):
+		data_{(PixData*)data},
+		pitchPx_{pitch.units == Units::PIXEL ? pitch.val : pitch.val / desc.format.bytesPerPixel()},
+		desc_{desc} {}
+
+	constexpr PixmapViewBase(PixmapDesc desc, Pointer auto data):
+		PixmapViewBase{desc, data, {desc.w(), Units::PIXEL}} {}
+
+	explicit constexpr PixmapViewBase(PixmapDesc desc):
+		PixmapViewBase{desc, (PixData*)nullptr} {}
+
+	// Convert non-const PixData version to const
+	operator PixmapViewBase<std::add_const_t<PixData>>() const requires(dataIsMutable)
 	{
-	public:
-		unsigned val;
-		PitchUnits units;
-
-		constexpr PitchInit(uint32_t pitchVal, PitchUnits units):
-			val{pitchVal}, units{units}
-			{}
-	};
-
-	constexpr Pixmap() {}
-
-	constexpr Pixmap(PixmapDesc desc, void *data, PitchInit pitch):
-		PixmapDesc{desc},
-		pitch{pitch.units == PIXEL_UNITS ? pitch.val * desc.format().bytesPerPixel() : pitch.val},
-		data_{data}
-		{}
-
-	constexpr Pixmap(PixmapDesc desc, void *data):
-		Pixmap{desc, data, {desc.w(), PIXEL_UNITS}}
-		{}
+		return {desc(), data(), {pitchPx(), PixmapUnits::PIXEL}};
+	}
 
 	constexpr operator bool() const
 	{
 		return data_;
 	}
 
-	constexpr char *pixel(WP pos) const
+	constexpr auto data() const
 	{
-		return &IG::ArrayView2<char>{data(), pitchBytes()}[pos.y][format().pixelBytes(pos.x)];
+		return data_;
 	}
 
-	constexpr char *data() const
+	constexpr PixmapDesc desc() const { return desc_; }
+	constexpr int w() const { return desc().w(); }
+	constexpr int h() const { return desc().h(); }
+	constexpr WSize size() const { return desc().size; }
+	constexpr PixelFormat format() const { return desc().format; }
+
+	template<class T>
+	constexpr auto mdspan() const
 	{
-		return (char*)data_;
+		using Ptr = std::conditional_t<dataIsMutable, T*, const T*>;
+		return stridedMdspan2(reinterpret_cast<Ptr>(data()), extents{h(), w()}, pitchPx());
 	}
 
-	constexpr uint32_t pitchPixels() const
+	constexpr PixData *data(WPt pos) const
 	{
-		return pitch / format().bytesPerPixel();
+		switch(format().bytesPerPixel())
+		{
+			case 1: return (PixData*)&mdspan<uint8_t>()[pos.y, pos.x];
+			case 2: return (PixData*)&mdspan<uint16_t>()[pos.y, pos.x];
+			case 4: return (PixData*)&mdspan<uint32_t>()[pos.y, pos.x];
+		}
+		bug_unreachable("invalid bytes per pixel:%d", format().bytesPerPixel());
 	}
 
-	constexpr uint32_t pitchBytes() const
-	{
-		return pitch;
-	}
+	constexpr const PixData &operator[](int x, int y) const { return *data({x, y}); }
+	constexpr PixData &operator[](int x, int y) requires dataIsMutable { return *data({x, y}); }
 
-	constexpr size_t bytes() const
+	constexpr int pitchPx() const { return pitchPx_; }
+	constexpr int pitchBytes() const { return pitchPx() * format().bytesPerPixel(); }
+
+	constexpr int bytes() const
 	{
 		return pitchBytes() * h();
 	}
 
-	constexpr size_t unpaddedBytes() const
+	constexpr int unpaddedBytes() const
 	{
-		return PixmapDesc::bytes();
+		return desc().bytes();
 	}
 
 	constexpr bool isPadded() const
 	{
-		return w() != pitchPixels();
+		return w() != pitchPx();
 	}
 
-	constexpr uint32_t paddingPixels() const
+	constexpr int paddingPixels() const
 	{
-		return pitchPixels() - w();
+		return pitchPx() - w();
 	}
 
-	constexpr uint32_t paddingBytes() const
+	constexpr int paddingBytes() const
 	{
 		return pitchBytes() - format().pixelBytes(w());
 	}
 
-	constexpr Pixmap subView(WP pos, WP size) const
+	constexpr PixmapViewBase subView(WPt pos, WSize size) const
 	{
 		//logDMsg("sub-pixmap with pos:%dx%d size:%dx%d", pos.x, pos.y, size.x, size.y);
 		assumeExpr(pos.x >= 0 && pos.y >= 0);
-		assumeExpr(pos.x + size.x <= (int)w() && pos.y + size.y <= (int)h());
-		return Pixmap{makeNewSize(size), pixel(pos), {pitchBytes(), BYTE_UNITS}};
+		assumeExpr(pos.x + size.x <= w() && pos.y + size.y <= h());
+		return PixmapViewBase{desc().makeNewSize(size), data(pos), {pitchBytes(), Units::BYTE}};
 	}
 
-	void write(Pixmap pixmap);
-	void write(Pixmap pixmap, WP destPos);
-	void writeConverted(Pixmap pixmap);
-	void writeConverted(Pixmap pixmap, WP destPos);
-	void clear(WP pos, WP size);
-	void clear();
-
-	template <class Func>
-	static constexpr bool checkTransformFunc()
+	void write(auto pixmap) requires(dataIsMutable)
 	{
-		using FuncTraits = FunctionTraits<Func>;
-		constexpr bool isValid = !std::is_void_v<typename FuncTraits::Result>
-			&& FuncTraits::arity == 1;
-		static_assert(isValid, "Transform function must take 1 argument and return a value");
-		return isValid;
-	}
-
-	template <class Func>
-	void transformInPlace(Func func)
-	{
-		if constexpr(!checkTransformFunc<Func>())
+		assumeExpr(format() == pixmap.format());
+		if(w() == pixmap.w() && !isPadded() && !pixmap.isPadded())
 		{
+			// whole block
+			//logDMsg("copying whole block");
+			memcpy(data_, pixmap.data(), pixmap.unpaddedBytes());
+		}
+		else
+		{
+			// line at a time
+			auto srcData = pixmap.data();
+			auto destData = data();
+			auto destPitch = pitchBytes();
+			auto lineBytes = format().pixelBytes(pixmap.w());
+			for([[maybe_unused]] auto i : iotaCount(pixmap.h()))
+			{
+				memcpy(destData, srcData, lineBytes);
+				srcData += pixmap.pitchBytes();
+				destData += destPitch;
+			}
+		}
+	}
+
+	void write(auto pixmap, WPt destPos) requires(dataIsMutable)
+	{
+		subView(destPos, size() - destPos).write(pixmap);
+	}
+
+	void writeConverted(auto pixmap) requires(dataIsMutable)
+	{
+		if(format() == pixmap.format())
+		{
+			write(pixmap);
 			return;
 		}
+		auto srcFormatID = pixmap.format().id;
+		switch(format().id)
+		{
+			case PixelFormatId::RGBA8888:
+				switch(srcFormatID)
+				{
+					case PixelFormatId::BGRA8888: return convertRGBA8888ToBGRA8888(*this, pixmap);
+					case PixelFormatId::RGB565: return convertRGB565ToRGBX8888(*this, pixmap);
+					case PixelFormatId::RGB888: return convertRGB888ToRGBX8888(*this, pixmap);
+					default: return invalidFormatConversion(*this, pixmap);
+				}
+			case PixelFormatId::BGRA8888:
+				switch(srcFormatID)
+				{
+					case PixelFormatId::RGBA8888: return convertRGBA8888ToBGRA8888(*this, pixmap);
+					case PixelFormatId::RGB565: return convertRGB565ToBGRX8888(*this, pixmap);
+					case PixelFormatId::RGB888: return convertRGB888ToBGRX8888(*this, pixmap);
+					default: return invalidFormatConversion(*this, pixmap);
+				}
+			case PixelFormatId::RGB888:
+				switch(srcFormatID)
+				{
+					case PixelFormatId::BGRA8888: return convertBGRX8888ToRGB888(*this, pixmap);
+					case PixelFormatId::RGBA8888: return convertRGBX8888ToRGB888(*this, pixmap);
+					case PixelFormatId::RGB565: return convertRGB565ToRGB888(*this, pixmap);
+					default: return invalidFormatConversion(*this, pixmap);
+				}
+			case PixelFormatId::RGB565:
+				switch(srcFormatID)
+				{
+					case PixelFormatId::RGBA8888: return convertRGBX8888ToRGB565(*this, pixmap);
+					case PixelFormatId::BGRA8888: return convertBGRX8888ToRGB565(*this, pixmap);
+					case PixelFormatId::RGB888: return convertRGB888ToRGB565(*this, pixmap);
+					default: return invalidFormatConversion(*this, pixmap);
+				}
+			default:
+				return invalidFormatConversion(*this, pixmap);
+		}
+	}
+
+	void writeConverted(auto pixmap, WPt destPos) requires(dataIsMutable)
+	{
+		subView(destPos, size() - destPos).writeConverted(pixmap);
+	}
+
+	void clear(WPt pos, WSize size) requires(dataIsMutable)
+	{
+		char *destData = data(pos);
+		if(!isPadded() && (int)w() == size.x)
+		{
+			std::fill_n(destData, format().pixelBytes(size.x * size.y), 0);
+		}
+		else
+		{
+			auto lineBytes = format().pixelBytes(size.x);
+			auto pitch = pitchBytes();
+			for([[maybe_unused]] auto i : iotaCount(size.y))
+			{
+				std::fill_n(destData, lineBytes, 0);
+				destData += pitch;
+			}
+		}
+	}
+
+	void clear() requires(dataIsMutable)
+	{
+		clear({}, {(int)w(), (int)h()});
+	}
+
+	void transformInPlace(PixmapTransformFunc auto &&func) requires(dataIsMutable)
+	{
 		switch(format().bytesPerPixel())
 		{
 			case 1: return transformInPlace2<uint8_t>(func);
@@ -143,13 +268,13 @@ public:
 		}
 	}
 
-	template <class Data, class Func>
-	void transformInPlace2(Func func)
+	template <class Data>
+	void transformInPlace2(PixmapTransformFunc auto &&func) requires(dataIsMutable)
 	{
 		auto data = (Data*)data_;
 		if(!isPadded())
 		{
-			IG::transformN(data, w() * h(), data,
+			transformNOverlapped(data, w() * h(), data,
 				[=](Data pixel)
 				{
 					return func(pixel);
@@ -157,12 +282,12 @@ public:
 		}
 		else
 		{
-			auto dataPitchPixels = pitchPixels();
+			auto dataPitchPixels = pitchPx();
 			auto width = w();
-			iterateTimes(h(), y)
+			for([[maybe_unused]] auto y : iotaCount(h()))
 			{
 				auto lineData = data;
-				IG::transformN(lineData, width, lineData,
+				transformNOverlapped(lineData, width, lineData,
 					[=](Data pixel)
 					{
 						return func(pixel);
@@ -172,64 +297,52 @@ public:
 		}
 	}
 
-	template <class Func>
-	void writeTransformed(Func func, Pixmap pixmap)
+	void writeTransformed(PixmapTransformFunc auto &&func, auto pixmap) requires(dataIsMutable)
 	{
-		if constexpr(!checkTransformFunc<Func>())
-		{
-			return;
-		}
 		auto srcBytesPerPixel = pixmap.format().bytesPerPixel();
 		switch(format().bytesPerPixel())
 		{
-			bcase 1:
-				switch(srcBytesPerPixel)
-				{
-					case 1: return writeTransformed2<uint8_t,  uint8_t>(func, pixmap);
-					case 2: return writeTransformed2<uint16_t, uint8_t>(func, pixmap);
-					case 4: return writeTransformed2<uint32_t, uint8_t>(func, pixmap);
-				}
-			bcase 2:
-				switch(srcBytesPerPixel)
-				{
-					case 1: return writeTransformed2<uint8_t,  uint16_t>(func, pixmap);
-					case 2: return writeTransformed2<uint16_t, uint16_t>(func, pixmap);
-					case 4: return writeTransformed2<uint32_t, uint16_t>(func, pixmap);
-				}
-			bcase 4:
-				switch(srcBytesPerPixel)
-				{
-					case 1: return writeTransformed2<uint8_t,  uint32_t>(func, pixmap);
-					case 2: return writeTransformed2<uint16_t, uint32_t>(func, pixmap);
-					case 4: return writeTransformed2<uint32_t, uint32_t>(func, pixmap);
-				}
+			case 1: return writeTransformed<uint8_t>(srcBytesPerPixel, IG_forward(func), pixmap);
+			case 2: return writeTransformed<uint16_t>(srcBytesPerPixel, IG_forward(func), pixmap);
+			case 4: return writeTransformed<uint32_t>(srcBytesPerPixel, IG_forward(func), pixmap);
 		}
 	}
 
-	template <class Func>
-	void writeTransformed(Func func, Pixmap pixmap, WP destPos)
+	void writeTransformed(PixmapTransformFunc auto &&func, auto pixmap, WPt destPos) requires(dataIsMutable)
 	{
 		subView(destPos, size() - destPos).writeTransformed(func, pixmap);
 	}
 
-	template <class Src, class Dest, class Func>
-	void writeTransformedDirect(Func func, Pixmap pixmap)
+	template <class Src, class Dest>
+	void writeTransformedDirect(PixmapTransformFunc auto &&func, auto pixmap) requires(dataIsMutable)
 	{
 		writeTransformed2<Src, Dest>(func, pixmap);
 	}
 
 protected:
-	uint32_t pitch = 0; // in bytes
-	void *data_{};
+	PixData *data_{};
+	int pitchPx_{};
+	PixmapDesc desc_{};
 
-	template <class Src, class Dest, class Func>
-	void writeTransformed2(Func func, Pixmap pixmap)
+	template <class Dest>
+	void writeTransformed(uint8_t srcBytesPerPixel, PixmapTransformFunc auto &&func, auto pixmap) requires(dataIsMutable)
 	{
-		auto srcData = (const Src*)pixmap.data_;
+		switch(srcBytesPerPixel)
+		{
+			case 1: return writeTransformed2<uint8_t,  Dest>(IG_forward(func), pixmap);
+			case 2: return writeTransformed2<uint16_t, Dest>(IG_forward(func), pixmap);
+			case 4: return writeTransformed2<uint32_t, Dest>(IG_forward(func), pixmap);
+		}
+	};
+
+	template <class Src, class Dest>
+	void writeTransformed2(PixmapTransformFunc auto &&func, auto pixmap) requires(dataIsMutable)
+	{
+		auto srcData = (const Src*)pixmap.data();
 		auto destData = (Dest*)data_;
 		if(w() == pixmap.w() && !isPadded() && !pixmap.isPadded())
 		{
-			IG::transform_n_r(srcData, pixmap.w() * pixmap.h(), destData,
+			transformN(srcData, pixmap.w() * pixmap.h(), destData,
 				[=](Src srcPixel)
 				{
 					return func(srcPixel);
@@ -237,21 +350,85 @@ protected:
 		}
 		else
 		{
-			auto destPitchPixels = pitchPixels();
-			iterateTimes(pixmap.h(), h)
+			auto srcPitchPixels = pixmap.pitchPx();
+			auto destPitchPixels = pitchPx();
+			for([[maybe_unused]] auto h : iotaCount(pixmap.h()))
 			{
 				auto destLineData = destData;
 				auto srcLineData = srcData;
-				IG::transform_n_r(srcLineData, pixmap.w(), destLineData,
+				transformN(srcLineData, pixmap.w(), destLineData,
 					[=](Src srcPixel)
 					{
 						return func(srcPixel);
 					});
-				srcData += pixmap.pitchPixels();
+				srcData += srcPitchPixels;
 				destData += destPitchPixels;
 			}
 		}
 	}
+
+	static void invalidFormatConversion([[maybe_unused]] auto dest, [[maybe_unused]] auto src)
+	{
+		bug_unreachable("unimplemented conversion:%s -> %s", src.format().name(), dest.format().name());
+	}
+
+	static void convertRGB888ToRGBX8888(auto dest, auto src)
+	{
+		dest.template writeTransformedDirect<RGBTripleArray, uint32_t>(transformRGB888ToRGBX8888, src);
+	}
+
+	static void convertRGB888ToBGRX8888(auto dest, auto src)
+	{
+		dest.template writeTransformedDirect<RGBTripleArray, uint32_t>(transformRGB888ToBGRX8888, src);
+	}
+
+	static void convertRGB565ToRGBX8888(auto dest, auto src)
+	{
+		dest.writeTransformed(transformRGB565ToRGBX8888, src);
+	}
+
+	static void convertRGB565ToBGRX8888(auto dest, auto src)
+	{
+		dest.writeTransformed(transformRGB565ToBGRX8888, src);
+	}
+
+	static void convertRGBX8888ToRGB888(auto dest, auto src)
+	{
+		dest.template writeTransformedDirect<uint32_t, RGBTripleArray>(transformRGBX8888ToRGB888, src);
+	}
+
+	static void convertBGRX8888ToRGB888(auto dest, auto src)
+	{
+		dest.template writeTransformedDirect<uint32_t, RGBTripleArray>(transformBGRX8888ToRGB888, src);
+	}
+
+	static void convertRGB565ToRGB888(auto dest, auto src)
+	{
+		dest.template writeTransformedDirect<uint16_t, RGBTripleArray>(transformRGB565ToRGB888, src);
+	}
+
+	static void convertRGB888ToRGB565(auto dest, auto src)
+	{
+		dest.template writeTransformedDirect<RGBTripleArray, uint16_t>(transformRGB888ToRGB565, src);
+	}
+
+	static void convertRGBX8888ToRGB565(auto dest, auto src)
+	{
+		dest.writeTransformed(transformRGBX8888ToRGB565, src);
+	}
+
+	static void convertRGBA8888ToBGRA8888(auto dest, auto src)
+	{
+		dest.writeTransformed(transformRGBA8888ToBGRA8888, src);
+	}
+
+	static void convertBGRX8888ToRGB565(auto dest, auto src)
+	{
+		dest.template writeTransformed(transformBGRX8888ToRGB565, src);
+	}
 };
+
+using PixmapView = PixmapViewBase<const char>;
+using MutablePixmapView = PixmapViewBase<char>;
 
 }

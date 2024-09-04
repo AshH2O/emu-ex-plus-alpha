@@ -307,7 +307,8 @@ static io_source_t actionreplay2_io1_device = {
     NULL,                          /* TODO: device state information dump function */
     CARTRIDGE_ACTION_REPLAY2,      /* cartridge ID */
     IO_PRIO_NORMAL,                /* normal priority, device read needs to be checked for collisions */
-    0                              /* insertion order, gets filled in by the registration function */
+    0,                             /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE                 /* NO mirroring */
 };
 
 static io_source_t actionreplay2_io2_device = {
@@ -323,7 +324,8 @@ static io_source_t actionreplay2_io2_device = {
     NULL,                          /* TODO: device state information dump function */
     CARTRIDGE_ACTION_REPLAY2,      /* cartridge ID */
     IO_PRIO_NORMAL,                /* normal priority, device read needs to be checked for collisions */
-    0                              /* insertion order, gets filled in by the registration function */
+    0,                             /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE                 /* NO mirroring */
 };
 
 static io_source_list_t *actionreplay2_io1_list_item = NULL;
@@ -519,7 +521,7 @@ void actionreplay2_detach(void)
    ARRAY | ROML        | 16768 BYTES of ROML data
  */
 
-static char snap_module_name[] = "CARTAR2";
+static const char snap_module_name[] = "CARTAR2";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   0
 

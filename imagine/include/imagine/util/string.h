@@ -1,89 +1,106 @@
 #pragma once
 
-#ifdef __cplusplus
-#include <array>
-#include <cstring>
-#include <cctype>
-#include <cstdarg>
-#include <system_error>
-#include <string>
-#else
-#include <string.h>
-#include <ctype.h>
-#include <stdbool.h>
-#endif
-#include <imagine/util/builtins.h>
+/*  This file is part of Imagine.
 
-BEGIN_C_DECLS
+	Imagine is free software: you can redistribute it and/or modify
+	it under the terms of the GNU General Public License as published by
+	the Free Software Foundation, either version 3 of the License, or
+	(at your option) any later version.
 
-int char_hexToInt(char c);
-const char *string_dotExtension(const char *s) __attribute__((nonnull));
-bool string_hasDotExtension(const char *s, const char *extension) __attribute__((nonnull));
-void string_toUpper(char *s) __attribute__((nonnull));
-bool string_equalNoCase(const char *s1, const char *s2) __attribute__((nonnull));
-bool string_equal(const char *s1, const char *s2) __attribute__((nonnull));
-size_t string_cat(char *dest, const char *src, size_t destSize) __attribute__((nonnull));
+	Imagine is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY; without even the implied warranty of
+	MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+	GNU General Public License for more details.
 
-// copies at most destSize-1 chars from src until null byte or dest size is reached
-// dest is always null terminated
-size_t string_copy(char *dest, const char *src, size_t destSize) __attribute__((nonnull));
+	You should have received a copy of the GNU General Public License
+	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-END_C_DECLS
+#include <imagine/util/utility.h>
+#include <imagine/util/ctype.hh>
+#include <imagine/util/algorithm.h>
+#include <string_view>
+#include <concepts>
 
-#ifdef __cplusplus
-
-template <typename T>
-size_t string_copy(T &dest, const char *src)
+namespace IG
 {
-	return string_copy(std::data(dest), src, std::size(dest));
+
+using namespace std::string_view_literals;
+
+[[nodiscard]]
+constexpr bool containsAny(std::string_view s, auto &&...substrs)
+{
+	return (s.contains(std::string_view{IG_forward(substrs)}) || ...);
 }
 
-#ifdef __clang__
-// need to directly call builtin version to get constexpr
-#define string_len(s) __builtin_strlen(s)
-#else
-[[gnu::nonnull, gnu::pure]]
-static constexpr size_t string_len(const char *s)
+[[nodiscard]]
+constexpr bool equalsToLower(char lhs, char rhs)
 {
-	return std::strlen(s);
-	// If compiler doesn't have constexpr the following recursive version also works:
-	// return *s ? 1 + string_len(s+1) : 0;
-}
-#endif
-
-template <typename T>
-static size_t string_cat(T &dest, const char *src)
-{
-	return string_cat(std::data(dest), src, std::size(dest));
+	return toLower<char>(lhs) == toLower<char>(rhs);
 }
 
-template <typename T>
-[[gnu::format(printf, 2, 3)]]
-static int string_printf(T &dest, const char *format, ...)
+[[nodiscard]]
+constexpr bool endsWithAnyCaseless(std::string_view s, std::convertible_to<std::string_view> auto &&...endings)
 {
-	va_list args;
-	va_start(args, format);
-	auto result = vsnprintf(std::data(dest), std::size(dest), format, args);
-	va_end(args);
-	return result;
+	return (ends_with(s, std::string_view{IG_forward(endings)}, equalsToLower) || ...);
 }
 
-template <size_t S>
-[[gnu::format(printf, 1, 2)]]
-static std::array<char, S> string_makePrintf(const char *format, ...)
+[[nodiscard]]
+constexpr bool equalsCaseless(std::string_view lhs, std::string_view rhs)
 {
-	std::array<char, S> str;
-	va_list args;
-	va_start(args, format);
-	vsnprintf(str.data(), S, format, args);
-	va_end(args);
-	return str;
+	return std::ranges::equal(lhs, rhs, equalsToLower);
 }
 
-std::errc string_convertCharCode(const char** sourceStart, uint32_t &c);
+template <class String = std::string>
+[[nodiscard]]
+constexpr auto toUpperCase(std::string_view s)
+{
+	String dest;
+	dest.reserve(s.size());
+	for(auto c : s)
+	{
+		dest.push_back(toUpper(c));
+	}
+	return dest;
+}
 
-std::array<char, 2> string_fromChar(char c);
+[[nodiscard]]
+constexpr std::string_view withoutDotExtension(std::string_view s)
+{
+	auto dotOffset = s.rfind('.');
+	if(dotOffset != s.npos)
+		return {s.data(), dotOffset};
+	else
+		return s;
+}
 
-std::u16string string_makeUTF16(const char *str);
+[[nodiscard]]
+constexpr std::string_view withoutDotExtension(std::convertible_to<std::string_view> auto &&s)
+{
+	return withoutDotExtension(std::string_view{IG_forward(s)});
+}
 
-#endif
+[[nodiscard]]
+constexpr std::string_view dotExtension(std::string_view s)
+{
+	auto dotOffset = s.rfind('.');
+	if(dotOffset != s.npos)
+	{
+		s.remove_prefix(dotOffset + 1);
+		return s;
+	}
+	return {};
+}
+
+[[nodiscard]]
+constexpr std::string_view dotExtension(std::convertible_to<std::string_view> auto &&s)
+{
+	return dotExtension(std::string_view{IG_forward(s)});
+}
+
+[[nodiscard]]
+constexpr bool caselessLexCompare(std::string_view s1, std::string_view s2)
+{
+	return std::ranges::lexicographical_compare(s1, s2, std::ranges::less{}, toLower<char>, toLower<char>);
+}
+
+}

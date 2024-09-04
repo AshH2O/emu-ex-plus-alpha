@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -33,12 +33,12 @@ class TrakBall : public PointingDevice
     TrakBall(Jack jack, const Event& event, const System& system)
       : PointingDevice(jack, event, system, Controller::Type::TrakBall,
         trackballSensitivity) { }
-    virtual ~TrakBall() = default;
+    ~TrakBall() override = default;
 
     /**
       Returns the name of this controller.
     */
-    string name() const override { return "TrakBall"; }
+    string name() const override { return "Trak-Ball"; }
 
   protected:
     uInt8 ioPortA(uInt8 countH, uInt8 countV, uInt8 left, uInt8 down) override
@@ -55,6 +55,13 @@ class TrakBall : public PointingDevice
 
     // 50% of Atari and Amiga mouse
     static constexpr float trackballSensitivity = 0.4F;
+
+  private:
+    // Following constructors and assignment operators not supported
+    TrakBall(const TrakBall&) = delete;
+    TrakBall(TrakBall&&) = delete;
+    TrakBall& operator=(const TrakBall&) = delete;
+    TrakBall& operator=(TrakBall&&) = delete;
 };
 
 #endif // TRAKBALL_HXX

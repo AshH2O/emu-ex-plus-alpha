@@ -13,29 +13,30 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "Evdev"
-#include <linux/input.h>
-#include <sys/inotify.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <imagine/util/algorithm.h>
-#include <imagine/util/bitset.hh>
-#include <imagine/util/math/int.hh>
+#include <imagine/util/bit.hh>
+#include <imagine/util/math.hh>
 #include <imagine/util/fd-utils.h>
-#include <imagine/util/string.h>
 #include <imagine/fs/FS.hh>
-#include <imagine/input/Input.hh>
+#include <imagine/input/evdev/EvdevInputDevice.hh>
+#include <imagine/input/Event.hh>
 #include <imagine/input/AxisKeyEmu.hh>
 #include <imagine/time/Time.hh>
 #include <imagine/base/Application.hh>
 #include <imagine/logger/logger.h>
+#include <linux/input.h>
+#include <sys/inotify.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include <vector>
+#include <algorithm>
 
 #define DEV_NODE_PATH "/dev/input"
 static constexpr uint32_t MAX_STICK_AXES = 6; // 6 possible axes defined in key codes
 
-namespace Input
+namespace IG::Input
 {
+
+constexpr SystemLogger log{"Evdev"};
 
 static Key toSysKey(Key key)
 {
@@ -101,20 +102,6 @@ static Key toSysKey(Key key)
 	#undef EVDEV_TO_SYSKEY_CASE
 }
 
-/*static uint32_t absAxisToKeycode(int axis)
-{
-	switch(axis)
-	{
-		case ABS_X: return Evdev::JS1_XAXIS_POS;
-		case ABS_Y: return Evdev::JS1_YAXIS_POS;
-		case ABS_Z: return Evdev::JS2_XAXIS_POS;
-		case ABS_RZ: return Evdev::JS2_YAXIS_POS;
-	}
-	return Evdev::JS3_YAXIS_POS;
-}*/
-
-static void removeFromSystem(Base::LinuxApplication &app, int fd);
-
 template <class T, size_t S>
 static constexpr bool isBitSetInArray(const T (&arr)[S], unsigned int bit)
 {
@@ -122,43 +109,46 @@ static constexpr bool isBitSetInArray(const T (&arr)[S], unsigned int bit)
 	return arr[bit / bits] & ((T)1 << (bit % bits));
 }
 
-EvdevInputDevice::EvdevInputDevice() {}
-
-EvdevInputDevice::EvdevInputDevice(int id, int fd, uint32_t type, const char *name):
-	Device{0, Map::SYSTEM, type, name},
-	id{id}, fd{fd}
+EvdevInputDevice::EvdevInputDevice(int id, UniqueFileDescriptor fd, DeviceTypeFlags typeFlags, std::string name_, uint32_t vendorProductId):
+	BaseDevice{id, Map::SYSTEM, typeFlags, std::move(name_)},
+	fdSrc{std::move(fd), {.debugLabel = "EvdevInputDevice", .eventLoop = EventLoop::forThread()}, {}}
 {
+	subtype_ = DeviceSubtype::GENERIC_GAMEPAD;
+	updateGamepadSubtype(name_, vendorProductId);
 	if(setupJoystickBits())
-		type_ |= Device::TYPE_BIT_JOYSTICK;
+		typeFlags_.joystick = true;
 }
 
-void EvdevInputDevice::setEnumId(int id) { devId = id; }
-
-void EvdevInputDevice::processInputEvents(Base::LinuxApplication &app, input_event *event, uint32_t events)
+void EvdevInputDevice::processInputEvents(Device &dev, LinuxApplication &app, std::span<const input_event> events)
 {
-	iterateTimes(events, i)
+	for(auto &ev : events)
 	{
-		auto &ev = event[i];
-		//logMsg("got event type %d, code %d, value %d", ev.type, ev.code, ev.value);
-		Time time = IG::Seconds{ev.time.tv_sec} + IG::Microseconds{ev.time.tv_usec};
+		//log.debug("got event type {}, code {}, value {}", ev.type, ev.code, ev.value);
+		auto time = SteadyClockTimePoint{Seconds{ev.time.tv_sec} + Microseconds{ev.time.tv_usec}};
 		switch(ev.type)
 		{
-			bcase EV_KEY:
+			case EV_KEY:
 			{
-				//logMsg("got key event code:0x%X value:%d", ev.code, ev.value);
+				//log.debug("got key event code:{:X} value:{}", ev.code, ev.value);
 				auto key = toSysKey(ev.code);
-				Event event{enumId(), Map::SYSTEM, key, key, ev.value ? Action::PUSHED : Action::RELEASED, 0, 0, Source::GAMEPAD, time, this};
+				KeyEvent event{Map::SYSTEM, key, ev.value ? Action::PUSHED : Action::RELEASED, 0, 0, Source::GAMEPAD, time, &dev};
 				app.dispatchRepeatableKeyInputEvent(event);
+				break;
 			}
-			bcase EV_ABS:
+			case EV_ABS:
 			{
-				if(ev.code >= std::size(axis) || !axis[ev.code].active)
+				auto &evDev = getAs<EvdevInputDevice>(dev);
+				auto &axis = evDev.axis;
+				auto axisIt = std::ranges::find_if(axis, [&](auto &axis){ return ev.code == (uint8_t)axis.id(); });
+				if(axisIt == axis.end())
 				{
-					//logMsg("event form inactive axis:%d", ev.code);
-					continue; // out of range or inactive
+					log.debug("event from unused axis:{}", ev.code);
+					continue;
 				}
-				//logMsg("got abs event code 0x%X, value %d", ev.code, ev.value);
-				axis[ev.code].keyEmu.dispatch(ev.value, enumId(), Map::SYSTEM, time, *this, app.mainWindow());
+				auto offset = evDev.axisRangeOffset[std::distance(axis.begin(), axisIt)];
+				float val = (ev.value + offset) * axisIt->scale();
+				//log.debug("got abs event code {:X}, value {} ({})", ev.code, ev.value, val);
+				axisIt->dispatchInputEvent(val, Map::SYSTEM, time, dev, app.mainWindow());
 			}
 		}
 	}
@@ -167,67 +157,44 @@ void EvdevInputDevice::processInputEvents(Base::LinuxApplication &app, input_eve
 bool EvdevInputDevice::setupJoystickBits()
 {
 	ulong evBit[IG::divRoundUp(EV_MAX, IG::bitSize<ulong>)]{};
-	bool isJoystick = (ioctl(fd, EVIOCGBIT(0, sizeof(evBit)), evBit) >= 0)
+	bool isJoystick = (ioctl(fd(), EVIOCGBIT(0, sizeof(evBit)), evBit) >= 0)
 		&& isBitSetInArray(evBit, EV_ABS);
 
 	if(!isJoystick)
 		return false;
 
 	ulong absBit[IG::divRoundUp(ABS_MAX, IG::bitSize<ulong>)]{};
-	if((ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(absBit)), absBit) < 0))
+	if((ioctl(fd(), EVIOCGBIT(EV_ABS, sizeof(absBit)), absBit) < 0))
 	{
-		logErr("unable to check abs bits");
+		log.error("unable to check abs bits");
 		return false;
 	}
 
 	// check joystick axes
 	{
-		uint32_t keycodeIdx = 0;
-		constexpr Key axisKeycode[] =
-		{
-			Keycode::JS1_XAXIS_NEG, Keycode::JS1_XAXIS_POS,
-			Keycode::JS1_YAXIS_NEG, Keycode::JS1_YAXIS_POS,
-			Keycode::JS2_XAXIS_NEG, Keycode::JS2_XAXIS_POS,
-			Keycode::JS2_YAXIS_NEG, Keycode::JS2_YAXIS_POS,
-			Keycode::JS3_XAXIS_NEG, Keycode::JS3_XAXIS_POS,
-			Keycode::JS3_YAXIS_NEG, Keycode::JS3_YAXIS_POS,
-			Keycode::JS_POV_XAXIS_NEG, Keycode::JS_POV_XAXIS_POS,
-			Keycode::JS_POV_YAXIS_NEG, Keycode::JS_POV_YAXIS_POS,
-		};
-		const uint8_t stickAxes[] { ABS_X, ABS_Y, ABS_Z, ABS_RX, ABS_RY, ABS_RZ,
-			ABS_HAT0X, ABS_HAT0Y, ABS_HAT1X, ABS_HAT1Y, ABS_HAT2X, ABS_HAT2Y, ABS_HAT3X, ABS_HAT3Y,
-			ABS_RUDDER, ABS_WHEEL };
-		int axes = 0;
+		static constexpr AxisId stickAxes[] { AxisId::X, AxisId::Y, AxisId::Z, AxisId::RX, AxisId::RY, AxisId::RZ,
+			AxisId::HAT0X, AxisId::HAT0Y, AxisId::HAT1X, AxisId::HAT1Y, AxisId::HAT2X, AxisId::HAT2Y, AxisId::HAT3X, AxisId::HAT3Y,
+			AxisId::LTRIGGER, AxisId::RTRIGGER, AxisId::RUDDER, AxisId::WHEEL };
 		for(auto axisId : stickAxes)
 		{
-			if(!isBitSetInArray(absBit, axisId))
+			if(!isBitSetInArray(absBit, (int)axisId))
 				continue;
-			logMsg("joystick axis: %d", axisId);
+			log.info("joystick axis:{}", (int)axisId);
 			struct input_absinfo info;
-			if(ioctl(fd, EVIOCGABS(axisId), &info) < 0)
+			if(ioctl(fd(), EVIOCGABS((int)axisId), &info) < 0)
 			{
 				logErr("error getting absinfo");
 				continue;
 			}
-			logMsg("min: %d max: %d fuzz: %d flat: %d", info.minimum, info.maximum, info.fuzz, info.flat);
-			int size = (info.maximum - info.minimum) + 1;
-			int keyEmuMin = std::round(info.minimum + size/4.);
-			int keyEmuMax = std::round(info.maximum - size/4.);
-			if(size < 8)
+			auto rangeSize = info.maximum - info.minimum;
+			float scale = 2.f / rangeSize;
+			auto &currAxis = axis.emplace_back(axisId, scale);
+			axisRangeOffset[axis.size() - 1] = currAxis.isTrigger() ? 0 : (std::abs(info.minimum) - std::abs(info.maximum)) / 2;
+			log.info("min:{} max:{} fuzz:{} flat:{} range offset:{}", info.minimum, info.maximum, info.fuzz, info.flat,
+				axisRangeOffset[axis.size() - 1]);
+			if(axis.isFull())
 			{
-				// low-res axis, just use the limits directly
-				keyEmuMin = info.minimum;
-				keyEmuMax = info.maximum;
-			}
-			axis[axisId].keyEmu = {keyEmuMin, keyEmuMax,
-				axisKeycode[keycodeIdx], axisKeycode[keycodeIdx+1], axisKeycode[keycodeIdx], axisKeycode[keycodeIdx+1]};
-			axis[axisId].active = 1;
-			logMsg("%d - %d", axis[axisId].keyEmu.lowLimit, axis[axisId].keyEmu.highLimit);
-			axes++;
-			keycodeIdx += 2; // move to the next +/- axis keycode pair
-			if(axes == std::size(axisKeycode)/2)
-			{
-				logMsg("reached maximum joystick axes");
+				log.info("reached maximum joystick axes");
 				break;
 			}
 		}
@@ -236,79 +203,37 @@ bool EvdevInputDevice::setupJoystickBits()
 	return true;
 }
 
-void EvdevInputDevice::addPollEvent(Base::LinuxApplication &app)
+void EvdevInputDevice::addPollEvent(Device &dev, LinuxApplication &app)
 {
-	assert(fd >= 0);
-	fdSrc = {"EvdevInputDevice", fd, {},
-		[this, &app](int fd, int pollEvents)
-		{
-			if(pollEvents & Base::POLLEV_ERR) [[unlikely]]
-			{
-				logMsg("error %d in input fd %d (%s)", errno, fd, name());
-				removeFromSystem(app, fd);
-				return 0;
-			}
-			else
-			{
-				struct input_event event[64];
-				int len;
-				while((len = read(fd, event, sizeof event)) > 0)
-				{
-					uint32_t events = len / sizeof(struct input_event);
-					//logMsg("read %d bytes from input fd %d, %d events", len, this->fd, events);
-					processInputEvents(app, event, events);
-				}
-				if(len == -1 && errno != EAGAIN)
-				{
-					logMsg("error %d reading from input fd %d (%s)", errno, fd, name());
-					removeFromSystem(app, fd);
-					return 0;
-				}
-			}
-			return 1;
-		}};
-}
-
-void EvdevInputDevice::close(Base::LinuxApplication &app)
-{
-	fdSrc.detach();
-	::close(fd);
-	app.removeSystemInputDevice(*this, true);
-}
-
-void EvdevInputDevice::setJoystickAxisAsDpadBits(uint32_t axisMask)
-{
-	Key jsKey[4] {Keycode::JS1_XAXIS_NEG, Keycode::JS1_XAXIS_POS, Keycode::JS1_YAXIS_NEG, Keycode::JS1_YAXIS_POS};
-	Key dpadKey[4] {Keycode::LEFT, Keycode::RIGHT, Keycode::UP, Keycode::DOWN};
-	Key (&setKey)[4] = (axisMask & IG::bit(0)) ? dpadKey : jsKey;
-	axis[ABS_X].keyEmu.lowKey = axis[ABS_X].keyEmu.lowSysKey = setKey[0];
-	axis[ABS_X].keyEmu.highKey = axis[ABS_X].keyEmu.highSysKey = setKey[1];
-	axis[ABS_Y].keyEmu.lowKey = axis[ABS_Y].keyEmu.lowSysKey = setKey[2];
-	axis[ABS_Y].keyEmu.highKey = axis[ABS_Y].keyEmu.highSysKey = setKey[3];
-}
-
-uint32_t EvdevInputDevice::joystickAxisAsDpadBits()
-{
-	return axis[ABS_X].keyEmu.lowKey == Keycode::LEFT;
-}
-
-int EvdevInputDevice::fileDesc() const
-{
-	return fd;
-}
-
-int EvdevInputDevice::identifier() const
-{
-	return id;
-}
-
-static void removeFromSystem(Base::LinuxApplication &app, int fd)
-{
-	if(auto removedDev = IG::moveOutIf(app.evInputDevices(), [&](std::unique_ptr<EvdevInputDevice> &dev){ return dev->fileDesc() == fd; });
-		removedDev)
+	auto &evDev = getAs<EvdevInputDevice>(dev);
+	assert(evDev.fd() >= 0);
+	evDev.fdSrc.setCallback([&dev, &app](int fd, int pollEvents)
 	{
-		removedDev->close(app);
-	}
+		if(pollEvents & pollEventError) [[unlikely]]
+		{
+			log.error("error:{} in input fd:{} ({})", errno, fd, dev.name());
+			app.removeInputDevice(ApplicationContext{static_cast<Application&>(app)}, dev, true);
+			return false;
+		}
+		else
+		{
+			struct input_event event[64];
+			int len;
+			while((len = read(fd, event, sizeof event)) > 0)
+			{
+				uint32_t events = len / sizeof(struct input_event);
+				//logMsg("read %d bytes from input fd %d, %d events", len, this->fd, events);
+				processInputEvents(dev, app, {event, events});
+			}
+			if(len == -1 && errno != EAGAIN)
+			{
+				log.info("error:{} reading from input fd:{} ({})", errno, fd, dev.name());
+				app.removeInputDevice(ApplicationContext{static_cast<Application&>(app)}, dev, true);
+				return false;
+			}
+		}
+		return true;
+	});
 }
 
 static bool devIsGamepad(int fd)
@@ -316,33 +241,36 @@ static bool devIsGamepad(int fd)
 	ulong keyBit[IG::divRoundUp(KEY_MAX, IG::bitSize<ulong>)] {0};
 	if((ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keyBit)), keyBit) < 0))
 	{
-		logErr("unable to check key bits");
+		log.error("unable to check key bits");
 		return false;
 	}
 	for(uint32_t i = BTN_JOYSTICK; i < BTN_DIGI; i++)
 	{
 		if(isBitSetInArray(keyBit, i))
 		{
-			logMsg("has joystick/gamepad button: 0x%X", i);
+			log.info("has joystick/gamepad button:{:X}", i);
 			return true;
 		}
 	}
 	return false;
 }
 
-static bool processDevNode(Base::LinuxApplication &app, const char *path, int id, bool notify)
+static bool isEvdevInputDevice(Input::Device &d)
+{
+	return d.map() == Input::Map::SYSTEM && d.typeFlags().gamepad;
+}
+
+static bool processDevNode(LinuxApplication &app, CStringView path, int id, bool notify)
 {
 	if(access(path, R_OK) != 0)
 	{
-		logMsg("no access to %s", path);
+		logMsg("no access to %s", path.data());
 		return false;
 	}
 
-	auto &evDevice = app.evInputDevices();
-
-	for(const auto &e : evDevice)
+	for(const auto &e : app.inputDevices())
 	{
-		if(e->identifier() == id)
+		if(isEvdevInputDevice(*e) && e->id() == id)
 		{
 			logMsg("id %d is already present", id);
 			return false;
@@ -352,43 +280,36 @@ static bool processDevNode(Base::LinuxApplication &app, const char *path, int id
 	auto fd = open(path, O_RDONLY, 0);
 	if(fd == -1)
 	{
-		logMsg("error opening %s", path);
+		logMsg("error opening %s", path.data());
 		return false;
 	}
 
-	logMsg("checking device @ %s", path);
+	logMsg("checking device @ %s", path.data());
 	if(!devIsGamepad(fd))
 	{
-		logMsg("%s isn't a gamepad", path);
+		logMsg("%s isn't a gamepad", path.data());
 		close(fd);
 		return false;
 	}
-	std::array<char, 80> nameStr{};
+	std::array<char, 80> nameStr{"Unknown"};
 	if(ioctl(fd, EVIOCGNAME(sizeof(nameStr)), nameStr.data()) < 0)
 	{
 		logWarn("unable to get device name");
-		string_copy(nameStr, "Unknown");
 	}
-	auto &evDev = evDevice.emplace_back(std::make_unique<EvdevInputDevice>(id, fd, Device::TYPE_BIT_GAMEPAD, nameStr.data()));
-
-	fd_setNonblock(fd, 1);
-	evDev->addPollEvent(app);
-
-	uint32_t devId = 0;
-	for(auto &e : app.systemInputDevices())
+	struct input_id devInfo{};
+	if(ioctl(fd, EVIOCGID, &devInfo) < 0)
 	{
-		if(e->map() != Map::SYSTEM)
-			continue;
-		if(string_equal(e->name(), evDev->name()) && e->enumId() == devId)
-			devId++;
+		logWarn("unable to get device info");
 	}
-	evDev->setEnumId(devId);
-	app.addSystemInputDevice(*evDev, notify);
-
+	auto vendorProductId = ((devInfo.vendor & 0xFFFF) << 16) | (devInfo.product & 0xFFFF);
+	auto evDev = std::make_unique<Device>(std::in_place_type<EvdevInputDevice>, id, fd, DeviceTypeFlags{.gamepad = true}, nameStr.data(), vendorProductId);
+	fd_setNonblock(fd, 1);
+	EvdevInputDevice::addPollEvent(*evDev, app);
+	app.addInputDevice(ApplicationContext{static_cast<Application&>(app)}, std::move(evDev), notify);
 	return true;
 }
 
-static bool processDevNodeName(const char *name, FS::PathString &path, uint32_t &id)
+static bool processDevNodeName(CStringView name, uint32_t &id)
 {
 	// extract id number from "event*" name and get the full path
 	if(sscanf(name, "event%u", &id) != 1)
@@ -396,13 +317,12 @@ static bool processDevNodeName(const char *name, FS::PathString &path, uint32_t 
 		//logWarn("couldn't extract numeric part of node name: %s", name);
 		return false;
 	}
-	string_printf(path, DEV_NODE_PATH "/%s", name);
 	return true;
 }
 
 }
 
-namespace Base
+namespace IG
 {
 
 void LinuxApplication::initEvdev(EventLoop loop)
@@ -412,9 +332,9 @@ void LinuxApplication::initEvdev(EventLoop loop)
 		int inputDevNotifyFd = inotify_init();
 		if(inputDevNotifyFd >= 0)
 		{
-			auto watch = inotify_add_watch(inputDevNotifyFd, DEV_NODE_PATH, IN_CREATE | IN_ATTRIB);
+			inotify_add_watch(inputDevNotifyFd, DEV_NODE_PATH, IN_CREATE | IN_ATTRIB);
 			fd_setNonblock(inputDevNotifyFd, 1);
-			evdevSrc = {"Evdev Inotify", inputDevNotifyFd, loop,
+			evdevSrc = {inputDevNotifyFd, {.debugLabel = "Evdev Inotify", .eventLoop = loop},
 				[this](int fd, int)
 				{
 					char event[sizeof(struct inotify_event) + 2048];
@@ -430,10 +350,10 @@ void LinuxApplication::initEvdev(EventLoop loop)
 							if(inotifyEv->len > 1)
 							{
 								uint32_t id;
-								FS::PathString path;
-								if(Input::processDevNodeName(inotifyEv->name, path, id))
+								if(Input::processDevNodeName(inotifyEv->name, id))
 								{
-									Input::processDevNode(*this, path.data(), id, true);
+									auto path = FS::pathString(DEV_NODE_PATH, inotifyEv->name);
+									Input::processDevNode(*this, path, id, true);
 								}
 							}
 							len -= inotifyEvSize;
@@ -445,8 +365,9 @@ void LinuxApplication::initEvdev(EventLoop loop)
 							}
 						} while(len);
 					}
-					return 1;
-				}};
+					return true;
+				}
+			};
 		}
 		else
 		{
@@ -455,28 +376,25 @@ void LinuxApplication::initEvdev(EventLoop loop)
 	}
 
 	logMsg("checking device nodes");
-	std::error_code err;
-	for(auto &entry : FS::directory_iterator{DEV_NODE_PATH, err})
+	try
 	{
-		auto filename = entry.name();
-		if(entry.type() != FS::file_type::character || !strstr(filename, "event"))
-			continue;
-		uint32_t id;
-		FS::PathString path;
-		if(!Input::processDevNodeName(filename, path, id))
-			continue;
-		Input::processDevNode(*this, path.data(), id, false);
+		for(auto &entry : FS::directory_iterator{DEV_NODE_PATH})
+		{
+			auto filename = entry.name();
+			if(entry.type() != FS::file_type::character || !filename.contains("event"))
+				continue;
+			uint32_t id;
+			if(!Input::processDevNodeName(filename, id))
+				continue;
+			auto path = FS::pathString(DEV_NODE_PATH, filename);
+			Input::processDevNode(*this, path, id, false);
+		}
 	}
-	if(err)
+	catch(...)
 	{
 		logErr("can't open " DEV_NODE_PATH);
 		return;
 	}
-}
-
-std::vector<std::unique_ptr<Input::EvdevInputDevice>> &LinuxApplication::evInputDevices()
-{
-	return evDevice;
 }
 
 }

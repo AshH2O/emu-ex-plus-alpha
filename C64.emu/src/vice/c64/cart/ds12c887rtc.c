@@ -94,7 +94,8 @@ static io_source_t ds12c887rtc_device = {
     ds12c887rtc_dump,           /* device state information dump function */
     CARTRIDGE_DS12C887RTC,      /* cartridge ID */
     IO_PRIO_NORMAL,             /* normal priority, device read needs to be checked for collisions */
-    0                           /* insertion order, gets filled in by the registration function */
+    0,                          /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE              /* NO mirroring */
 };
 
 static io_source_list_t *ds12c887rtc_list_item = NULL;
@@ -399,7 +400,7 @@ int ds12c887rtc_cmdline_options_init(void)
    DWORD | base     | base address of the RTC
  */
 
-static char snap_module_name[] = "CARTDS12C887RTC";
+static const char snap_module_name[] = "CARTDS12C887RTC";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   0
 

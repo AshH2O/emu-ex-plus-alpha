@@ -66,6 +66,7 @@ struct image_contents_s {
     uint8_t name[IMAGE_CONTENTS_NAME_T64_LEN + 1]; /**< disk/tape name in PETSCII */
     uint8_t id[IMAGE_CONTENTS_ID_LEN + 1];         /**< disk ID */
     int blocks_free;   /**< blocks free: -1: No free space information.  */
+    int partition; /**< partition number, usually 0 */
     image_contents_file_list_t *file_list;  /**< list of directory entries */
 };
 typedef struct image_contents_s image_contents_t;
@@ -82,25 +83,24 @@ typedef struct image_contents_screencode_s image_contents_screencode_t;
 
 /* ------------------------------------------------------------------------- */
 
-extern void image_contents_destroy(image_contents_t *contents);
-extern image_contents_t *image_contents_new(void);
+void image_contents_destroy(image_contents_t *contents);
+image_contents_t *image_contents_new(void);
 
-extern image_contents_screencode_t *image_contents_to_screencode (image_contents_t *contents);
-extern void image_contents_screencode_destroy(image_contents_screencode_t *c);
+image_contents_screencode_t *image_contents_to_screencode (image_contents_t *contents);
+void image_contents_screencode_destroy(image_contents_screencode_t *c);
 
 /* These must be the same as the CONVERT_TO_* defines in charset.h, as
    they are used interchangeably, although their meaning is not identical */
-#define IMAGE_CONTENTS_STRING_PETSCII 0  /**< return string in PETSCII form */
-#define IMAGE_CONTENTS_STRING_ASCII   1  /**< convert string to ASCII */
-#define IMAGE_CONTENTS_STRING_UTF8    2  /**< convert string to UTF-8 */
+#define IMAGE_CONTENTS_STRING_PETSCII CONVERT_TO_PETSCII  /**< return string in PETSCII form */
+#define IMAGE_CONTENTS_STRING_ASCII   CONVERT_TO_ASCII    /**< convert string to ASCII */
+#define IMAGE_CONTENTS_STRING_UTF8    CONVERT_TO_UTF8     /**< convert string to UTF-8 */
 
-extern char *image_contents_to_string(image_contents_t * contents, char out_charset);
-extern char *image_contents_file_to_string(image_contents_file_list_t * p, char out_charset);
-extern char *image_contents_filename_to_string(image_contents_file_list_t * p, char out_charset);
-extern char *image_contents_filetype_to_string(image_contents_file_list_t * p, char out_charset);
-extern char *image_contents_filename_by_number(image_contents_t *contents,
-                                               unsigned int file_index);
+char *image_contents_to_string(image_contents_t * contents, char out_charset);
+char *image_contents_file_to_string(image_contents_file_list_t * p, char out_charset);
+char *image_contents_filename_to_string(image_contents_file_list_t * p, char out_charset);
+char *image_contents_filetype_to_string(image_contents_file_list_t * p, char out_charset);
+char *image_contents_filename_by_number(image_contents_t *contents, unsigned int file_index);
 
-extern image_contents_t *diskcontents_iec_read(unsigned int unit);
+image_contents_t *diskcontents_iec_read(unsigned int unit);
 
 #endif

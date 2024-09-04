@@ -36,11 +36,11 @@
 #include "cardkey.h"
 #include "cartridge.h"
 #include "cartio.h"
-#include "clkguard.h"
 #include "coplin_keypad.h"
 #include "cx21.h"
 #include "cx85.h"
 #include "datasette.h"
+#include "datasette-sound.h"
 #include "debug.h"
 #include "diskimage.h"
 #include "drive-cmdline-options.h"
@@ -53,8 +53,10 @@
 #include "gfxoutput.h"
 #include "iecdrive.h"
 #include "imagecontents.h"
+#include "inception.h"
 #include "init.h"
 #include "joyport.h"
+#include "joyport_io_sim.h"
 #include "joystick.h"
 #include "kbdbuf.h"
 #include "keyboard.h"
@@ -68,9 +70,10 @@
 #include "mem.h"
 #include "monitor.h"
 #include "network.h"
-#include "paperclip64.h"
+#include "ninja_snespad.h"
 #include "parallel.h"
 #include "printer.h"
+#include "protopad.h"
 #include "rs232drv.h"
 #include "rsuser.h"
 #include "rushware_keypad.h"
@@ -78,21 +81,31 @@
 #include "sampler2bit.h"
 #include "sampler4bit.h"
 #include "screenshot.h"
+#include "script64_dongle.h"
 #include "serial.h"
 #include "sid.h"
 #include "sidcart.h"
 #include "sid-cmdline-options.h"
 #include "sid-resources.h"
 #include "sound.h"
+#include "spaceballs.h"
 #include "tape.h"
 #include "tapeport.h"
 #include "traps.h"
+#include "trapthem_snespad.h"
 #include "types.h"
 #include "userport.h"
 #include "userport_dac.h"
+#include "userport_hummer_joystick.h"
+#include "userport_io_sim.h"
 #include "userport_joystick.h"
+#include "userport_petscii_snespad.h"
 #include "userport_rtc_58321a.h"
 #include "userport_rtc_ds1307.h"
+#include "userport_spt_joystick.h"
+#include "userport_synergy_joystick.h"
+#include "userport_wic64.h"
+#include "userport_woj_joystick.h"
 #include "via.h"
 #include "vic.h"
 #include "vic-mem.h"
@@ -119,7 +132,6 @@
 #include "lightpen.h"
 #include "mouse.h"
 #endif
-
 
 /** \brief  Delay in seconds before pasting -keybuf argument into the buffer
  */
@@ -366,11 +378,17 @@ static uint8_t via1_via2_peek(uint16_t addr)
     return retval;
 }
 
+/* FIXME: the upper 4 bits of the mask are used to indicate the register size if not equal to the mask,
+          this is done as a temporary HACK to keep mirrors working and still get the correct register size,
+          this needs to be fixed properly after the 3.6 release */
 static io_source_t vic_device = {
     "VIC",                 /* name of the chip */
     IO_DETACH_NEVER,       /* chip is never involved in collisions, so no detach */
     IO_DETACH_NO_RESOURCE, /* does not use a resource for detach */
+#if 0
     0x9000, 0x90ff, 0x3f,  /* address range for the device, must include A5/A4 */
+#endif
+    0x9000, 0x90ff, 0xf03f,  /* address range for the device, must include A5/A4 */
     1,                     /* read is always valid */
     vic_via1_via2_store,   /* store function */
     NULL,                  /* NO poke function */
@@ -379,14 +397,21 @@ static io_source_t vic_device = {
     vic_dump,              /* chip state information dump function */
     IO_CART_ID_NONE,       /* not a cartridge */
     IO_PRIO_HIGH,          /* high priority, chip and mirrors never involved in collisions */
-    0                      /* insertion order, gets filled in by the registration function */
+    0,                     /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE         /* NO mirroring */
 };
 
+/* FIXME: the upper 4 bits of the mask are used to indicate the register size if not equal to the mask,
+          this is done as a temporary HACK to keep mirrors working and still get the correct register size,
+          this needs to be fixed properly after the 3.6 release */
 static io_source_t via2_device = {
     "VIA2",                /* name of the chip */
     IO_DETACH_NEVER,       /* chip is never involved in collisions, so no detach */
     IO_DETACH_NO_RESOURCE, /* does not use a resource for detach */
+#if 0
     0x9110, 0x93ff, 0x3f,  /* address range for the device, must include A5/A4 */
+#endif
+    0x9110, 0x93ff, 0xf03f,  /* address range for the device, must include A5/A4 */
     1,                     /* read is always valid */
     via1_via2_store,       /* store function */
     NULL,                  /* NO poke function */
@@ -395,14 +420,21 @@ static io_source_t via2_device = {
     via2_dump,             /* chip state information dump function */
     IO_CART_ID_NONE,       /* not a cartridge */
     IO_PRIO_HIGH,          /* high priority, chip and mirrors never involved in collisions */
-    0                      /* insertion order, gets filled in by the registration function */
+    0,                     /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE         /* NO mirroring */
 };
 
+/* FIXME: the upper 4 bits of the mask are used to indicate the register size if not equal to the mask,
+          this is done as a temporary HACK to keep mirrors working and still get the correct register size,
+          this needs to be fixed properly after the 3.6 release */
 static io_source_t via1_device = {
     "VIA1",                /* name of the chip */
     IO_DETACH_NEVER,       /* chip is never involved in collisions, so no detach */
     IO_DETACH_NO_RESOURCE, /* does not use a resource for detach */
+#if 0
     0x9120, 0x93ff, 0x3f,  /* address range for the device, must include A5/A4 */
+#endif
+    0x9120, 0x93ff, 0xf03f,  /* address range for the device, must include A5/A4 */
     1,                     /* read is always valid */
     via1_via2_store,       /* store function */
     NULL,                  /* NO poke function */
@@ -411,7 +443,8 @@ static io_source_t via1_device = {
     via1_dump,             /* chip state information dump function */
     IO_CART_ID_NONE,       /* not a cartridge */
     IO_PRIO_HIGH,          /* high priority, chip and mirrors never involved in collisions */
-    0                      /* insertion order, gets filled in by the registration function */
+    0,                     /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE         /* NO mirroring */
 };
 
 static io_source_list_t *vic_list_item = NULL;
@@ -431,20 +464,89 @@ static joyport_port_props_t control_port = {
     "Control port",
     1,  /* has a potentiometer connected to this port */
     1,  /* has lightpen support on this port */
+    1,  /* has joystick adapter on this port */
+    1,  /* has output support on this port */
+    1,  /* has +5vdc line on this port */
     1   /* port is always active */
 };
 
-static joyport_port_props_t userport_joy_control_port_1 = {
-    "Userport joystick adapter port 1",
+static joyport_port_props_t joy_adapter_control_port_1 = {
+    "Joystick adapter port 1",
     0,  /* has NO potentiometer connected to this port */
     0,  /* has NO lightpen support on this port */
+    0,  /* has NO joystick adapter on this port */
+    1,  /* has output support on this port */
+    0,  /* default for joystick adapter ports is NO +5vdc line on this port, can be changed by the joystick adapter when activated */
     0   /* port can be switched on/off */
 };
 
-static joyport_port_props_t userport_joy_control_port_2 = {
-    "Userport joystick adapter port 2",
+static joyport_port_props_t joy_adapter_control_port_2 = {
+    "Joystick adapter port 2",
     0,  /* has NO potentiometer connected to this port */
     0,  /* has NO lightpen support on this port */
+    0,  /* has NO joystick adapter on this port */
+    1,  /* has output support on this port */
+    0,  /* default for joystick adapter ports is NO +5vdc line on this port, can be changed by the joystick adapter when activated */
+    0   /* port can be switched on/off */
+};
+
+static joyport_port_props_t joy_adapter_control_port_3 = {
+    "Joystick adapter port 3",
+    0,  /* has NO potentiometer connected to this port */
+    0,  /* has NO lightpen support on this port */
+    0,  /* has NO joystick adapter on this port */
+    1,  /* has output support on this port */
+    0,  /* default for joystick adapter ports is NO +5vdc line on this port, can be changed by the joystick adapter when activated */
+    0   /* port can be switched on/off */
+};
+
+static joyport_port_props_t joy_adapter_control_port_4 = {
+    "Joystick adapter port 4",
+    0,  /* has NO potentiometer connected to this port */
+    0,  /* has NO lightpen support on this port */
+    0,  /* has NO joystick adapter on this port */
+    1,  /* has output support on this port */
+    0,  /* default for joystick adapter ports is NO +5vdc line on this port, can be changed by the joystick adapter when activated */
+    0   /* port can be switched on/off */
+};
+
+static joyport_port_props_t joy_adapter_control_port_5 = {
+    "Joystick adapter port 5",
+    0,  /* has NO potentiometer connected to this port */
+    0,  /* has NO lightpen support on this port */
+    0,  /* has NO joystick adapter on this port */
+    1,  /* has output support on this port */
+    0,  /* default for joystick adapter ports is NO +5vdc line on this port, can be changed by the joystick adapter when activated */
+    0   /* port can be switched on/off */
+};
+
+static joyport_port_props_t joy_adapter_control_port_6 = {
+    "Joystick adapter port 6",
+    0,  /* has NO potentiometer connected to this port */
+    0,  /* has NO lightpen support on this port */
+    0,  /* has NO joystick adapter on this port */
+    1,  /* has output support on this port */
+    0,  /* default for joystick adapter ports is NO +5vdc line on this port, can be changed by the joystick adapter when activated */
+    0   /* port can be switched on/off */
+};
+
+static joyport_port_props_t joy_adapter_control_port_7 = {
+    "Joystick adapter port 7",
+    0,  /* has NO potentiometer connected to this port */
+    0,  /* has NO lightpen support on this port */
+    0,  /* has NO joystick adapter on this port */
+    1,  /* has output support on this port */
+    0,  /* default for joystick adapter ports is NO +5vdc line on this port, can be changed by the joystick adapter when activated */
+    0   /* port can be switched on/off */
+};
+
+static joyport_port_props_t joy_adapter_control_port_8 = {
+    "Joystick adapter port 8",
+    0,  /* has NO potentiometer connected to this port */
+    0,  /* has NO lightpen support on this port */
+    0,  /* has NO joystick adapter on this port */
+    1,  /* has output support on this port */
+    0,  /* default for joystick adapter ports is NO +5vdc line on this port, can be changed by the joystick adapter when activated */
     0   /* port can be switched on/off */
 };
 
@@ -453,10 +555,28 @@ static int init_joyport_ports(void)
     if (joyport_port_register(JOYPORT_1, &control_port) < 0) {
         return -1;
     }
-    if (joyport_port_register(JOYPORT_3, &userport_joy_control_port_1) < 0) {
+    if (joyport_port_register(JOYPORT_3, &joy_adapter_control_port_1) < 0) {
         return -1;
     }
-    return joyport_port_register(JOYPORT_4, &userport_joy_control_port_2);
+    if (joyport_port_register(JOYPORT_4, &joy_adapter_control_port_2) < 0) {
+        return -1;
+    }
+    if (joyport_port_register(JOYPORT_5, &joy_adapter_control_port_3) < 0) {
+        return -1;
+    }
+    if (joyport_port_register(JOYPORT_6, &joy_adapter_control_port_4) < 0) {
+        return -1;
+    }
+    if (joyport_port_register(JOYPORT_7, &joy_adapter_control_port_5) < 0) {
+        return -1;
+    }
+    if (joyport_port_register(JOYPORT_8, &joy_adapter_control_port_6) < 0) {
+        return -1;
+    }
+    if (joyport_port_register(JOYPORT_9, &joy_adapter_control_port_7) < 0) {
+        return -1;
+    }
+    return joyport_port_register(JOYPORT_10, &joy_adapter_control_port_8);
 }
 
 /* VIC20-specific resource initialization.  This is called before
@@ -483,6 +603,10 @@ int machine_resources_init(void)
         init_resource_fail("rs232drv");
         return -1;
     }
+    if (userport_resources_init() < 0) {
+        init_resource_fail("userport devices");
+        return -1;
+    }
     if (rsuser_resources_init() < 0) {
         init_resource_fail("rsuser");
         return -1;
@@ -499,6 +623,12 @@ int machine_resources_init(void)
         init_resource_fail("userport printer");
         return -1;
     }
+#ifdef HAVE_LIBCURL
+    if (userport_wic64_resources_init() < 0) {
+        init_resource_fail("userport wic20");
+        return -1;
+    }
+#endif
     if (init_joyport_ports() < 0) {
         init_resource_fail("joyport ports");
         return -1;
@@ -507,52 +637,8 @@ int machine_resources_init(void)
         init_resource_fail("joyport devices");
         return -1;
     }
-    if (joyport_sampler2bit_resources_init() < 0) {
-        init_resource_fail("joyport 2bit sampler");
-        return -1;
-    }
-    if (joyport_sampler4bit_resources_init() < 0) {
-        init_resource_fail("joyport 4bit sampler");
-        return -1;
-    }
-    if (joyport_bbrtc_resources_init() < 0) {
-        init_resource_fail("joyport bbrtc");
-        return -1;
-    }
-    if (joyport_paperclip64_resources_init() < 0) {
-        init_resource_fail("joyport paperclip64 dongle");
-        return -1;
-    }
-    if (joyport_coplin_keypad_resources_init() < 0) {
-        init_resource_fail("joyport coplin keypad");
-        return -1;
-    }
-    if (joyport_cx21_resources_init() < 0) {
-        init_resource_fail("joyport cx21 keypad");
-        return -1;
-    }
-    if (joyport_cx85_resources_init() < 0) {
-        init_resource_fail("joyport cx85 keypad");
-        return -1;
-    }
-    if (joyport_rushware_keypad_resources_init() < 0) {
-        init_resource_fail("joyport rushware keypad");
-        return -1;
-    }
-    if (joyport_cardkey_resources_init() < 0) {
-        init_resource_fail("joyport cardkey keypad");
-        return -1;
-    }
     if (joystick_resources_init() < 0) {
         init_resource_fail("joystick");
-        return -1;
-    }
-    if (userport_resources_init() < 0) {
-        init_resource_fail("userport devices");
-        return -1;
-    }
-    if (gfxoutput_resources_init() < 0) {
-        init_resource_fail("gfxoutput");
         return -1;
     }
     if (sampler_resources_init() < 0) {
@@ -601,31 +687,12 @@ int machine_resources_init(void)
     }
 #endif
 #ifdef HAVE_MOUSE
-#ifdef HAVE_LIGHTPEN
-    if (lightpen_resources_init() < 0) {
-        init_resource_fail("lightpen");
-        return -1;
-    }
-#endif
     if (mouse_resources_init() < 0) {
         init_resource_fail("mouse");
         return -1;
     }
 #endif
-    if (drive_resources_init() < 0) {
-        init_resource_fail("drive");
-        return -1;
-    }
-    /*
-     * This needs to be called before tapeport_resources_init(), otherwise
-     * the tapecart will fail to initialize due to the Datasette resource
-     * appearing after the Tapecart resources
-     */
-    if (datasette_resources_init() < 0) {
-        init_resource_fail("datasette");
-        return -1;
-    }
-    if (tapeport_resources_init() < 0) {
+    if (tapeport_resources_init(1) < 0) {
         init_resource_fail("tapeport");
         return -1;
     }
@@ -643,8 +710,32 @@ int machine_resources_init(void)
         init_resource_fail("vic20 ieee488");
         return -1;
     }
-    if (userport_joystick_resources_init() < 0) {
-        init_resource_fail("userport joystick");
+    if (userport_joystick_cga_resources_init() < 0) {
+        init_resource_fail("userport cga joystick");
+        return -1;
+    }
+    if (userport_joystick_pet_resources_init() < 0) {
+        init_resource_fail("userport pet joystick");
+        return -1;
+    }
+    if (userport_joystick_hummer_resources_init() < 0) {
+        init_resource_fail("userport hummer joystick");
+        return -1;
+    }
+    if (userport_joystick_oem_resources_init() < 0) {
+        init_resource_fail("userport oem joystick");
+        return -1;
+    }
+    if (userport_joystick_synergy_resources_init() < 0) {
+        init_resource_fail("userport synergy joystick");
+        return -1;
+    }
+    if (userport_joystick_woj_resources_init() < 0) {
+        init_resource_fail("userport woj joystick");
+        return -1;
+    }
+    if (userport_spt_joystick_resources_init() < 0) {
+        init_resource_fail("userport stupid pet tricks joystick");
         return -1;
     }
     if (userport_dac_resources_init() < 0) {
@@ -659,8 +750,25 @@ int machine_resources_init(void)
         init_resource_fail("userport rtc (ds1307)");
         return -1;
     }
+    if (userport_petscii_snespad_resources_init() < 0) {
+        init_resource_fail("userport petscii snes pad");
+        return -1;
+    }
+    if (userport_io_sim_resources_init() < 0) {
+        init_resource_fail("userport I/O simulation");
+        return -1;
+    }
     if (cartio_resources_init() < 0) {
         init_resource_fail("cartio");
+        return -1;
+    }
+    /* Must be called after initializing cartridge resources. Some carts provide
+     * additional busses.  The drive resources check the validity of the drive
+     * type against the available busses on the system.  So if you had e.g. an
+     * IEEE cart enabled and an IEEE defined, on startup the drive code would
+     * reset the drive type to the default for the IEC bus. */
+    if (drive_resources_init() < 0) {
+        init_resource_fail("drive");
         return -1;
     }
     return 0;
@@ -683,9 +791,11 @@ void machine_resources_shutdown(void)
     sampler_resources_shutdown();
     userport_rtc_58321a_resources_shutdown();
     userport_rtc_ds1307_resources_shutdown();
-    userport_resources_shutdown();
-    joyport_bbrtc_resources_shutdown();
+#ifdef HAVE_LIBCURL
+    userport_wic64_resources_shutdown();
+#endif
     tapeport_resources_shutdown();
+    joyport_resources_shutdown();
 }
 
 /* VIC20-specific command-line option initialization.  */
@@ -731,20 +841,12 @@ int machine_cmdline_options_init(void)
         init_cmdline_options_fail("joyport");
         return -1;
     }
-    if (joyport_bbrtc_cmdline_options_init() < 0) {
-        init_cmdline_options_fail("bbrtc");
-        return -1;
-    }
     if (joystick_cmdline_options_init() < 0) {
         init_cmdline_options_fail("joystick");
         return -1;
     }
     if (userport_cmdline_options_init() < 0) {
         init_cmdline_options_fail("userport");
-        return -1;
-    }
-    if (gfxoutput_cmdline_options_init() < 0) {
-        init_cmdline_options_fail("gfxoutput");
         return -1;
     }
     if (sampler_cmdline_options_init() < 0) {
@@ -805,10 +907,6 @@ int machine_cmdline_options_init(void)
         init_cmdline_options_fail("tapeport");
         return -1;
     }
-    if (datasette_cmdline_options_init() < 0) {
-        init_cmdline_options_fail("datasette");
-        return -1;
-    }
     if (cartridge_cmdline_options_init() < 0) {
         init_cmdline_options_fail("cartridge");
         return -1;
@@ -823,14 +921,6 @@ int machine_cmdline_options_init(void)
         init_cmdline_options_fail("vic20 ieee488");
         return -1;
     }
-    if (userport_joystick_cmdline_options_init() < 0) {
-        init_cmdline_options_fail("userport joystick");
-        return -1;
-    }
-    if (userport_dac_cmdline_options_init() < 0) {
-        init_cmdline_options_fail("userport dac");
-        return -1;
-    }
     if (userport_rtc_58321a_cmdline_options_init() < 0) {
         init_cmdline_options_fail("userport rtc (58321a)");
         return -1;
@@ -839,6 +929,12 @@ int machine_cmdline_options_init(void)
         init_cmdline_options_fail("userport rtc (ds1307)");
         return -1;
     }
+#ifdef HAVE_LIBCURL
+    if (userport_wic64_cmdline_options_init() < 0) {
+        init_cmdline_options_fail("userport wic64");
+        return -1;
+    }
+#endif
     if (cartio_cmdline_options_init() < 0) {
         init_cmdline_options_fail("cartio");
         return -1;
@@ -850,7 +946,7 @@ static void vic20_monitor_init(void)
 {
     unsigned int dnr;
     monitor_cpu_type_t asm6502, asmR65C02;
-    monitor_interface_t *drive_interface_init[DRIVE_NUM];
+    monitor_interface_t *drive_interface_init[NUM_DISK_UNITS];
     monitor_cpu_type_t *asmarray[3];
 
     asmarray[0] = &asm6502;
@@ -860,7 +956,7 @@ static void vic20_monitor_init(void)
     asm6502_init(&asm6502);
     asmR65C02_init(&asmR65C02);
 
-    for (dnr = 0; dnr < DRIVE_NUM; dnr++) {
+    for (dnr = 0; dnr < NUM_DISK_UNITS; dnr++) {
         drive_interface_init[dnr] = drive_cpu_monitor_interface_get(dnr);
     }
 
@@ -878,15 +974,13 @@ void machine_setup_context(void)
     machine_printer_setup_context(&machine_context);
 }
 
-void machine_handle_pending_alarms(int num_write_cycles)
+void machine_handle_pending_alarms(CLOCK num_write_cycles)
 {
 }
 
 /* VIC20-specific initialization.  */
 int machine_specific_init(void)
 {
-    int delay;
-
     vic20_log = log_open("VIC20");
 
     if (mem_load() < 0) {
@@ -928,11 +1022,7 @@ int machine_specific_init(void)
     disk_image_init();
 
     /* Initialize autostart.  */
-    resources_get_int("AutostartDelay", &delay);
-    if (delay == 0) {
-        delay = 3; /* default */
-    }
-    autostart_init((CLOCK)(delay * VIC20_PAL_RFSH_PER_SEC * VIC20_PAL_CYCLES_PER_RFSH), 1);
+    autostart_init(3, 1);
 
     /* Pre-init VIC20-specific parts of the menus before vic_init()
        creates a canvas window with a menubar at the top. */
@@ -971,11 +1061,13 @@ int machine_specific_init(void)
     userport_dac_sound_chip_init();
 
     drive_sound_init();
+    datasette_sound_init();
     video_sound_init();
 
     /* Initialize sound.  Notice that this does not really open the audio
        device yet.  */
-    sound_init(machine_timing.cycles_per_sec, machine_timing.cycles_per_rfsh);
+    sound_init((unsigned int)machine_timing.cycles_per_sec,
+               (unsigned int)machine_timing.cycles_per_rfsh);
     fmopl_set_machine_parameter(machine_timing.cycles_per_sec);
 
     /* Initialize keyboard buffer.  */
@@ -1025,6 +1117,8 @@ int machine_specific_init(void)
 /* VIC20-specific reset sequence.  */
 void machine_specific_reset(void)
 {
+    userport_reset_start();
+
     serial_traps_reset();
 
     viacore_reset(machine_context.via1);
@@ -1032,11 +1126,13 @@ void machine_specific_reset(void)
     vic_reset();
     sid_reset();
 
+    /* These calls must be before the VIA initialization */
+    rs232drv_reset();
+    userport_reset();
+
     viacore_reset(machine_context.ieeevia1);
     viacore_reset(machine_context.ieeevia2);
 
-    rs232drv_reset();
-    rsuser_reset();
 #ifdef HAVE_MIDI
     midi_reset();
 #endif
@@ -1048,16 +1144,23 @@ void machine_specific_reset(void)
     datasette_reset();
 
     sampler_reset();
+
+    userport_reset_end();
 }
 
+/* VIC20-specific powerup/hardreset  */
 void machine_specific_powerup(void)
 {
+    cartridge_powerup();
+    userport_powerup();
+    tapeport_powerup();
+    joyport_powerup();
 }
 
 void machine_specific_shutdown(void)
 {
     /* and the tape */
-    tape_image_detach_internal(1);
+    tape_image_detach_internal(TAPEPORT_PORT_1 + 1);
 
     /* and cartridge */
     cartridge_detach_image(-1);
@@ -1074,6 +1177,8 @@ void machine_specific_shutdown(void)
     /* close the video chip(s) */
     vic_shutdown();
 
+    sidcart_cmdline_options_shutdown();
+
     if (!console_mode) {
         vic20ui_shutdown();
     }
@@ -1084,19 +1189,9 @@ void machine_specific_shutdown(void)
 /* This hook is called at the end of every frame.  */
 static void machine_vsync_hook(void)
 {
-    CLOCK sub;
-
     drive_vsync_hook();
 
-    autostart_advance();
-
     screenshot_record();
-
-    sub = clk_guard_prevent_overflow(maincpu_clk_guard);
-
-    /* The drive has to deal both with our overflowing and its own one, so
-       it is called even when there is no overflowing in the main CPU.  */
-    drive_cpu_prevent_clk_overflow_all(sub);
 }
 
 void machine_set_restore_key(int v)
@@ -1130,7 +1225,7 @@ void machine_get_line_cycle(unsigned int *line, unsigned int *cycle, int *half_c
     *half_cycle = (int)-1;
 }
 
-void machine_change_timing(int timeval, int border_mode)
+void machine_change_timing(int timeval, int powerfreq, int border_mode)
 {
     switch (timeval) {
         case MACHINE_SYNC_PAL:
@@ -1139,7 +1234,7 @@ void machine_change_timing(int timeval, int border_mode)
             machine_timing.rfsh_per_sec = VIC20_PAL_RFSH_PER_SEC;
             machine_timing.cycles_per_line = VIC20_PAL_CYCLES_PER_LINE;
             machine_timing.screen_lines = VIC20_PAL_SCREEN_LINES;
-            machine_timing.power_freq = 50;
+            machine_timing.power_freq = powerfreq;
             break;
         case MACHINE_SYNC_NTSC:
             machine_timing.cycles_per_sec = VIC20_NTSC_CYCLES_PER_SEC;
@@ -1147,7 +1242,7 @@ void machine_change_timing(int timeval, int border_mode)
             machine_timing.rfsh_per_sec = VIC20_NTSC_RFSH_PER_SEC;
             machine_timing.cycles_per_line = VIC20_NTSC_CYCLES_PER_LINE;
             machine_timing.screen_lines = VIC20_NTSC_SCREEN_LINES;
-            machine_timing.power_freq = 60;
+            machine_timing.power_freq = powerfreq;
             break;
         default:
             log_error(vic20_log, "Unknown machine timing.");
@@ -1163,17 +1258,16 @@ void machine_change_timing(int timeval, int border_mode)
     drive_set_machine_parameter(machine_timing.cycles_per_sec);
     serial_iec_device_set_machine_parameter(machine_timing.cycles_per_sec);
 #ifdef HAVE_MOUSE
-    neos_mouse_set_machine_parameter(machine_timing.cycles_per_sec);
+    mouse_set_machine_parameter(machine_timing.cycles_per_sec);
 #endif
-    clk_guard_set_clk_base(maincpu_clk_guard, machine_timing.cycles_per_rfsh);
 
     vic_change_timing(&machine_timing, border_mode);
 
     fmopl_set_machine_parameter(machine_timing.cycles_per_sec);
 
-    mem_patch_kernal();
+    rsuser_change_timing(machine_timing.cycles_per_sec);
 
-    machine_trigger_reset(MACHINE_RESET_MODE_HARD);
+    machine_trigger_reset(MACHINE_RESET_MODE_POWER_CYCLE);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1243,7 +1337,17 @@ uint8_t machine_tape_behaviour(void)
 
 int machine_addr_in_ram(unsigned int addr)
 {
-    return (addr < 0xc000) ? 1 : 0;
+    if (addr >= 0x73 && addr <= 0x8a) {
+        /* CHRGET zero page routine */
+        return 0;
+    }
+
+    if (addr >= 0xc000) {
+        /* ROM */
+        return 0;
+    }
+
+    return 1;
 }
 
 const char *machine_get_name(void)
@@ -1263,7 +1367,8 @@ static userport_port_props_t userport_props = {
     0,                       /* port does NOT have the pa3 pin */
     vic20_userport_set_flag, /* port has the flag pin, set flag function */
     0,                       /* port does NOT have the pc pin */
-    0                        /* port does NOT have the cnt1, cnt2 and sp pins */
+    1,                       /* port does have the cnt1, cnt2 and sp pins */
+    1                        /* port has the reset pin */
 };
 
 int machine_register_userport(void)

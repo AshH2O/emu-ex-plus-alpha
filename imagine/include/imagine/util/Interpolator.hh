@@ -15,8 +15,8 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/util/typeTraits.hh>
-#include <chrono>
+#include <imagine/util/used.hh>
+#include <imagine/time/Time.hh>
 #include <cmath>
 
 namespace IG
@@ -37,40 +37,48 @@ enum class InterpolatorType : uint8_t
 	EASEOUTEXPO,
 };
 
-template <class T, class Time = std::chrono::nanoseconds, InterpolatorType INTERPOLATOR_TYPE = InterpolatorType::UNSET>
+template <class T>
+concept FloatScalable =
+	requires(T &&v, float scale)
+	{
+		v * scale;
+		v / scale;
+	};
+
+template <FloatScalable T, ChronoTimePoint TimePoint = SteadyClockTimePoint,
+		InterpolatorType INTERPOLATOR_TYPE = InterpolatorType::UNSET>
 class Interpolator
 {
 public:
-	constexpr Interpolator() {}
+	constexpr Interpolator() = default;
 
-	constexpr Interpolator(T start, T dest, InterpolatorType type, Time startTime, Time destTime):
-		startTime{startTime},
-		destTime{destTime},
+	constexpr Interpolator(T start, T end, InterpolatorType type, TimePoint startTime, TimePoint endTime):
+		startTime_{startTime},
+		endTime_{endTime},
 		startVal{start},
-		destVal{dest},
-		startDestValSize{destVal - startVal},
-		type{type}
-	{}
+		endVal{end},
+		endValDiff{endVal - startVal},
+		type{type} {}
 
-	bool update(Time currentTime, T &val) const
+	bool update(TimePoint currentTime, T &val) const
 	{
-		if(currentTime >= destTime)
+		if(currentTime >= endTime_)
 		{
-			val = destVal;
+			val = endVal;
 			return false;
 		}
 		else
 		{
-			float t = (float)(currentTime - startTime).count();
-			float d = (float)(destTime - startTime).count();
-			float b = startVal;
-			float c = startDestValSize;
+			float t = (float)(currentTime - startTime_).count();
+			float d = (float)(endTime_ - startTime_).count();
+			auto b = startVal;
+			auto c = endValDiff;
 			val = getFormula(type, t, b, d, c);
 			return true;
 		}
 	}
 
-	static float getFormula(InterpolatorType type, float t, float b, float d, float c)
+	static T getFormula(InterpolatorType type, float t, T b, float d, T c)
 	{
 		float t1;
 		switch(type)
@@ -143,54 +151,54 @@ public:
 		}
 	}
 
-	Time duration() const
-	{
-		return destTime - startTime;
-	}
+	constexpr auto duration() const { return endTime_ - startTime_; }
+	constexpr TimePoint startTime() const { return startTime_; }
+	constexpr TimePoint endTime() const { return endTime_; }
 
 protected:
-	Time startTime{};
-	Time destTime{};
+	TimePoint startTime_{};
+	TimePoint endTime_{};
 	T startVal{};
-	T destVal{};
-	T startDestValSize{};
-	IG_enableMemberIfOrConstant(INTERPOLATOR_TYPE == InterpolatorType::UNSET,
-		InterpolatorType, INTERPOLATOR_TYPE, type){InterpolatorType::LINEAR};
+	T endVal{};
+	T endValDiff{};
+	ConditionalMemberOr<INTERPOLATOR_TYPE == InterpolatorType::UNSET,
+		InterpolatorType, INTERPOLATOR_TYPE> type{InterpolatorType::LINEAR};
 };
 
-template <class T, class Time = std::chrono::nanoseconds, InterpolatorType INTERPOLATOR_TYPE = InterpolatorType::UNSET>
-class InterpolatorValue : public Interpolator<T, Time, INTERPOLATOR_TYPE>
+template <class T, ChronoTimePoint TimePoint = SteadyClockTimePoint, InterpolatorType INTERPOLATOR_TYPE = InterpolatorType::UNSET>
+class InterpolatorValue : public Interpolator<T, TimePoint, INTERPOLATOR_TYPE>
 {
 public:
 	struct AbsoluteTimeInit{};
+	using InterpolatorBase = Interpolator<T, TimePoint, INTERPOLATOR_TYPE>;
+	T val{};
 
-	constexpr InterpolatorValue() {}
+	constexpr InterpolatorValue() = default;
 
-	template<class Time1, class Time2>
-	constexpr InterpolatorValue(T start, T dest, InterpolatorType type, Time1 startTime, Time2 duration):
-		InterpolatorValue{start, dest, type, startTime, startTime + duration, AbsoluteTimeInit{}}
-	{}
+	constexpr InterpolatorValue(T start, T end, InterpolatorType type,
+		TimePoint startTime, ChronoDuration auto duration):
+		InterpolatorValue{start, end, type,
+			startTime, startTime + duration,
+			AbsoluteTimeInit{}} {}
 
-	template<class Time1, class Time2>
-	constexpr InterpolatorValue(T start, T dest, InterpolatorType type, Time1 startTime, Time2 destTime, struct AbsoluteTimeInit):
-		Interpolator<T, Time, INTERPOLATOR_TYPE>{start, dest, type,
-			std::chrono::duration_cast<Time>(startTime),
-			std::chrono::duration_cast<Time>(destTime)},
-		val{start}
-	{}
+	constexpr InterpolatorValue(T start, T end, InterpolatorType type,
+		TimePoint startTime, TimePoint endTime,
+		struct AbsoluteTimeInit):
+		InterpolatorBase{start, end, type,
+			startTime, endTime},
+		val{start} {}
 
-	constexpr InterpolatorValue(T dest):
-		InterpolatorValue{dest, dest, {}, Time{}, Time{}}
-	{}
+	constexpr InterpolatorValue(T end):
+		InterpolatorValue{end, end, {}, {}, Seconds{}} {}
 
 	InterpolatorValue reverse() const
 	{
-		return {destVal, startVal, type, startTime, destTime};
+		return {endVal, startVal, type, startTime, endTime};
 	}
 
-	bool update(Time time)
+	bool update(TimePoint time)
 	{
-		return Interpolator<T, Time, INTERPOLATOR_TYPE>::update(time, val);
+		return InterpolatorBase::update(time, val);
 	}
 
 	operator T() const
@@ -200,22 +208,22 @@ public:
 
 	bool isFinished() const
 	{
-		return val == destVal;
+		return val == endVal;
 	}
 
 	void finish()
 	{
-		val = destVal;
+		val = endVal;
 	}
 
+	using InterpolatorBase::startTime;
+	using InterpolatorBase::endTime;
+
 protected:
-	T val{};
-	using Interpolator<T, Time, INTERPOLATOR_TYPE>::startTime;
-	using Interpolator<T, Time, INTERPOLATOR_TYPE>::destTime;
-	using Interpolator<T, Time, INTERPOLATOR_TYPE>::type;
-	using Interpolator<T, Time, INTERPOLATOR_TYPE>::startVal;
-	using Interpolator<T, Time, INTERPOLATOR_TYPE>::destVal;
-	using Interpolator<T, Time, INTERPOLATOR_TYPE>::duration;
+	using InterpolatorBase::type;
+	using InterpolatorBase::startVal;
+	using InterpolatorBase::endVal;
+	using InterpolatorBase::duration;
 };
 
 }

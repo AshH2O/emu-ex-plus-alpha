@@ -21,11 +21,16 @@
  *
  ****************************************************************************************/
 
-#ifndef _SYSTEM_H_
-#define _SYSTEM_H_
+#pragma once
 
 #include "genplus-config.h"
-#include <emuframework/EmuVideo.hh>
+#include <z80conf.hh>
+
+namespace EmuEx
+{
+class EmuVideo;
+class EmuSystemTaskContext;
+}
 
 #ifndef NO_SYSTEM_PBC
 #define SYSTEM_PBC        0x00
@@ -91,12 +96,24 @@ extern void audio_set_equalizer(void);
 extern void system_init(void);
 extern void system_reset(void);
 extern void system_shutdown(void);
-extern void (*system_frame)(EmuSystemTask *task, EmuVideo *emuVideo);
+extern void (*system_frame)(EmuEx::EmuSystemTaskContext, EmuEx::EmuVideo *);
 
 static bool emuSystemIs16Bit()
 {
 	return system_hw != SYSTEM_PBC;
 }
 
-#endif /* _SYSTEM_H_ */
+extern Z80CPU<z80Desc> Z80;
 
+#define z80_readmap Z80.readMap()
+#define z80_writemap Z80.writeMap()
+#define z80_readmem Z80.readMem
+#define z80_writemem Z80.writeMem
+#define z80_readport Z80.readPort
+#define z80_writeport Z80.writePort
+
+static void z80_init() { Z80.init(); }
+static void z80_reset() { Z80.reset(); }
+static void z80_exit () {}
+static void z80_run(unsigned cycles) { Z80.run(cycles); }
+static void z80_set_nmi_line(unsigned state) { Z80.setNmiLine(state); }

@@ -46,20 +46,21 @@ static int tape_sense = 0;
 
 uint8_t pio1_read(uint16_t addr)
 {
-    uint8_t pio1_value = 0xff;
+    int has_pio1 = userport_get_active_state();
+    uint8_t pio1_value;
+
+    if (has_pio1) {
+        pio1_value = 0xff;
+    } else {
+        pio1_value = 0;
+    }
 
     /*  Correct clock */
     ted_handle_pending_alarms(0);
 
-    /* The functions below will gradually be removed as the functionality is added to the new userport system. */
-    if (drive_context[0]->drive->parallel_cable
-        || drive_context[1]->drive->parallel_cable) {
-        pio1_value = parallel_cable_cpu_read(DRIVE_PC_STANDARD, pio1_value);
-    } else {
-        pio1_value = pio1_data;
+    if (has_pio1) {
+         pio1_value = read_userport_pbx(pio1_data);
     }
-
-    pio1_value = read_userport_pbx(0xff, pio1_value);
 
     if (tape_sense) {
         pio1_value &= ~4;
@@ -83,13 +84,7 @@ void pio1_store(uint16_t addr, uint8_t value)
         pio1_outline &= ~4;
     }
 
-    store_userport_pbx(pio1_outline);
-
-    /* The functions below will gradually be removed as the functionality is added to the new userport system. */
-    if (drive_context[0]->drive->parallel_cable
-        || drive_context[1]->drive->parallel_cable) {
-        parallel_cable_cpu_write(DRIVE_PC_STANDARD, pio1_outline);
-    }
+    store_userport_pbx(pio1_outline, USERPORT_NO_PULSE);
 }
 
 void pio1_set_tape_sense(int sense)
@@ -104,10 +99,7 @@ void pio1_set_tape_sense(int sense)
         pio1_outline &= ~4;
     }
 
-    if (drive_context[0]->drive->parallel_cable
-        || drive_context[1]->drive->parallel_cable) {
-        parallel_cable_cpu_write(DRIVE_PC_STANDARD, pio1_outline);
-    }
+    store_userport_pbx(pio1_outline, USERPORT_NO_PULSE);
 }
 
 /*

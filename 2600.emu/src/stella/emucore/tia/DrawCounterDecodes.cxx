@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -40,18 +40,19 @@ DrawCounterDecodes::DrawCounterDecodes()
 {
   uInt8 *decodeTables[] = {myDecodes0, myDecodes1, myDecodes2, myDecodes3, myDecodes4, myDecodes6};
 
-  for (uInt8 *decodes : decodeTables)
+  for (auto decodes: decodeTables)
   {
-    memset(decodes, 0, 160);
-    decodes[156] = 1;
+    std::fill_n(decodes, 160, 0);         // TJ: magic number 160 = pixel/scanline
+    decodes[156] = 1;                     // TJ: set for all copy pattern (first copy)
   }
 
-  myDecodes1[12] = 1;
-  myDecodes2[28] = 1;
-  myDecodes3[12] = myDecodes3[28] = 1;
-  myDecodes4[60] = 1;
-  myDecodes6[28] = myDecodes6[60] = 1;
+  myDecodes1[12] = 2;                     // TJ: two copies close (+16)
+  myDecodes2[28] = 2;                     // TJ: two copies med (+32)
+  myDecodes3[12] = 2; myDecodes3[28] = 3; // TJ: three copies close (+16, +32)
+  myDecodes4[60] = 2;                     // TJ: two copies wide (+64)
+  myDecodes6[28] = 2; myDecodes6[60] = 3; // TJ: three copies medium (+32, +64)
 
+  // TJ: assigning decodes to players
   myPlayerDecodes[0] = myDecodes0;
   myPlayerDecodes[1] = myDecodes1;
   myPlayerDecodes[2] = myDecodes2;
@@ -61,6 +62,7 @@ DrawCounterDecodes::DrawCounterDecodes()
   myPlayerDecodes[6] = myDecodes6;
   myPlayerDecodes[7] = myDecodes0;
 
+  // TJ: assigning decodes to missiles
   myMissileDecodes[0] = myDecodes0;
   myMissileDecodes[1] = myDecodes1;
   myMissileDecodes[2] = myDecodes2;

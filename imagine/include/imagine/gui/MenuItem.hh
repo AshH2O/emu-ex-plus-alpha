@@ -16,324 +16,400 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/config/defs.hh>
-#include <imagine/gui/ViewAttachParams.hh>
+#include <imagine/gui/ViewManager.hh>
 #include <imagine/gfx/GfxText.hh>
-#include <imagine/input/Input.hh>
 #include <imagine/util/DelegateFunc.hh>
-#include <imagine/util/typeTraits.hh>
-#include <imagine/util/FunctionTraits.hh>
-#include <vector>
+#include <imagine/util/concepts.hh>
+#include <imagine/util/utility.h>
+#include <imagine/util/variant.hh>
 #include <iterator>
-#include <utility>
 #include <memory>
+#include <type_traits>
 
-class View;
-class TableView;
-
-namespace Input
+namespace IG::Input
 {
 class Event;
 }
 
-class MenuItem
+namespace IG
+{
+
+template<class Func, class... Args>
+constexpr bool callAndAutoReturnTrue(Func& f, Args&&... args)
+{
+	if constexpr(VoidInvokeResult<Func, Args...>)
+	{
+		// auto-return true if the supplied function doesn't return a value
+		f(std::forward<Args>(args)...);
+		return true;
+	}
+	else
+	{
+		return f(std::forward<Args>(args)...);
+	}
+}
+
+template <class Item>
+class MenuItemSelectDelegate : public DelegateFunc<bool (Item &, View &, const Input::Event &)>
 {
 public:
-	bool isSelectable = true;
-
-	constexpr MenuItem() {}
-	constexpr MenuItem(bool isSelectable):
-		isSelectable{isSelectable} {}
-	virtual ~MenuItem();
-	virtual void prepareDraw(Gfx::Renderer &r) = 0;
-	virtual void draw(Gfx::RendererCommands &, Gfx::GC xPos, Gfx::GC yPos, Gfx::GC xSize, Gfx::GC ySize,
-		Gfx::GC xIndent, _2DOrigin align, const Gfx::ProjectionPlane &, Gfx::Color) const = 0;
-	virtual void compile(Gfx::Renderer &r, const Gfx::ProjectionPlane &projP) = 0;
-	virtual int ySize() = 0;
-	virtual Gfx::GC xSize() = 0;
-	virtual bool select(View &view, Input::Event e) = 0;
+	using DelegateFuncBase = DelegateFunc<bool (Item &, View &, const Input::Event &)>;
+	using DelegateFuncBase::DelegateFuncBase;
 
 	// Wraps different function signatures into a delegate function with signature:
-	// void|bool (T &, View &, Input::Event)
-	template<class T, class Func>
-	static typename T::SelectDelegate wrapSelectDelegateFunction(Func &&func)
-	{
-		if constexpr(std::is_null_pointer_v<Func>)
+	// bool (Item &, View &, const Input::Event &)
+
+	constexpr MenuItemSelectDelegate(Callable<void, Item &, View &, const Input::Event &> auto &&f):
+		DelegateFuncBase
 		{
-			return {};
-		}
-		else
+			[=](Item& i, View& v, const Input::Event& e) { return callAndAutoReturnTrue(f, i, v, e); }
+		} {}
+
+	constexpr MenuItemSelectDelegate(std::invocable<Item &, const Input::Event &> auto &&f):
+		DelegateFuncBase
 		{
-			return
-				[=](T &item, View &view, Input::Event e)
-				{
-					auto funcAdaptor =
-						[&]<class ...Args>(Args&& ...args)
-						{
-							constexpr auto delegateReturnTypeIsBool = std::is_same_v<bool, IG::FunctionTraitsR<typename T::SelectDelegate>>;
-							constexpr auto delegateReturnsBoolFromFunc = delegateReturnTypeIsBool && std::is_same_v<bool, IG::FunctionTraitsR<Func>>;
-							if constexpr(delegateReturnsBoolFromFunc)
-							{
-								return func(args...);
-							}
-							else
-							{
-								func(args...);
-								if constexpr(delegateReturnTypeIsBool)
-									return true;
-							}
-						};
-					if constexpr(std::is_invocable_v<Func, T&, View&, Input::Event>)
-					{
-						return funcAdaptor(item, view, e);
-					}
-					else if constexpr(std::is_invocable_v<Func, T&, Input::Event>)
-					{
-						return funcAdaptor(item, e);
-					}
-					else if constexpr(std::is_invocable_v<Func, View&, Input::Event>)
-					{
-						return funcAdaptor(view, e);
-					}
-					else if constexpr(std::is_invocable_v<Func, T&>)
-					{
-						return funcAdaptor(item);
-					}
-					else if constexpr(std::is_invocable_v<Func, View&>)
-					{
-						return funcAdaptor(view);
-					}
-					else if constexpr(std::is_invocable_v<Func, Input::Event>)
-					{
-						return funcAdaptor(e);
-					}
-					else if constexpr(std::is_invocable_v<Func>)
-					{
-						return funcAdaptor();
-					}
-					else
-					{
-						static_assert(IG::dependentFalseValue<Func>, "incompatible function object");
-					}
-				};
-		}
-	}
+			[=](Item& i, View&, const Input::Event& e) { return callAndAutoReturnTrue(f, i, e); }
+		} {}
+
+	constexpr MenuItemSelectDelegate(std::invocable<View &, const Input::Event &> auto &&f):
+		DelegateFuncBase
+		{
+			[=](Item&, View& v, const Input::Event& e) { return callAndAutoReturnTrue(f, v, e); }
+		} {}
+
+	constexpr MenuItemSelectDelegate(std::invocable<Item &> auto &&f):
+		DelegateFuncBase
+		{
+			[=](Item& i, View&, const Input::Event&) { return callAndAutoReturnTrue(f, i); }
+		} {}
+
+	constexpr MenuItemSelectDelegate(std::invocable<View &> auto &&f):
+		DelegateFuncBase
+		{
+			[=](Item&, View& v, const Input::Event&) { return callAndAutoReturnTrue(f, v); }
+		} {}
+
+	constexpr MenuItemSelectDelegate(std::invocable<const Input::Event &> auto &&f):
+		DelegateFuncBase
+		{
+			[=](Item&, View&, const Input::Event& e) { return callAndAutoReturnTrue(f, e); }
+		} {}
+
+	constexpr MenuItemSelectDelegate(std::invocable auto &&f):
+		DelegateFuncBase
+		{
+			[=](Item&, View&, const Input::Event&) { return callAndAutoReturnTrue(f); }
+		} {}
 };
 
-class BaseTextMenuItem : public MenuItem
+struct MenuItemFlags
+{
+	uint32_t
+	selectable:1{},
+	active:1{},
+	highlight:1{},
+	impl:4{},
+	user:4{};
+};
+
+struct MenuId
+{
+	using Type = int32_t;
+	Type val{};
+
+	constexpr MenuId() = default;
+	constexpr MenuId(auto &&i):val{static_cast<Type>(i)} {}
+	constexpr operator Type() const { return val; }
+};
+
+struct MenuItemDrawAttrs
+{
+	WindowRect rect{};
+	int xIndent{};
+	Gfx::Color color{};
+	_2DOrigin align{};
+};
+
+struct MenuItemI
+{
+	virtual ~MenuItemI() = default;
+	virtual void place() = 0;
+	virtual void prepareDraw() = 0;
+	virtual void draw(Gfx::RendererCommands&__restrict__, MenuItemDrawAttrs a = {}) const = 0;
+	virtual bool inputEvent(const Input::Event&, ViewInputEventParams p = {});
+};
+
+constexpr MenuId defaultMenuId{std::numeric_limits<MenuId::Type>::min()};
+
+class MenuItem: public MenuItemI
 {
 public:
-	BaseTextMenuItem();
-	BaseTextMenuItem(const char *str, Gfx::GlyphTextureSet *face);
-	BaseTextMenuItem(const char *str, bool isSelectable, Gfx::GlyphTextureSet *face);
-	void prepareDraw(Gfx::Renderer &r) override;
-	void draw(Gfx::RendererCommands &, Gfx::GC xPos, Gfx::GC yPos, Gfx::GC xSize, Gfx::GC ySize,
-		Gfx::GC xIndent, _2DOrigin align, const Gfx::ProjectionPlane &, Gfx::Color) const override;
-	void compile(Gfx::Renderer &r, const Gfx::ProjectionPlane &projP) override;
-	void compile(const char *str, Gfx::Renderer &r, const Gfx::ProjectionPlane &projP);
-	int ySize() override;
-	Gfx::GC xSize() override;
-	void setName(const char *name, Gfx::GlyphTextureSet *face = nullptr);
+	struct Config
+	{
+		Gfx::GlyphTextureSet *face{};
+		MenuId id{};
+	};
+
+	MenuItemFlags flags{.selectable = true, .active = true};
+	MenuId id{};
+
+	MenuItem() = default;
+
+	MenuItem(UTF16Convertible auto &&name, ViewAttachParams attach, Config conf):
+		id{conf.id},
+		t{attach.rendererTask, IG_forward(name), conf.face ?: &attach.viewManager.defaultFace} {}
+
+	MenuItem(MenuItem&&) = default;
+	MenuItem &operator=(MenuItem&&) = default;
+	void prepareDraw() override;
+	void draw(Gfx::RendererCommands&__restrict__, MenuItemDrawAttrs) const override;
+	void place() override;
+	int ySize() const;
+	int xSize() const;
+	constexpr bool selectable() const { return flags.selectable; }
+	constexpr void setSelectable(bool on) { flags.selectable = on; }
+	constexpr bool active() const { return flags.active; }
+	constexpr void setActive(bool on) { flags.active = on; }
+	constexpr bool highlighted() const { return flags.highlight; }
+	constexpr void setHighlighted(bool on) { flags.highlight = on; }
+
+	void compile(UTF16Convertible auto &&name)
+	{
+		t.resetString(IG_forward(name));
+		place();
+	}
+
+	void setName(UTF16Convertible auto &&name, Gfx::GlyphTextureSet *face = {})
+	{
+		t.resetString(IG_forward(name));
+		if(face)
+			t.setFace(face);
+	}
+
+	static constexpr Config toBaseConfig(auto &&conf) { return {.face = conf.face, .id = conf.id}; }
+
 	const Gfx::Text &text() const;
-	void setActive(bool on);
-	bool active();
 
 protected:
-	bool active_ = true;
-	Gfx::Text t{};
+	Gfx::Text t;
 };
 
-class TextMenuItem : public BaseTextMenuItem
+class TextMenuItem : public MenuItem
 {
 public:
-	using SelectDelegate = DelegateFunc<bool (TextMenuItem &item, View &view, Input::Event e)>;
+	using SelectDelegate = MenuItemSelectDelegate<TextMenuItem>;
 
-	TextMenuItem();
-	TextMenuItem(const char *str, Gfx::GlyphTextureSet *face, SelectDelegate);
-	bool select(View &, Input::Event) override;
-	void setOnSelect(SelectDelegate onSelect);
-	SelectDelegate onSelect() const;
+	SelectDelegate onSelect;
 
-	// SelectDelegate wrappers
-	template<class Func>
-	static SelectDelegate makeSelectDelegate(Func &&func)
+	TextMenuItem() = default;
+
+	TextMenuItem(UTF16Convertible auto &&name, ViewAttachParams attach, SelectDelegate onSelect = {}, Config conf = Config{}):
+		MenuItem{IG_forward(name), attach, conf},
+		onSelect{onSelect} {}
+
+	TextMenuItem(UTF16Convertible auto &&name, ViewAttachParams attach, Config conf):
+		MenuItem{IG_forward(name), attach, conf} {}
+
+	bool inputEvent(const Input::Event& e, ViewInputEventParams p) override;
+};
+
+class TextHeadingMenuItem : public MenuItem
+{
+public:
+	static constexpr Config applyBoldFont(ViewAttachParams attach, Config conf) { conf.face = &attach.viewManager.defaultBoldFace; return conf; }
+
+	TextHeadingMenuItem() = default;
+
+	TextHeadingMenuItem(UTF16Convertible auto &&name, ViewAttachParams attach, Config conf = Config{}):
+		MenuItem{IG_forward(name), attach, conf.face ? conf : applyBoldFont(attach, conf)}
 	{
-		return wrapSelectDelegateFunction<TextMenuItem>(std::forward<Func>(func));
+		setSelectable(false);
 	}
-
-	template<class Func>
-	TextMenuItem(const char *str, Gfx::GlyphTextureSet *face, Func &&func): TextMenuItem{str, face, makeSelectDelegate(std::forward<Func>(func))} {}
-
-	template<class Func>
-	void setOnSelect(Func &&func) { setOnSelect(makeSelectDelegate(std::forward<Func>(func))); }
-
-protected:
-	SelectDelegate selectD{};
 };
 
-class TextHeadingMenuItem : public BaseTextMenuItem
+class BaseDualTextMenuItem : public MenuItem
 {
 public:
-	TextHeadingMenuItem();
-	TextHeadingMenuItem(const char *str, Gfx::GlyphTextureSet *face);
-	bool select(View &view, Input::Event e) override;
-};
+	BaseDualTextMenuItem() = default;
 
-class BaseDualTextMenuItem : public BaseTextMenuItem
-{
-public:
-	BaseDualTextMenuItem();
-	BaseDualTextMenuItem(const char *str, const char *str2, Gfx::GlyphTextureSet *face);
-	void compile(Gfx::Renderer &r, const Gfx::ProjectionPlane &projP) override;
-	void compile2nd(Gfx::Renderer &r, const Gfx::ProjectionPlane &projP);
-	void prepareDraw(Gfx::Renderer &r) override;
-	void draw2ndText(Gfx::RendererCommands &, Gfx::GC xPos, Gfx::GC yPos, Gfx::GC xSize, Gfx::GC ySize,
-		Gfx::GC xIndent, _2DOrigin align, const Gfx::ProjectionPlane &, Gfx::Color) const;
-	void draw(Gfx::RendererCommands &, Gfx::GC xPos, Gfx::GC yPos, Gfx::GC xSize, Gfx::GC ySize,
-		Gfx::GC xIndent, _2DOrigin align, const Gfx::ProjectionPlane &, Gfx::Color) const override;
-	void set2ndName(const char *name);
+	BaseDualTextMenuItem(UTF16Convertible auto &&name, UTF16Convertible auto &&name2, ViewAttachParams attach, Config conf = Config{}):
+		MenuItem{IG_forward(name), attach, conf},
+		t2{attach.rendererTask, IG_forward(name2), t.face()} {}
+
+	void set2ndName(UTF16Convertible auto &&name) { t2.resetString(IG_forward(name)); }
+	void set2ndName() { t2.resetString(); }
+	void place() override;
+	void place2nd();
+	void prepareDraw() override;
+	void draw2ndText(Gfx::RendererCommands&__restrict__, MenuItemDrawAttrs) const;
+	void draw(Gfx::RendererCommands&__restrict__, MenuItemDrawAttrs) const override;
 
 protected:
-	Gfx::Text t2{};
+	Gfx::Text t2;
 };
 
 class DualTextMenuItem : public BaseDualTextMenuItem
 {
 public:
-	using SelectDelegate = DelegateFunc<void (DualTextMenuItem &item, View &view, Input::Event e)>;
+	using SelectDelegate = MenuItemSelectDelegate<DualTextMenuItem>;
 
-	DualTextMenuItem();
-	DualTextMenuItem(const char *str, const char *str2, Gfx::GlyphTextureSet *face);
-	DualTextMenuItem(const char *str, const char *str2, Gfx::GlyphTextureSet *face, SelectDelegate selectDel);
-	bool select(View &view, Input::Event e) override;
-	void setOnSelect(SelectDelegate onSelect);
+	SelectDelegate onSelect;
+	Gfx::Color text2Color;
 
-	// SelectDelegate wrappers
-	template<class Func>
-	static SelectDelegate makeSelectDelegate(Func &&func)
-	{
-		return wrapSelectDelegateFunction<DualTextMenuItem>(std::forward<Func>(func));
-	}
+	DualTextMenuItem() = default;
 
-	template<class Func>
-	DualTextMenuItem(const char *str, const char *str2, Gfx::GlyphTextureSet *face, Func &&func):
-		DualTextMenuItem{str, str2, face, makeSelectDelegate(std::forward<Func>(func))} {}
+	DualTextMenuItem(UTF16Convertible auto &&name, UTF16Convertible auto &&name2, ViewAttachParams attach,
+		SelectDelegate onSelect, Config conf = Config{}):
+		BaseDualTextMenuItem{IG_forward(name), IG_forward(name2), attach, conf},
+		onSelect{onSelect} {}
 
-	template<class Func>
-	void setOnSelect(Func &&func)
-	{
-		setOnSelect(makeSelectDelegate(std::forward<Func>(func)));
-	}
-
-protected:
-	SelectDelegate selectD{};
+	void draw(Gfx::RendererCommands&__restrict__, MenuItemDrawAttrs) const override;
+	bool inputEvent(const Input::Event&, ViewInputEventParams) override;
 };
 
 
 class BoolMenuItem : public BaseDualTextMenuItem
 {
 public:
-	using SelectDelegate = DelegateFunc<void (BoolMenuItem &item, View &view, Input::Event e)>;
+	using SelectDelegate = MenuItemSelectDelegate<BoolMenuItem>;
+	static constexpr uint32_t onFlag = bit(0);
+	static constexpr uint32_t onOffStyleFlag = bit(1);
 
-	BoolMenuItem();
-	BoolMenuItem(const char *str, Gfx::GlyphTextureSet *face, bool val, SelectDelegate);
-	BoolMenuItem(const char *str, Gfx::GlyphTextureSet *face, bool val, const char *offStr, const char *onStr, SelectDelegate);
+	SelectDelegate onSelect;
+
+	BoolMenuItem() = default;
+
+	BoolMenuItem(UTF16Convertible auto &&name, ViewAttachParams attach, bool val,
+		SelectDelegate onSelect, Config conf = Config{}):
+		BaseDualTextMenuItem{IG_forward(name), val ? u"On" : u"Off", attach, conf},
+		onSelect{onSelect}
+	{
+		if(val)
+			flags.impl |= onFlag;
+		flags.impl |= onOffStyleFlag;
+	}
+
+	BoolMenuItem(UTF16Convertible auto &&name, ViewAttachParams attach, bool val,
+		UTF16Convertible auto &&offStr, UTF16Convertible auto &&onStr, SelectDelegate onSelect, Config conf = Config{}):
+		BaseDualTextMenuItem{IG_forward(name), val ? onStr : offStr, attach, conf},
+		onSelect{onSelect},
+		offStr{IG_forward(offStr)},
+		onStr{IG_forward(onStr)}
+	{
+		if(val)
+			flags.impl |= onFlag;
+	}
+
 	bool boolValue() const;
 	bool setBoolValue(bool val, View &view);
 	bool setBoolValue(bool val);
 	bool flipBoolValue(View &view);
 	bool flipBoolValue();
-	void draw(Gfx::RendererCommands &, Gfx::GC xPos, Gfx::GC yPos, Gfx::GC xSize, Gfx::GC ySize,
-		Gfx::GC xIndent, _2DOrigin align, const Gfx::ProjectionPlane &, Gfx::Color) const override;
-	bool select(View &view, Input::Event e) override;
-	void setOnSelect(SelectDelegate onSelect);
-
-	// SelectDelegate wrappers
-	template<class Func>
-	static SelectDelegate makeSelectDelegate(Func &&func)
-	{
-		return wrapSelectDelegateFunction<BoolMenuItem>(std::forward<Func>(func));
-	}
-
-	template<class Func>
-	BoolMenuItem(const char *str, Gfx::GlyphTextureSet *face, bool val, Func &&func):
-		BoolMenuItem{str, face, val, makeSelectDelegate(std::forward<Func>(func))} {}
-
-	template<class Func>
-	BoolMenuItem(const char *str, Gfx::GlyphTextureSet *face, bool val, const char *offStr, const char *onStr, Func &&func):
-		BoolMenuItem{str, face, val, offStr, onStr, makeSelectDelegate(std::forward<Func>(func))} {}
-
-	template<class Func>
-	void setOnSelect(Func &&func)
-	{
-		setOnSelect(makeSelectDelegate(std::forward<Func>(func)));
-	}
+	void draw(Gfx::RendererCommands&__restrict__, MenuItemDrawAttrs) const override;
+	bool inputEvent(const Input::Event&, ViewInputEventParams) override;
 
 protected:
-	SelectDelegate selectD{};
-	const char *offStr = "Off", *onStr = "On";
-	bool on = false;
-	bool onOffStyle = true;
+	UTF16String offStr{u"Off"}, onStr{u"On"};
 };
 
 class MultiChoiceMenuItem : public BaseDualTextMenuItem
 {
 public:
-	using SelectDelegate = DelegateFunc<void (MultiChoiceMenuItem &item, View &view, Input::Event e)>;
-	using ItemsDelegate = DelegateFunc<uint32_t (const MultiChoiceMenuItem &item)>;
-	using ItemDelegate = DelegateFunc<TextMenuItem& (const MultiChoiceMenuItem &item, uint32_t idx)>;
-	using SetDisplayStringDelegate = DelegateFunc<bool(uint32_t idx, Gfx::Text &text)>;
+	struct ItemsMessage {const MultiChoiceMenuItem& item;};
+	struct GetItemMessage {const MultiChoiceMenuItem& item; size_t idx;};
+	using ItemMessageVariant = std::variant<GetItemMessage, ItemsMessage>;
+	class ItemMessage: public ItemMessageVariant, public AddVisit
+	{
+	public:
+		using ItemMessageVariant::ItemMessageVariant;
+		using AddVisit::visit;
+	};
+	using ItemReply = std::variant<TextMenuItem*, size_t>;
+	using ItemSourceDelegate = MenuItemSourceDelegate<ItemMessage, ItemReply, ItemsMessage, GetItemMessage>;
+	using SelectDelegate = DelegateFunc<void (MultiChoiceMenuItem &, View &, const Input::Event &)>;
+	using SetDisplayStringDelegate = DelegateFunc<bool(size_t idx, Gfx::Text &text)>;
 
-	MultiChoiceMenuItem();
-	MultiChoiceMenuItem(const char *str, Gfx::GlyphTextureSet *face, SetDisplayStringDelegate, int selected, ItemsDelegate items, ItemDelegate item, SelectDelegate);
-	MultiChoiceMenuItem(const char *str, Gfx::GlyphTextureSet *face, int selected, ItemsDelegate items, ItemDelegate item, SelectDelegate);
-	MultiChoiceMenuItem(const char *str, Gfx::GlyphTextureSet *face, SetDisplayStringDelegate, int selected, ItemsDelegate items, ItemDelegate item);
-	MultiChoiceMenuItem(const char *str, Gfx::GlyphTextureSet *face, int selected, ItemsDelegate items, ItemDelegate item);
-	template <class C>
-	MultiChoiceMenuItem(const char *str, Gfx::GlyphTextureSet *face, SetDisplayStringDelegate onDisplayStr, int selected, C &item, SelectDelegate selectDel):
-		MultiChoiceMenuItem{str, face, onDisplayStr, selected,
-		[&item](const MultiChoiceMenuItem &) -> int
+	struct SelectedInit
+	{
+		int val{};
+		bool isId{};
+
+		constexpr SelectedInit(int i): val{i} {}
+		constexpr SelectedInit(MenuId i): val{i.val}, isId{true} {}
+	};
+
+	struct Config
+	{
+		Gfx::GlyphTextureSet *face{};
+		MenuId id{};
+		SetDisplayStringDelegate onSetDisplayString{};
+		SelectDelegate onSelect{};
+		TextMenuItem::SelectDelegate defaultItemOnSelect{};
+
+		static Config defaultConfig() { return {}; }
+	};
+
+	SelectDelegate onSelect;
+
+	MultiChoiceMenuItem() = default;
+
+	MultiChoiceMenuItem(UTF16Convertible auto &&name, ViewAttachParams attach,
+		SelectedInit selected, ItemSourceDelegate itemSrc, Config conf = Config::defaultConfig()):
+		BaseDualTextMenuItem{IG_forward(name), UTF16String{}, attach, toBaseConfig(conf)},
+		onSelect
 		{
-			return std::size(item);
+			conf.onSelect ? conf.onSelect :
+				[](MultiChoiceMenuItem &item, View &view, const Input::Event &e)
+				{
+					item.defaultOnSelect(view, e);
+				}
 		},
-		[&item](const MultiChoiceMenuItem &, uint32_t idx) -> TextMenuItem&
+		itemSrc{itemSrc},
+		onSetDisplayString{conf.onSetDisplayString},
+		selected_{selected.isId ? idxOfId(MenuId{selected.val}) : selected.val} {}
+
+	MultiChoiceMenuItem(UTF16Convertible auto &&name, ViewAttachParams attach,
+		SelectedInit selected, Container auto &&item, Config conf = Config::defaultConfig()):
+		MultiChoiceMenuItem
 		{
-			return std::data(item)[idx];
-		},
-		selectDel}
-	{}
-	template <class C>
-	MultiChoiceMenuItem(const char *str, Gfx::GlyphTextureSet *face, int selected, C &item, SelectDelegate selectDel):
-		MultiChoiceMenuItem{str, face, SetDisplayStringDelegate{}, selected, item, selectDel}
-	{}
-	template <class C>
-	MultiChoiceMenuItem(const char *str, Gfx::GlyphTextureSet *face, SetDisplayStringDelegate onDisplayStr, int selected, C &item):
-		MultiChoiceMenuItem{str, face, onDisplayStr, selected, item, {}}
-	{}
-	template <class C>
-	MultiChoiceMenuItem(const char *str, Gfx::GlyphTextureSet *face, int selected, C &item):
-		MultiChoiceMenuItem{str, face, SetDisplayStringDelegate{}, selected, item, {}}
-	{}
-	void draw(Gfx::RendererCommands &, Gfx::GC xPos, Gfx::GC yPos, Gfx::GC xSize, Gfx::GC ySize,
-		Gfx::GC xIndent, _2DOrigin align, const Gfx::ProjectionPlane &, Gfx::Color) const override;
-	void compile(Gfx::Renderer &r, const Gfx::ProjectionPlane &projP) override;
+			IG_forward(name), attach, selected,
+			ItemSourceDelegate{IG_forward(item)}, conf
+		}
+	{
+		if(conf.defaultItemOnSelect)
+		{
+			for(auto &i : item)
+			{
+				if(!i.onSelect)
+					i.onSelect = conf.defaultItemOnSelect;
+			}
+		}
+	}
+
+	void draw(Gfx::RendererCommands&__restrict__, MenuItemDrawAttrs) const override;
+	void place() override;
 	int selected() const;
-	uint32_t items() const;
+	size_t items() const;
+	TextMenuItem& item(size_t idx) { return item(itemSrc, idx); }
 	bool setSelected(int idx, View &view);
 	bool setSelected(int idx);
+	bool setSelected(MenuId, View &view);
+	bool setSelected(MenuId);
 	int cycleSelected(int offset, View &view);
 	int cycleSelected(int offset);
-	bool select(View &view, Input::Event e) override;
-	void setOnSelect(SelectDelegate onSelect);
+	bool inputEvent(const Input::Event&, ViewInputEventParams) override;
 	std::unique_ptr<TableView> makeTableView(ViewAttachParams attach);
-	void defaultOnSelect(View &view, Input::Event e);
+	void defaultOnSelect(View &, const Input::Event &);
 	void updateDisplayString();
+	int idxOfId(MenuId);
 
 protected:
-	SelectDelegate selectD{};
-	ItemsDelegate items_{};
-	ItemDelegate item_{};
-	SetDisplayStringDelegate onSetDisplayString{};
-	int selected_ = 0;
+	ItemSourceDelegate itemSrc;
+	SetDisplayStringDelegate onSetDisplayString;
+	int selected_{};
 
-	void setDisplayString(int idx);
+	void setDisplayString(size_t idx);
+	TextMenuItem& item(ItemSourceDelegate, size_t idx);
 };
+
+}

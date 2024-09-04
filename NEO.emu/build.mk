@@ -6,19 +6,27 @@ include $(IMAGINE_PATH)/make/imagineAppBase.mk
 SRC += main/Main.cc \
 main/input.cc \
 main/options.cc \
+main/state.cc \
 main/unzip.cc \
-main/EmuControls.cc \
 main/EmuMenuViews.cc
 
 CPPFLAGS += -I$(projectPath)/src \
--DHAVE_CONFIG_H
+-DHAVE_CONFIG_H -DLSB_FIRST
 
-CFLAGS_WARN += -Wno-sign-compare
+CFLAGS_WARN += -Wno-sign-compare -Wno-unused-parameter -Wno-unused-function
+
+ifeq ($(config_compiler),clang)
+ # needed for Z80CPU::makeFlagTables()
+ CFLAGS_CODEGEN += -fconstexpr-steps=10000000
+endif
 
 GEO := gngeo
 
-SRC += $(GEO)/mamez80/z80.c \
-$(GEO)/mamez80_interf.c
+Z80_PATH = $(EMUFRAMEWORK_PATH)/../MD.emu/src/genplus-gx/z80
+CPPFLAGS += -I$(Z80_PATH)
+VPATH +=  $(Z80_PATH)
+SRC += z80.cc \
+$(GEO)/mamez80_interf.cc
 
 SRC += $(GEO)/ym2610/2610intf.c \
 $(GEO)/ym2610/ym2610.c
@@ -32,7 +40,6 @@ $(GEO)/neoboot.c \
 $(GEO)/neocrypt.c \
 $(GEO)/pd4990a.c \
 $(GEO)/roms.c \
-$(GEO)/state.c \
 $(GEO)/timer.c \
 $(GEO)/video.c
 

@@ -16,51 +16,26 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/config/defs.hh>
-
-#if defined __APPLE__ && !defined __ARM_ARCH_6K__
-#define CONFIG_GFX_MATH_GLKIT
-#else
-#define CONFIG_GFX_MATH_GLM
-#endif
+#include <imagine/base/GLContext.hh>
+#include <imagine/util/memory/UniqueResource.hh>
+#include <imagine/util/used.hh>
+#include <variant>
+#include <span>
 
 namespace Config
 {
 	namespace Gfx
 	{
 	#ifndef CONFIG_GFX_OPENGL_ES
-		#if defined CONFIG_BASE_IOS || defined __ANDROID__ || defined CONFIG_MACHINE_PANDORA
-		#define CONFIG_GFX_OPENGL_ES
+		#if defined CONFIG_OS_IOS || defined __ANDROID__ || defined CONFIG_MACHINE_PANDORA
+		#define CONFIG_GFX_OPENGL_ES 2
 		#endif
 	#endif
 
-	#if defined CONFIG_GFX_OPENGL_ES && !defined CONFIG_GFX_OPENGL_ES_MAJOR_VERSION
-	#error "Configuration error, CONFIG_GFX_OPENGL_ES set but CONFIG_GFX_OPENGL_ES_MAJOR_VERSION unset"
-	#endif
-
-	#ifdef CONFIG_GFX_OPENGL_ES_MAJOR_VERSION
-	static constexpr int OPENGL_ES = CONFIG_GFX_OPENGL_ES_MAJOR_VERSION;
+	#ifdef CONFIG_GFX_OPENGL_ES
+	static constexpr int OPENGL_ES = CONFIG_GFX_OPENGL_ES;
 	#else
 	static constexpr int OPENGL_ES = 0;
-	#define CONFIG_GFX_OPENGL_ES_MAJOR_VERSION 0
-	#endif
-
-	#if !defined CONFIG_BASE_MACOSX && \
-	((defined CONFIG_GFX_OPENGL_ES && CONFIG_GFX_OPENGL_ES_MAJOR_VERSION == 1) || !defined CONFIG_GFX_OPENGL_ES)
-	#define CONFIG_GFX_OPENGL_FIXED_FUNCTION_PIPELINE
-	static constexpr bool OPENGL_FIXED_FUNCTION_PIPELINE = true;
-	#else
-	static constexpr bool OPENGL_FIXED_FUNCTION_PIPELINE = false;
-	#endif
-
-	#if (defined CONFIG_GFX_OPENGL_ES && CONFIG_GFX_OPENGL_ES_MAJOR_VERSION == 2) || !defined CONFIG_GFX_OPENGL_ES
-	#define CONFIG_GFX_OPENGL_SHADER_PIPELINE
-	static constexpr bool OPENGL_SHADER_PIPELINE = true;
-	#else
-	static constexpr bool OPENGL_SHADER_PIPELINE = false;
-	#endif
-
-	#if !defined CONFIG_GFX_OPENGL_FIXED_FUNCTION_PIPELINE && !defined CONFIG_GFX_OPENGL_SHADER_PIPELINE
-	#error "Configuration error, OPENGL_FIXED_FUNCTION_PIPELINE & OPENGL_SHADER_PIPELINE both unset"
 	#endif
 
 	#ifdef CONFIG_GFX_ANDROID_SURFACE_TEXTURE
@@ -70,18 +45,97 @@ namespace Config
 	static constexpr bool OPENGL_TEXTURE_TARGET_EXTERNAL = false;
 	#endif
 
-	#if !defined NDEBUG && !defined __APPLE__
-	#define CONFIG_GFX_OPENGL_DEBUG_CONTEXT
-	static constexpr bool OPENGL_DEBUG_CONTEXT = true;
-	#else
-	static constexpr bool OPENGL_DEBUG_CONTEXT = false;
-	#endif
-
-	#if defined CONFIG_BASE_IOS
-	#define CONFIG_GFX_GLDRAWABLE_NEEDS_FRAMEBUFFER
+	#if defined CONFIG_OS_IOS
 	static constexpr bool GLDRAWABLE_NEEDS_FRAMEBUFFER = true;
 	#else
 	static constexpr bool GLDRAWABLE_NEEDS_FRAMEBUFFER = false;
 	#endif
 	}
+}
+
+// Header Locations For Platform
+
+#if defined CONFIG_GFX_OPENGL_ES
+#include <imagine/util/opengl/glesDefs.h>
+#else
+#include <imagine/util/opengl/glDefs.h>
+#endif
+
+namespace IG::Gfx
+{
+
+class RendererTask;
+
+using TextureRef = GLuint;
+
+using VertexIndexSpan = std::variant<std::span<const uint8_t>, std::span<const uint16_t>>;
+
+static constexpr int TRIANGLE_IMPL = GL_TRIANGLES;
+static constexpr int TRIANGLE_STRIP_IMPL = GL_TRIANGLE_STRIP;
+
+static constexpr int ZERO_IMPL = GL_ZERO;
+static constexpr int ONE_IMPL = GL_ONE;
+static constexpr int SRC_COLOR_IMPL = GL_SRC_COLOR;
+static constexpr int ONE_MINUS_SRC_COLOR_IMPL = GL_ONE_MINUS_SRC_COLOR;
+static constexpr int DST_COLOR_IMPL = GL_DST_COLOR;
+static constexpr int ONE_MINUS_DST_COLOR_IMPL = GL_ONE_MINUS_DST_COLOR;
+static constexpr int SRC_ALPHA_IMPL = GL_SRC_ALPHA;
+static constexpr int ONE_MINUS_SRC_ALPHA_IMPL = GL_ONE_MINUS_SRC_ALPHA;
+static constexpr int DST_ALPHA_IMPL = GL_DST_ALPHA;
+static constexpr int ONE_MINUS_DST_ALPHA_IMPL = GL_ONE_MINUS_DST_ALPHA;
+static constexpr int CONSTANT_COLOR_IMPL = GL_CONSTANT_COLOR;
+static constexpr int ONE_MINUS_CONSTANT_COLOR_IMPL = GL_ONE_MINUS_CONSTANT_COLOR;
+static constexpr int CONSTANT_ALPHA_IMPL = GL_CONSTANT_ALPHA;
+static constexpr int ONE_MINUS_CONSTANT_ALPHA_IMPL = GL_ONE_MINUS_CONSTANT_ALPHA;
+
+static constexpr int SYNC_FLUSH_COMMANDS_BIT = GL_SYNC_FLUSH_COMMANDS_BIT;
+
+using ClipRect = WRect;
+using Drawable = NativeGLDrawable;
+
+enum class ShaderType : uint16_t
+{
+	VERTEX = GL_VERTEX_SHADER,
+	FRAGMENT = GL_FRAGMENT_SHADER
+};
+
+enum class ColorSpace : uint8_t
+{
+	LINEAR = (uint8_t)GLColorSpace::LINEAR,
+	SRGB = (uint8_t)GLColorSpace::SRGB,
+};
+
+using NativeBuffer = GLuint;
+
+void destroyGLBuffer(RendererTask &, NativeBuffer);
+
+struct GLBufferDeleter
+{
+	RendererTask *rTask{};
+
+	void operator()(NativeBuffer s) const
+	{
+		destroyGLBuffer(*rTask, s);
+	}
+};
+using UniqueGLBuffer = UniqueResource<NativeBuffer, GLBufferDeleter>;
+
+struct TextureBinding
+{
+	TextureRef name{};
+	GLenum target{};
+};
+
+struct TextureSizeSupport
+{
+	int maxXSize{}, maxYSize{};
+	ConditionalMemberOr<(bool)Config::Gfx::OPENGL_ES, bool, true> nonPow2CanMipmap{};
+	ConditionalMemberOr<(bool)Config::Gfx::OPENGL_ES, bool, true> nonPow2CanRepeat{};
+
+	constexpr bool supportsMipmaps(int x, int y) const
+	{
+		return x && y && (nonPow2CanMipmap || (isPowerOf2(x) && isPowerOf2(y)));
+	}
+};
+
 }

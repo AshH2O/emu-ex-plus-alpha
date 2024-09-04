@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -19,25 +19,46 @@
 #define CARTRIDGE_CDF_HXX
 
 class System;
-class Thumbulator;
 
 #include "bspf.hxx"
-#include "Cart.hxx"
+#include "CartARM.hxx"
 
 /**
-  Cartridge class used for CDF.
+  Cartridge class used for CDF/CDFJ/CDFJ+.
 
-  There are seven 4K program banks, a 4K Display Data RAM,
-  1K C Variable and Stack, and the CDF chip.
-  CDF chip access is mapped to $1000 - $103F (both read and write).
-  Program banks are accessible by read/write to $1FF5 - $1FFB.
+  CDFJ bankswitching for Atari games using ARM/C code.
+  There are two variants supported:
+  1) CDF/CDFJ - initial scheme with 32K ROM and 8K RAM
+  2) CDFJ+ - adds support for larger ROM sizes (64/128/256/512K) and RAM sizes (16/32K)
 
-  FIXME: THIS NEEDS TO BE UPDATED
+  Features:
+  32 fast fetchers
+  2 fast jump queues
+  1 parameter queue
+  3 channel digital audio/1 channel sampled sound
+  7 banks (4K) of atari code
+  4K display data (16K and 32K available with CDFJ+)
 
-  @authors: Darrell Spice Jr, Chris Walton, Fred Quimby,
-            Stephen Anthony, Bradford W. Mott
+  Note that for CDFJ+ the programmer must ensure that only the available RAM/ROM on the target
+  device is used. There are 2 versions of the driver, with minor changes  due to hardware.
+    1) 32K ROM and 8K RAM - compatible with 48-Pin LPC210X Family (Harmony, Harmony Encore, Melody)
+    2) 64/128/256/512K ROM and16/32K RAM - compatible with 64-Pin LPC213X Family
+
+  The CDFJ+ driver can be modified to also override LDX # and LDY # for fast fetcher use.
+  Additionally an offset can be set for the Fast Fetchers - if the offset was set to $80 then
+  LDA #$85 would do a fast fetch of datastream 5.
+
+  Bankswitching Note:
+  CDF/CDFJ uses $FFF5 through $FFFB (initial bank 6)
+  CDFJ+ uses $FFF4 through $FFFA (initial bank 0)
+
+  The letters CDFJ stand for Chris, Darrell, Fred, and John.
+
+  @authors: Darrell Spice Jr, Chris Walton, Fred Quimby, John Champeau
+            Thomas Jentzsch, Stephen Anthony, Bradford W. Mott
 */
-class CartridgeCDF : public Cartridge
+
+class CartridgeCDF : public CartridgeARM
 {
   friend class CartridgeCDFWidget;
   friend class CartridgeCDFInfoWidget;
@@ -48,7 +69,8 @@ class CartridgeCDF : public Cartridge
     enum class CDFSubtype {
       CDF0,
       CDF1,
-      CDFJ
+      CDFJ,
+      CDFJplus
     };
 
   public:
@@ -62,22 +84,13 @@ class CartridgeCDF : public Cartridge
     */
     CartridgeCDF(const ByteBuffer& image, size_t size, const string& md5,
                  const Settings& settings);
-    virtual ~CartridgeCDF() = default;
+    ~CartridgeCDF() override = default;
 
   public:
     /**
       Reset device to its power-on state
     */
     void reset() override;
-
-    /**
-      Notification method invoked by the system when the console type
-      has changed.  We need this to inform the Thumbulator that the
-      timing has changed.
-
-      @param timing  Enum representing the new console type
-    */
-    void consoleChanged(ConsoleTiming timing) override;
 
     /**
       Install cartridge in the specified system.  Invoked by the system
@@ -90,9 +103,12 @@ class CartridgeCDF : public Cartridge
     /**
       Install pages for the specified bank in the system.
 
-     @param bank The bank that should be installed in the system
+      @param bank     The bank that should be installed in the system
+      @param segment  The segment the bank should be using
+
+      @return  true, if bank has changed
     */
-    bool bank(uInt16 bank) override;
+    bool bank(uInt16 bank, uInt16 segment = 0) override;
 
     /**
       Get the current bank.
@@ -104,7 +120,7 @@ class CartridgeCDF : public Cartridge
     /**
       Query the number of banks supported by the cartridge.
     */
-    uInt16 bankCount() const override;
+    uInt16 romBankCount() const override;
 
     /**
       Patch the cartridge ROM.
@@ -119,9 +135,9 @@ class CartridgeCDF : public Cartridge
       Access the internal ROM image for this cartridge.
 
       @param size  Set to the size of the internal ROM image data
-      @return  A pointer to the internal ROM image data
+      @return  A reference to the internal ROM image data
     */
-    const uInt8* getImage(size_t& size) const override;
+    const ByteBuffer& getImage(size_t& size) const override;
 
     /**
       Save the current state of this cart to the given Serializer.
@@ -150,6 +166,35 @@ class CartridgeCDF : public Cartridge
       Used for Thumbulator to pass values back to the cartridge
     */
     uInt32 thumbCallback(uInt8 function, uInt32 value1, uInt32 value2) override;
+
+    /**
+      Query the internal RAM size of the cart.
+
+      @return The internal RAM size
+    */
+    uInt32 internalRamSize() const override { return static_cast<uInt32>(myRAM.size()); }
+
+    /**
+      Read a byte from cart internal RAM.
+
+      @return The value of the interal RAM byte
+    */
+    uInt8 internalRamGetValue(uInt16 addr) const override;
+
+    /**
+      Set if we are using CDFJ+ bankswitching
+     */
+    bool isCDFJplus() const;
+
+    /**
+      Size of SRAM (RAM) area in cart
+     */
+    uInt32 ramSize() const;
+
+    /**
+      Size of Flash memory (ROM) area in cart
+     */
+    uInt32 romSize() const;
 
 #ifdef DEBUGGER_SUPPORT
     /**
@@ -181,9 +226,16 @@ class CartridgeCDF : public Cartridge
 
   private:
     /**
+      Checks if startup bank randomization is enabled.  For this scheme,
+      randomization is not supported, since the ARM code is always in a
+      pre-defined bank, and we *must* start from there.
+    */
+    bool randomStartBank() const override { return false; }
+
+    /**
       Sets the initial state of the DPC pointers and RAM
     */
-    void setInitialState();
+    void setInitialState() override;
 
     /**
       Updates any data fetchers in music mode based on the number of
@@ -200,7 +252,6 @@ class CartridgeCDF : public Cartridge
     void setDatastreamPointer(uInt8 index, uInt32 value);
 
     uInt32 getDatastreamIncrement(uInt8 index) const;
-    void setDatastreamIncrement(uInt8 index, uInt32 value);
 
     uInt8 readFromDatastream(uInt8 index);
 
@@ -209,27 +260,43 @@ class CartridgeCDF : public Cartridge
     uInt32 getSample();
     void setupVersion();
 
-  private:
-    // The 32K ROM image of the cartridge
-    std::array<uInt8, 32_KB> myImage;
+    uInt32 scanCDFDriver(uInt32 value);
 
-    // Pointer to the 28K program ROM image of the cartridge
+    /**
+      Answer whether this is a PlusROM cart.  Note that until the
+      initialize method has been called, this will always return false.
+
+      @return  Whether this is actually a PlusROM cart
+    */
+    bool isPlusROM() const override { return myPlusROM->isValid(); }
+
+  private:
+    static constexpr uInt8  COMMSTREAM = 0x20, JUMPSTREAM_BASE = 0x21;
+    static constexpr uInt16 LDAXY_OVERRIDE_INACTIVE = 0xFFFF;
+
+    // The ROM image of the cartridge
+    ByteBuffer myImage{nullptr};
+
+    // The size of the ROM image
+    size_t mySize{0};
+
+    // Pointer to the program ROM image of the cartridge
     uInt8* myProgramImage{nullptr};
 
-    // Pointer to the 4K display ROM image of the cartridge
+    // Pointer to the display ROM image of the cartridge
     uInt8* myDisplayImage{nullptr};
 
-    // Pointer to the 2K CDF driver image in RAM
-    uInt8* myBusDriverImage{nullptr};
+    // Pointer to the driver image in RAM
+    uInt8* myDriverImage{nullptr};
 
-    // The CDF 8k RAM image, used as:
-    //   $0000 - 2K CDF driver
+    // The CDFJ 8K RAM image, used as:
+    //   $0000 - 2K Driver
     //   $0800 - 4K Display Data
     //   $1800 - 2K C Variable & Stack
-    std::array<uInt8, 8_KB> myCDFRAM;
-
-    // Pointer to the Thumb ARM emulator object
-    unique_ptr<Thumbulator> myThumbEmulator;
+    // For CDFJ+, used as:
+    //   $0000 - 2K Driver
+    //   $0800 - Display Data, C Variables & Stack
+    std::array<uInt8, 32_KB> myRAM;
 
     // Indicates the offset into the ROM image (aligns to current bank)
     uInt16 myBankOffset{0};
@@ -275,8 +342,22 @@ class CartridgeCDF : public Cartridge
     // F- = 3 Voice Music
     uInt8 myMode{0xFF};
 
-    // set to address of #value if last byte peeked was A9 (LDA #)
-    uInt16 myLDAimmediateOperandAddress{0};
+    // set to address of #value if last byte peeked was A9 (LDA #),
+    // or for CDFJ+ variations if A0 (LDY #) or A2 (LDX #)
+    uInt16 myLDAXYimmediateOperandAddress{LDAXY_OVERRIDE_INACTIVE};
+
+    // Some CDFJ+ drivers also override LDX # and/or LDY # for fast fetcher
+    // use. These flag if this has been done.
+    bool myLDXenabled{false};
+    bool myLDYenabled{false};
+
+    // Some CDFJ+ drivers allow setting a fetcher base offset to allow
+    // immediate load of specific ranges. This is the location within the RAM
+    // copy of the CDFJ+ driver of the offset.
+    // ex. if 16, immedate lda #>=16 <=51 will trigger a FASTFETCH
+    // default is 0 so lda #>=0 <=35 will trigger a FASTFETCH
+    //
+    uInt16 myFastFetcherOffset{0};
 
     // set to address of the JMP operand if last byte peeked was 4C
     // *and* the next two bytes in ROM are 00 00

@@ -13,158 +13,220 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "PosixIO"
-#include <sys/stat.h>
-#include <fcntl.h>
 #include <imagine/io/PosixIO.hh>
 #include <imagine/util/fd-utils.h>
-#include <imagine/util/string.h>
 #include <imagine/util/utility.h>
+#include <imagine/util/string/StaticString.hh>
+#include <imagine/util/format.hh>
+#include <imagine/config/defs.hh>
 #include <imagine/logger/logger.h>
 #include "utils.hh"
+#include <imagine/io/IOUtils-impl.hh>
+#include <cstring>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <system_error>
 
-using namespace IG;
-
-GenericIO PosixIO::makeGeneric()
+namespace IG
 {
-	return GenericIO{*this};
+
+template class IOUtils<PosixIO>;
+
+constexpr SystemLogger log{"PosixIO"};
+
+#if !defined __linux__
+constexpr int MAP_POPULATE = 0;
+#endif
+
+constexpr auto flagsString(OpenFlags openFlags)
+{
+	StaticString<5> logFlagsStr;
+	if(openFlags.read) logFlagsStr += 'r';
+	if(openFlags.write) logFlagsStr += 'w';
+	if(openFlags.create) logFlagsStr += 'c';
+	if(openFlags.truncate) logFlagsStr += 't';
+	return logFlagsStr;
 }
 
-std::error_code PosixIO::open(const char *path, uint32_t mode)
+constexpr auto protectionFlagsString(int flags)
 {
-	close();
+	StaticString<3> logFlagsStr;
+	if(flags & PROT_READ) logFlagsStr += 'r';
+	if(flags & PROT_WRITE) logFlagsStr += 'w';
+	return logFlagsStr;
+}
 
-	// validate flags
-	assert(mode < bit(OPEN_FLAGS_BITS+1));
-
+PosixIO::PosixIO(CStringView path, OpenFlags openFlags)
+{
 	constexpr mode_t defaultOpenMode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
 	int flags = 0;
 	mode_t openMode{};
-	std::array<char, 5> logFlagsStr{};
-	
+
 	// setup flags
-	if(mode & OPEN_WRITE)
+	if(openFlags.write)
 	{
-		if(mode & OPEN_READ)
+		if(openFlags.read)
 		{
 			flags |= O_RDWR;
-			string_cat(logFlagsStr, "rw");
 		}
 		else
 		{
 			flags |= O_WRONLY;
-			string_cat(logFlagsStr, "w");
 		}
 	}
 	else
 	{
 		flags |= O_RDONLY;
-		string_cat(logFlagsStr, "r");
 	}
-	if(mode & OPEN_CREATE)
+	if(openFlags.create)
 	{
 		flags |= O_CREAT;
 		openMode = defaultOpenMode;
-		string_cat(logFlagsStr, "c");
-		if(!(mode & OPEN_KEEP_EXISTING))
+		if(openFlags.truncate)
 		{
 			flags |= O_TRUNC;
-			string_cat(logFlagsStr, "t");
 		}
 	}
 
-	if((fd_ = ::open(path, flags, openMode)) == -1)
+	if((fd_ = ::open(path, flags, openMode)) == -1) [[unlikely]]
 	{
-		logMsg("error opening file (%s) @ %s", logFlagsStr.data(), path);
-		return {errno, std::system_category()};
+		if constexpr(Config::DEBUG_BUILD)
+			log.error("error opening file ({}) @ {}:{}", flagsString(openFlags), path, strerror(errno));
+		if(openFlags.test)
+			return;
+		else
+			throw std::system_error{errno, std::generic_category(), path};
 	}
-	logMsg("opened file (%s) fd %d @ %s", logFlagsStr.data(), (int)fd_, path);
-	return {};
+	if constexpr(Config::DEBUG_BUILD)
+		log.info("opened ({}) fd:{} @ {}", flagsString(openFlags), fd(), path);
 }
 
-ssize_t PosixIO::read(void *buff, size_t bytes, std::error_code *ecOut)
+ssize_t PosixIO::read(void *buff, size_t bytes, std::optional<off_t> offset)
 {
-	auto bytesRead = ::read(fd_, buff, bytes);
-	if(bytesRead == -1)
+	if(offset)
 	{
-		if(Config::DEBUG_BUILD && errno != EAGAIN)
-			logErr("error reading %zu bytes", bytes);
-		if(ecOut)
-			*ecOut = {errno, std::system_category()};
+		auto bytesRead = ::pread(fd(), buff, bytes, *offset);
+		if(bytesRead == -1) [[unlikely]]
+		{
+			log.error("error reading {} bytes at offset:{}", bytes, *offset);
+		}
+		return bytesRead;
 	}
 	else
 	{
-		//logMsg("read %zd bytes out of %zu requested from fd_: %d", bytesRead, bytes, fd_);
+		auto bytesRead = ::read(fd(), buff, bytes);
+		if(bytesRead == -1) [[unlikely]]
+		{
+			if(Config::DEBUG_BUILD && errno != EAGAIN)
+				log.error("error reading %zu bytes", bytes);
+		}
+		return bytesRead;
 	}
-	return bytesRead;
 }
 
-ssize_t PosixIO::readAtPos(void *buff, size_t bytes, off_t offset, std::error_code *ecOut)
+ssize_t PosixIO::write(const void *buff, size_t bytes, std::optional<off_t> offset)
 {
-	auto bytesRead = ::pread(fd_, buff, bytes, offset);
-	if(bytesRead == -1)
+	if(offset)
 	{
-		logErr("error reading %zu bytes at offset %lld", bytes, (long long)offset);
-		if(ecOut)
-			*ecOut = {errno, std::system_category()};
+		auto bytesWritten = ::pwrite(fd(), buff, bytes, *offset);
+		if(bytesWritten == -1)
+		{
+			log.error("error writing {} bytes at offset {}", bytes, *offset);
+		}
+		return bytesWritten;
 	}
-	return bytesRead;
-}
-
-ssize_t PosixIO::write(const void *buff, size_t bytes, std::error_code *ecOut)
-{
-	auto bytesWritten = ::write(fd_, buff, bytes);
-	if(bytesWritten == -1)
+	else
 	{
-		logErr("error writing %zu bytes", bytes);
-		if(ecOut)
-			*ecOut = {errno, std::system_category()};
+		auto bytesWritten = ::write(fd(), buff, bytes);
+		if(bytesWritten == -1)
+		{
+			log.error("error writing {} bytes", bytes);
+		}
+		return bytesWritten;
 	}
-	return bytesWritten;
 }
 
-std::error_code PosixIO::truncate(off_t offset)
+#if defined __ANDROID__ && ANDROID_MIN_API < 24
+#include <sys/syscall.h>
+
+static ssize_t pwritevWrapper(PosixIO &io, std::span<const OutVector> buffs, off_t offset)
 {
-	logMsg("truncating at offset %lld", (long long)offset);
-	if(ftruncate(fd_, offset) == -1)
+	return syscall(__NR_pwritev, io.fd(), buffs.data()->iovecPtr(), buffs.size(), offset);
+}
+#else
+static ssize_t pwritevWrapper(PosixIO &io, std::span<const OutVector> buffs, off_t offset)
+{
+	#ifdef CONFIG_OS_IOS
+	if(__builtin_available(iOS 14, *))
+		return ::pwritev(io.fd(), buffs.data()->iovecPtr(), buffs.size(), offset);
+	else
+		return io.genericWriteVector(buffs, offset);
+	#else
+	return ::pwritev(io.fd(), buffs.data()->iovecPtr(), buffs.size(), offset);
+	#endif
+}
+#endif
+
+ssize_t PosixIO::writeVector(std::span<const OutVector> buffs, std::optional<off_t> offset)
+{
+	if(!buffs.size())
+		return 0;
+	if(offset)
 	{
-		logErr("truncate failed");
-		return {errno, std::system_category()};
+		auto bytesWritten = pwritevWrapper(*this, buffs, *offset);
+		if(bytesWritten == -1)
+		{
+			log.error("error writing {} buffers at offset {}", buffs.size(), *offset);
+		}
+		return bytesWritten;
 	}
-	return {};
+	else
+	{
+		auto bytesWritten = ::writev(fd(), buffs.data()->iovecPtr(), buffs.size());
+		if(bytesWritten == -1)
+		{
+			log.error("error writing {} buffers", buffs.size());
+		}
+		return bytesWritten;
+	}
 }
 
-off_t PosixIO::seek(off_t offset, IO::SeekMode mode, std::error_code *ecOut)
+bool PosixIO::truncate(off_t offset)
 {
-	assumeExpr(isSeekModeValid(mode));
-	auto newPos = lseek(fd_, offset, mode);
+	log.info("truncating at offset {}", offset);
+	if(ftruncate(fd(), offset) == -1) [[unlikely]]
+	{
+		log.error("truncate failed");
+		return false;
+	}
+	return true;
+}
+
+off_t PosixIO::seek(off_t offset, SeekMode mode)
+{
+	auto newPos = lseek(fd(), offset, (int)mode);
 	if(newPos == -1) [[unlikely]]
 	{
-		logErr("seek to offset %lld failed", (long long)offset);
-		if(ecOut)
-			*ecOut = {errno, std::system_category()};
+		log.error("seek to offset {} failed", offset);
 		return -1;
 	}
 	return newPos;
 }
 
-void PosixIO::close()
-{
-	if(fd_ != -1)
-	{
-		logMsg("closing fd:%d", (int)fd_);
-	}
-	fd_.reset();
-}
-
 void PosixIO::sync()
 {
-	fsync(fd_);
+	fsync(fd());
 }
 
 size_t PosixIO::size()
 {
-	return fd_size(fd_);
+	auto s = fd_size(fd());
+	if(s == 0)
+	{
+		log.info("fd:{} is empty or a stream", fd());
+	}
+	return s;
 }
 
 bool PosixIO::eof()
@@ -173,29 +235,29 @@ bool PosixIO::eof()
 }
 
 #if _XOPEN_SOURCE >= 600 || _POSIX_C_SOURCE >= 200112L
-static int adviceToFAdv(IO::Advice advice)
+static int adviceToFAdv(IOAdvice advice)
 {
 	switch(advice)
 	{
 		default: return POSIX_FADV_NORMAL;
-		case IO::Advice::SEQUENTIAL: return POSIX_FADV_SEQUENTIAL;
-		case IO::Advice::RANDOM: return POSIX_FADV_RANDOM;
-		case IO::Advice::WILLNEED: return POSIX_FADV_WILLNEED;
+		case IOAdvice::Sequential: return POSIX_FADV_SEQUENTIAL;
+		case IOAdvice::Random: return POSIX_FADV_RANDOM;
+		case IOAdvice::WillNeed: return POSIX_FADV_WILLNEED;
 	}
 }
 #endif
 
-void PosixIO::advise(off_t offset, size_t bytes, Advice advice)
+void PosixIO::advise([[maybe_unused]] off_t offset, [[maybe_unused]] size_t bytes, [[maybe_unused]] Advice advice)
 {
 	#ifdef __APPLE__
-	if(advice == Advice::SEQUENTIAL || advice == Advice::WILLNEED)
-		fcntl(fd_, F_RDAHEAD, 1);
+	if(advice == Advice::Sequential || advice == Advice::WillNeed)
+		fcntl(fd(), F_RDAHEAD, 1);
 	#else
 		#if _XOPEN_SOURCE >= 600 || _POSIX_C_SOURCE >= 200112L
 		int fAdv =  adviceToFAdv(advice);
-		if(posix_fadvise(fd_, offset, bytes, fAdv) != 0)
+		if(posix_fadvise(fd(), offset, bytes, fAdv) != 0)
 		{
-			logMsg("fadvise for offset 0x%llX with size %zu failed", (unsigned long long)offset, bytes);
+			log.error("fadvise for offset:{:X} with size:{} failed", offset, bytes);
 		}
 		#endif
 	#endif
@@ -206,12 +268,62 @@ PosixIO::operator bool() const
 	return fd_ != -1;
 }
 
-int PosixIO::releaseFD()
+IOBuffer PosixIO::releaseBuffer()
 {
-	return fd_.release();
+	auto flags = fcntl(fd(), F_GETFL);
+	if(flags == -1) [[unlikely]]
+	{
+		if(Config::DEBUG_BUILD)
+			log.error("fcntl({}) failed:{}", fd(), strerror(errno));
+		flags = 0;
+	}
+	bool isWritable = (flags & O_WRONLY) || (flags & O_RDWR);
+	return mapRange(0, size(), isWritable ? IOMapFlags{.write = true} : IOMapFlags{});
+}
+
+IOBuffer PosixIO::mapRange(off_t start, size_t size, IOMapFlags mapFlags)
+{
+	int flags = MAP_SHARED;
+	if(mapFlags.populatePages)
+		flags |= MAP_POPULATE;
+	int prot = PROT_READ;
+	if(mapFlags.write)
+		prot |= PROT_WRITE;
+	void *data = mmap(nullptr, size, prot, flags, fd(), start);
+	if(data == MAP_FAILED) [[unlikely]]
+	{
+		log.error("mmap ({}) fd:{} @ {} ({} bytes) failed", protectionFlagsString(prot), fd(), start, size);
+		return {};
+	}
+	log.info("mapped ({}) fd:{} @ {} to {} ({} bytes)", protectionFlagsString(prot), fd(), start, data, size);
+	return byteBufferFromMmap(data, size);
+}
+
+IOBuffer PosixIO::byteBufferFromMmap(void *data, size_t size)
+{
+	return
+	{
+		{(uint8_t*)data, size}, {.mappedFile = true},
+		[](const uint8_t *ptr, size_t size)
+		{
+			log.info("unmapping:{} ({} bytes)", (void*)ptr, size);
+			if(munmap((void*)ptr, size) == -1)
+			{
+				if constexpr(Config::DEBUG_BUILD)
+					log.error("munmap({}, {}) error:{}", (void*)ptr, size, strerror(errno));
+			}
+		}
+	};
+}
+
+UniqueFileDescriptor PosixIO::releaseFd()
+{
+	return std::move(fd_);
 }
 
 int PosixIO::fd() const
 {
 	return fd_;
+}
+
 }

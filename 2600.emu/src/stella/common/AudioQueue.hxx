@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -22,6 +22,8 @@
 
 #include "bspf.hxx"
 #include "StaggeredLogger.hxx"
+
+#include <imagine/util/DelegateFunc.hh>
 
 /**
   This class implements a an audio queue that acts both like a ring buffer
@@ -55,7 +57,7 @@ class AudioQueue
     /**
       Size getter.
      */
-    uInt32 size();
+    uInt32 size() const;
 
     /**
       Stereo / mono getter.
@@ -96,6 +98,8 @@ class AudioQueue
      */
     void ignoreOverflows(bool shouldIgnoreOverflows);
 
+    IG::DelegateFunc<void(AudioQueue &, uInt32 fragmentSize)> onFragmentEnqueued{};
+
   private:
 
     // The size of an individual fragment (in stereo / mono samples)
@@ -120,7 +124,7 @@ class AudioQueue
     uInt32 myNextFragment{0};
 
     // We need a mutex for thread safety.
-    std::mutex myMutex;
+    //mutable std::mutex myMutex;
 
     // The first (empty) enqueue call returns this fragment.
     Int16* myFirstFragmentForEnqueue{nullptr};

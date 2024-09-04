@@ -14,25 +14,49 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/gui/View.hh>
+#include <imagine/gui/ViewManager.hh>
 #include <imagine/gui/MenuItem.hh>
 #include <imagine/gfx/Renderer.hh>
 #include <imagine/gfx/RendererTask.hh>
 #include <imagine/base/Window.hh>
-#include <imagine/util/string.h>
-#include <imagine/util/math/space.hh>
+#include <imagine/input/Event.hh>
+#include <imagine/util/math.hh>
 #include <imagine/logger/logger.h>
+
+namespace IG
+{
+
+constexpr SystemLogger log{"View"};
+
+void ViewI::prepareDraw() {}
+
+bool ViewI::inputEvent(const Input::Event&, ViewInputEventParams) { return false; }
+
+void ViewI::clearSelection() {}
+
+void ViewI::onShow() {}
+
+void ViewI::onHide() {}
+
+void ViewI::onAddedToController(ViewController *, const Input::Event &) {}
+
+void ViewI::setFocus(bool) {}
+
+std::u16string_view ViewI::name() const { return u""; }
+
+bool ViewI::onDocumentPicked(const DocumentPickerEvent&) { return false; }
 
 Gfx::Renderer &ViewAttachParams::renderer() const
 {
-	return rendererTask().renderer();
+	return rendererTask.renderer();
 }
 
-Base::ApplicationContext ViewAttachParams::appContext() const
+ApplicationContext ViewAttachParams::appContext() const
 {
-	return window().appContext();
+	return window.appContext();
 }
 
-void ViewController::pushAndShow(std::unique_ptr<View> v, Input::Event e)
+void ViewController::pushAndShow(std::unique_ptr<View> v, const Input::Event &e)
 {
 	pushAndShow(std::move(v), e, true, false);
 }
@@ -53,79 +77,40 @@ void ViewController::popAndShow()
 	dismissView(-1);
 }
 
-void ViewController::popTo(View &v)
+void ViewController::popTo(View&)
 {
-	logErr("popTo() not implemented for this controller");
+	log.error("popTo() not implemented for this controller");
 }
 
-bool ViewController::inputEvent(Input::Event)
+bool ViewController::inputEvent(const Input::Event &)
 {
 	return false;
 }
 
-bool ViewController::moveFocusToNextView(Input::Event, _2DOrigin)
+bool ViewController::moveFocusToNextView(const Input::Event &, _2DOrigin)
 {
 	return false;
 };
 
-ViewManager::ViewManager(Gfx::Renderer &r)
-{
-	r.make(imageCommonTextureSampler);
-	r.makeCommonProgram(Gfx::CommonProgram::NO_TEX);
-	// for text
-	r.makeCommonProgram(Gfx::CommonProgram::TEX_ALPHA);
-}
-
-void ViewManager::setDefaultFace(Gfx::GlyphTextureSet face)
-{
-	defaultFace_ = std::move(face);
-}
-
-void ViewManager::setDefaultBoldFace(Gfx::GlyphTextureSet face)
-{
-	defaultBoldFace_ = std::move(face);
-}
-
-Gfx::GlyphTextureSet &ViewManager::defaultFace()
-{
-	return defaultFace_;
-}
-
-Gfx::GlyphTextureSet &ViewManager::defaultBoldFace()
-{
-	return defaultBoldFace_;
-}
-
-void ViewManager::setNeedsBackControl(std::optional<bool> opt)
-{
-	if(!opt)
-		return;
-	needsBackControl_ = *opt;
-}
+View* ViewController::parentView(View&) { return {}; }
 
 std::optional<bool> ViewManager::needsBackControlOption() const
 {
-	if(!needsBackControlIsMutable || needsBackControl() == needsBackControlDefault)
+	if(!needsBackControlIsMutable || needsBackControl == needsBackControlDefault)
 		return {};
-	return needsBackControl();
+	return needsBackControl;
 }
 
-Gfx::GC ViewManager::tableXIndent() const
+void ViewManager::setTableXIndentMM(float indentMM, const Window &win)
 {
-	return tableXIndent_;
-}
-
-void ViewManager::setTableXIndentMM(float indentMM, Gfx::ProjectionPlane projP)
-{
-	auto indentGC = projP.xMMSize(indentMM);
-	if(!IG::valIsWithinStretch(indentGC, tableXIndent(), 0.001f))
+	auto oldIndent = std::exchange(tableXIndentPx, win.widthMMInPixels(indentMM));
+	if(tableXIndentPx != oldIndent)
 	{
-		logDMsg("setting X indent:%.2fmm (%f as coordinate)", indentMM, indentGC);
+		//log.debug("setting X indent:{}mm ({} as pixels)", indentMM, tableXIndentPx);
 	}
-	tableXIndent_ = projP.xMMSize(indentMM);
 }
 
-float ViewManager::defaultTableXIndentMM(const Base::Window &win)
+float ViewManager::defaultTableXIndentMM(const Window &win)
 {
 	auto wMM = win.sizeMM().x;
 	return
@@ -134,35 +119,18 @@ float ViewManager::defaultTableXIndentMM(const Base::Window &win)
 		4.;
 }
 
-void ViewManager::setTableXIndentToDefault(const Base::Window &win, Gfx::ProjectionPlane projP)
+void ViewManager::setTableXIndentToDefault(const Window &win)
 {
-	setTableXIndentMM(defaultTableXIndentMM(win), projP);
+	setTableXIndentMM(defaultTableXIndentMM(win), win);
 }
 
-View::View() {}
-
-View::View(ViewAttachParams attach):
-	View{{}, attach}
-{}
-
-View::View(NameString name, ViewAttachParams attach):
-	win(&attach.window()), rendererTask_{&attach.rendererTask()},
-	manager_{&attach.viewManager()}, nameStr{std::move(name)}
-{}
-
-View::View(const char *name, ViewAttachParams attach):
-	View{makeNameString(name), attach}
-{}
-
-View::~View() {}
-
-void View::pushAndShow(std::unique_ptr<View> v, Input::Event e, bool needsNavView, bool isModal)
+void View::pushAndShow(std::unique_ptr<View> v, const Input::Event &e, bool needsNavView, bool isModal)
 {
 	assumeExpr(controller_);
 	controller_->pushAndShow(std::move(v), e, needsNavView, isModal);
 }
 
-void View::pushAndShowModal(std::unique_ptr<View> v, Input::Event e, bool needsNavView)
+void View::pushAndShowModal(std::unique_ptr<View> v, const Input::Event &e, bool needsNavView)
 {
 	pushAndShow(std::move(v), e, needsNavView, true);
 }
@@ -173,6 +141,8 @@ void View::popTo(View &v)
 	controller_->popTo(v);
 }
 
+void View::popTo() { popTo(*this); }
+
 void View::dismiss(bool refreshLayout)
 {
 	if(controller_)
@@ -181,7 +151,7 @@ void View::dismiss(bool refreshLayout)
 	}
 	else
 	{
-		logWarn("called dismiss with no controller");
+		log.warn("called dismiss with no controller");
 	}
 }
 
@@ -193,46 +163,33 @@ void View::dismissPrevious()
 	}
 	else
 	{
-		logWarn("called dismissPrevious with no controller");
+		log.warn("called dismissPrevious with no controller");
 	}
 }
 
-Gfx::GlyphTextureSet &View::defaultFace()
-{
-	return manager().defaultFace();
-}
+Gfx::GlyphTextureSet &View::defaultFace() { return manager().defaultFace; }
 
-Gfx::GlyphTextureSet &View::defaultBoldFace()
-{
-	return manager().defaultBoldFace();
-}
+Gfx::GlyphTextureSet &View::defaultBoldFace() { return manager().defaultBoldFace; }
 
 Gfx::Color View::menuTextColor(bool isSelected)
 {
-	return isSelected ? Gfx::color(0.f, .8f, 1.f) : Gfx::color(Gfx::ColorName::WHITE);
+	return isSelected ? Gfx::Color{0.f, .8f, 1.f} : Gfx::Color(Gfx::ColorName::WHITE);
 }
 
-void View::clearSelection() {}
-
-void View::onShow() {}
-
-void View::onHide() {}
-
-void View::onAddedToController(ViewController *, Input::Event) {}
-
-void View::prepareDraw() {}
-
-void View::setFocus(bool) {}
-
-void View::setViewRect(IG::WindowRect rect, Gfx::ProjectionPlane projP)
+int View::navBarHeight(const Gfx::GlyphTextureSet &face)
 {
-	this->viewRect_ = rect;
-	this->projP = projP;
+	return makeEvenRoundedUp(int(face.nominalHeight() * 1.75f));
 }
 
-void View::setViewRect( Gfx::ProjectionPlane projP)
+void View::setViewRect(WindowRect viewRect, WindowRect displayRect)
 {
-	setViewRect(projP.viewport().bounds(), projP);
+	this->viewRect_ = viewRect;
+	this->displayRect_ = displayRect;
+}
+
+void View::setViewRect(WindowRect viewRect)
+{
+	setViewRect(viewRect, viewRect);
 }
 
 void View::postDraw()
@@ -241,7 +198,7 @@ void View::postDraw()
 		win->postDraw();
 }
 
-Base::Window &View::window() const
+Window &View::window() const
 {
 	assumeExpr(win);
 	return *win;
@@ -259,92 +216,61 @@ Gfx::RendererTask &View::rendererTask() const
 	return *rendererTask_;
 }
 
-ViewManager &View::manager()
-{
-	return *manager_;
-}
-
 ViewAttachParams View::attachParams() const
 {
 	return {*manager_, *win, *rendererTask_};
 }
 
-Base::Screen *View::screen() const
+Screen *View::screen() const
 {
 	return win ? win->screen() : nullptr;
 }
 
-Base::ApplicationContext View::appContext() const
+ApplicationContext View::appContext() const
 {
 	return window().appContext();
 }
 
-View::NameStringView View::name() const
+bool View::onDocumentPicked(const DocumentPickerEvent& e)
 {
-	return nameStr;
+	auto vPtr = parentView();
+	return vPtr ? vPtr->onDocumentPicked(e) : false;
 }
 
-void View::setName(const char *str)
+std::u16string View::nameString(const MenuItem &item)
 {
-	if(!str)
-	{
-		nameStr.clear();
-		nameStr.shrink_to_fit();
-		return;
-	}
-	nameStr = makeNameString(str);
-}
-
-void View::setName(NameString name)
-{
-	nameStr = std::move(name);
-}
-
-View::NameString View::makeNameString(const char *name)
-{
-	if(!name)
-	{
-		return {};
-	}
-	return string_makeUTF16(name);
-}
-
-View::NameString View::makeNameString(const BaseTextMenuItem &item)
-{
-	return NameString{item.text().stringView()};
+	return item.text().string();
 }
 
 void View::show()
 {
 	prepareDraw();
 	onShow();
-	//logMsg("showed view");
 	postDraw();
 }
 
-bool View::moveFocusToNextView(Input::Event e, _2DOrigin direction)
+bool View::moveFocusToNextView(const Input::Event &e, _2DOrigin direction)
 {
 	if(!controller_)
 		return false;
 	return controller_->moveFocusToNextView(e, direction);
 }
 
-void View::setWindow(Base::Window *w)
+View* View::parentView()
+{
+	if(!controller_)
+		return {};
+	return controller_->parentView(*this);
+}
+
+void View::setWindow(Window *w)
 {
 	win = w;
 }
 
-void View::setOnDismiss(DismissDelegate del)
-{
-	dismissDel = del;
-}
+void View::onDismiss() {}
 
-void View::onDismiss()
-{
-	dismissDel.callSafe(*this);
-}
-
-void View::setController(ViewController *c, Input::Event e)
+void View::setController(ViewController *c, const Input::Event &e)
 {
 	controller_ = c;
 	if(c)
@@ -363,24 +289,26 @@ ViewController *View::controller() const
 	return controller_;
 }
 
-IG::WindowRect View::viewRect() const
+WindowRect View::displayInsetRect(Direction d) const
 {
-	return viewRect_;
+	return displayInsetRect(d, viewRect(), displayRect());
 }
 
-Gfx::ProjectionPlane View::projection() const
+WindowRect View::displayInsetRect(Direction d, WindowRect viewRect, WindowRect displayRect)
 {
-	return projP;
+	switch(d)
+	{
+		case Direction::TOP: return {displayRect.pos(LT2DO), {displayRect.x2, viewRect.y}};
+		case Direction::RIGHT: return {{viewRect.x2, displayRect.y}, displayRect.pos(RB2DO)};
+		case Direction::BOTTOM: return {{displayRect.x, viewRect.y2}, displayRect.pos(RB2DO)};
+		case Direction::LEFT: return {displayRect.pos(LT2DO), {viewRect.x, displayRect.y2}};
+	}
+	bug_unreachable("Direction == %d", (int)d);
 }
 
-bool View::pointIsInView(IG::WP pos)
+bool View::pointIsInView(WPt pos)
 {
 	return viewRect().overlaps(pos);
 }
 
-void View::waitForDrawFinished()
-{
-	// currently a no-op due to RendererTask only running present() async
-	/*assumeExpr(rendererTask_);
-	rendererTask_->waitForDrawFinished();*/
 }

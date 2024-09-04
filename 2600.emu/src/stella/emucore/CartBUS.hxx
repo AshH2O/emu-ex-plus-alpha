@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -19,13 +19,9 @@
 #define CARTRIDGE_BUS_HXX
 
 class System;
-class Thumbulator;
-#ifdef DEBUGGER_SUPPORT
-  #include "CartBUSWidget.hxx"
-#endif
 
 #include "bspf.hxx"
-#include "Cart.hxx"
+#include "CartARM.hxx"
 
 /**
   Cartridge class used for BUS.
@@ -34,16 +30,25 @@ class Thumbulator;
   IN A FUTURE RELEASE.
 
   There are seven 4K program banks, a 4K Display Data RAM,
-  1K C Varaible and Stack, and the BUS chip.
+  1K C Variable and Stack, and the BUS chip.
   BUS chip access is mapped to $1000 - $103F.
 
   @authors: Darrell Spice Jr, Chris Walton, Fred Quimby,
             Stephen Anthony, Bradford W. Mott
 */
-class CartridgeBUS : public Cartridge
+class CartridgeBUS : public CartridgeARM
 {
   friend class CartridgeBUSWidget;
+  friend class CartridgeBUSInfoWidget;
   friend class CartridgeRamBUSWidget;
+  
+  enum class BUSSubtype {
+    BUS0, // very old demos when BUS was in flux, not supported in Stella
+    BUS1, // draconian_20161102.bin
+    BUS2, // 128bus_20170120.bin, 128chronocolour_20170101.bin, parrot_20161231_NTSC.bin
+    BUS3  // rpg_20170616_NTSC.bin
+  };
+
 
   public:
     /**
@@ -56,22 +61,13 @@ class CartridgeBUS : public Cartridge
     */
     CartridgeBUS(const ByteBuffer& image, size_t size, const string& md5,
                  const Settings& settings);
-    virtual ~CartridgeBUS() = default;
+    ~CartridgeBUS() override = default;
 
   public:
     /**
       Reset device to its power-on state
     */
     void reset() override;
-
-    /**
-      Notification method invoked by the system when the console type
-      has changed.  We need this to inform the Thumbulator that the
-      timing has changed.
-
-      @param timing  Enum representing the new console type
-    */
-    void consoleChanged(ConsoleTiming timing) override;
 
     /**
       Install cartridge in the specified system.  Invoked by the system
@@ -84,9 +80,12 @@ class CartridgeBUS : public Cartridge
     /**
       Install pages for the specified bank in the system.
 
-      @param bank The bank that should be installed in the system
+      @param bank     The bank that should be installed in the system
+      @param segment  The segment the bank should be using
+
+      @return  true, if bank has changed
     */
-    bool bank(uInt16 bank) override;
+    bool bank(uInt16 bank, uInt16 segment = 0) override;
 
     /**
       Get the current bank.
@@ -98,7 +97,7 @@ class CartridgeBUS : public Cartridge
     /**
       Query the number of banks supported by the cartridge.
     */
-    uInt16 bankCount() const override;
+    uInt16 romBankCount() const override;
 
     /**
       Patch the cartridge ROM.
@@ -113,9 +112,9 @@ class CartridgeBUS : public Cartridge
       Access the internal ROM image for this cartridge.
 
       @param size  Set to the size of the internal ROM image data
-      @return  A pointer to the internal ROM image data
+      @return  A reference to the internal ROM image data
     */
-    const uInt8* getImage(size_t& size) const override;
+    const ByteBuffer& getImage(size_t& size) const override;
 
     /**
       Save the current state of this cart to the given Serializer.
@@ -138,7 +137,7 @@ class CartridgeBUS : public Cartridge
 
       @return The name of the object
     */
-    string name() const override { return "CartridgeBUS"; }
+    string name() const override;
 
     uInt8 busOverdrive(uInt16 address);
 
@@ -147,6 +146,20 @@ class CartridgeBUS : public Cartridge
    */
   uInt32 thumbCallback(uInt8 function, uInt32 value1, uInt32 value2) override;
 
+  /**
+    Query the internal RAM size of the cart.
+
+    @return The internal RAM size
+  */
+  uInt32 internalRamSize() const override { return static_cast<uInt32>(myRAM.size()); }
+
+  /**
+    Read a byte from cart internal RAM.
+
+    @return The value of the interal RAM byte
+  */
+  uInt8 internalRamGetValue(uInt16 addr) const override;
+
 
   #ifdef DEBUGGER_SUPPORT
     /**
@@ -154,12 +167,13 @@ class CartridgeBUS : public Cartridge
       of the cart.
     */
     CartDebugWidget* debugWidget(GuiObject* boss, const GUI::Font& lfont,
-        const GUI::Font& nfont, int x, int y, int w, int h) override
-    {
-      return new CartridgeBUSWidget(boss, lfont, nfont, x, y, w, h, *this);
-    }
-  #endif
+                                 const GUI::Font& nfont, int x, int y, int w, int h) override;
+  
+    CartDebugWidget* infoWidget(GuiObject* boss, const GUI::Font& lfont,
+                                const GUI::Font& nfont, int x, int y, int w, int h) override;
 
+  #endif
+  
   public:
     /**
       Get the byte at the specified address.
@@ -179,9 +193,16 @@ class CartridgeBUS : public Cartridge
 
   private:
     /**
+      Checks if startup bank randomization is enabled.  For this scheme,
+      randomization is not supported, since the ARM code is always in a
+      pre-defined bank, and we *must* start from there.
+    */
+    bool randomStartBank() const override { return false; }
+
+    /**
       Sets the initial state of the DPC pointers and RAM
     */
-    void setInitialState();
+    void setInitialState() override;
 
     /**
       Updates any data fetchers in music mode based on the number of
@@ -199,7 +220,7 @@ class CartridgeBUS : public Cartridge
 
     uInt32 getDatastreamIncrement(uInt8 index) const;
     void setDatastreamIncrement(uInt8 index, uInt32 value);
-
+  
     uInt32 getAddressMap(uInt8 index) const;
     void setAddressMap(uInt8 index, uInt32 value);
 
@@ -208,10 +229,12 @@ class CartridgeBUS : public Cartridge
     uInt32 getWaveform(uInt8 index) const;
     uInt32 getWaveformSize(uInt8 index) const;
     uInt32 getSample();
+    void setupVersion();
+    uInt32 scanBUSDriver(uInt32 value);
 
   private:
     // The 32K ROM image of the cartridge
-    std::array<uInt8, 32_KB> myImage;
+    ByteBuffer myImage;
 
     // Pointer to the 28K program ROM image of the cartridge
     uInt8* myProgramImage{nullptr};
@@ -220,16 +243,13 @@ class CartridgeBUS : public Cartridge
     uInt8* myDisplayImage{nullptr};
 
     // Pointer to the 2K BUS driver image in RAM
-    uInt8* myBusDriverImage{nullptr};
+    uInt8* myDriverImage{nullptr};
 
     // The BUS 8k RAM image, used as:
     //   $0000 - 2K BUS driver
     //   $0800 - 4K Display Data
     //   $1800 - 2K C Variable & Stack
-    std::array<uInt8, 8_KB> myBUSRAM;
-
-    // Pointer to the Thumb ARM emulator object
-    unique_ptr<Thumbulator> myThumbEmulator;
+    std::array<uInt8, 8_KB> myRAM;
 
     // Indicates the offset into the ROM image (aligns to current bank)
     uInt16 myBankOffset{0};
@@ -249,6 +269,18 @@ class CartridgeBUS : public Cartridge
 
     // ARM cycle count from when the last callFunction() occurred
     uInt64 myARMCycles{0};
+  
+    // Pointer to the array of datastream pointers
+    uInt16 myDatastreamBase{0}; // was DSxPTR
+
+    // Pointer to the array of datastream increments
+    uInt16 myDatastreamIncrementBase{0};  // was DSxINC
+  
+    // Pointer to the array of datastream maps
+    uInt16 myDatastreamMapBase{0};  // was DSMAPS
+  
+    // Pointer to the beginning of the waveform data block
+    uInt16 myWaveformBase{0}; // was WAVEFORM
 
     // The music mode counters
     std::array<uInt32, 3> myMusicCounters{0};
@@ -270,6 +302,9 @@ class CartridgeBUS : public Cartridge
     uInt8 myMode{0};
 
     uInt8 myFastJumpActive{false};
+  
+  // BUS subtype
+  BUSSubtype myBUSSubtype{BUSSubtype::BUS1};
 
   private:
     // Following constructors and assignment operators not supported

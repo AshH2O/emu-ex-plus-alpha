@@ -15,8 +15,8 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/config/defs.hh>
-#include <imagine/audio/OutputStream.hh>
+#include <imagine/audio/defs.hh>
+#include <imagine/audio/Format.hh>
 #include <imagine/base/CustomEvent.hh>
 
 typedef struct AAudioStreamStruct AAudioStream;
@@ -27,26 +27,27 @@ namespace IG::Audio
 
 class Manager;
 
-class AAudioOutputStream : public OutputStream
+class AAudioOutputStream
 {
 public:
 	AAudioOutputStream(const Manager &);
 	~AAudioOutputStream();
-	IG::ErrorCode open(OutputStreamConfig config) final;
-	void play() final;
-	void pause() final;
-	void close() final;
-	void flush() final;
-	bool isOpen() final;
-	bool isPlaying() final;
+	AAudioOutputStream &operator=(AAudioOutputStream &&) = delete;
+	StreamError open(OutputStreamConfig config);
+	void play();
+	void pause();
+	void close();
+	void flush();
+	bool isOpen();
+	bool isPlaying();
 	explicit operator bool() const;
 
 private:
 	AAudioStream *stream{};
 	AAudioStreamBuilder *builder{};
 	OnSamplesNeededDelegate onSamplesNeeded{};
-	Base::CustomEvent disconnectEvent{"AAudioOutputStream::disconnectEvent"};
-	bool isPlaying_ = false;
+	CustomEvent disconnectEvent;
+	bool isPlaying_{};
 
 	void setBuilderData(AAudioStreamBuilder *builder, Format format, bool lowLatencyMode);
 };

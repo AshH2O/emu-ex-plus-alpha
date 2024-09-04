@@ -15,16 +15,21 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/config/defs.hh>
-#include <compare>
+#include <cstdint>
 
 namespace IG
 {
 
+enum class FontWeight : uint8_t
+{
+	NORMAL,
+	BOLD,
+};
+
 class FontSettings
 {
 public:
-	constexpr FontSettings() {}
+	constexpr FontSettings() = default;
 	constexpr FontSettings(int pixelWidth, int pixelHeight) : pixWidth{pixelWidth}, pixHeight{pixelHeight} {}
 	constexpr FontSettings(int pixelHeight) : FontSettings{0, pixelHeight} {}
 	operator bool() const;

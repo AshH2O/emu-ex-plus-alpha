@@ -18,64 +18,71 @@
 #include <imagine/config/defs.hh>
 #include <imagine/base/ApplicationContext.hh>
 #include <imagine/base/WindowConfig.hh>
-#include <imagine/pixmap/PixelFormat.hh>
+#include <imagine/base/Viewport.hh>
 #include <imagine/util/rectangle2.h>
 #include <imagine/util/DelegateFunc.hh>
-#include <imagine/base/Error.hh>
+#include <imagine/util/utility.h>
+#include <span>
+#include <memory>
 
-namespace Input
-{
-class Event;
-}
-
-namespace Base
+namespace IG
 {
 
-class Screen;
-class ApplicationContext;
-class Application;
+class PixelFormat;
+enum class FrameTimeSource : uint8_t;
 
 class Window : public WindowImpl
 {
 public:
-	using FrameTimeSource = WindowFrameTimeSource;
-
 	Window(ApplicationContext, WindowConfig, InitDelegate);
 	void show();
 	void dismiss();
 	void setAcceptDnd(bool on);
 	void setTitle(const char *name);
 	bool setNeedsDraw(bool needsDraw);
-	void setNeedsCustomViewportResize(bool needsResize);
 	bool needsDraw() const;
-	void postDraw(uint8_t priority = 0);
+	void postDraw(int8_t priority = 0);
 	void unpostDraw();
 	void postFrameReady();
-	void postDrawToMainThread(uint8_t priority = 0);
+	void postDrawToMainThread(int8_t priority = 0);
 	void postFrameReadyToMainThread();
-	uint8_t setDrawEventPriority(uint8_t = 0);
-	uint8_t drawEventPriority() const;
+	void setFrameEventsOnThisThread();
+	void removeFrameEvents();
+	static constexpr int8_t drawEventPriorityLocked = 127; // max value passed to setDrawEventPriority() also blocks implicit drawing
+	int8_t setDrawEventPriority(int8_t = 0);
+	int8_t drawEventPriority() const;
+	bool isReady() const { return drawPhase == DrawPhase::READY; }
+	DrawPhase activeDrawPhase() const { return drawPhase; }
 	void drawNow(bool needsSync = false);
 	Screen *screen() const;
 	NativeWindow nativeObject() const;
-	void setIntendedFrameRate(double rate);
+	void setIntendedFrameRate(FrameRate rate);
 	void setFormat(NativeWindowFormat);
-	void setFormat(IG::PixelFormat);
-	IG::PixelFormat pixelFormat() const;
+	void setFormat(PixelFormat);
+	PixelFormat pixelFormat() const;
 	bool operator ==(Window const &rhs) const;
-	bool addOnFrame(Base::OnFrameDelegate del, FrameTimeSource src = {}, int priority = 0);
-	bool removeOnFrame(Base::OnFrameDelegate del, FrameTimeSource src = {});
+	bool addOnFrame(OnFrameDelegate, FrameTimeSource src = {}, int priority = 0);
+	bool removeOnFrame(OnFrameDelegate, FrameTimeSource src = {});
+	bool moveOnFrame(Window &srcWin, OnFrameDelegate, FrameTimeSource src = {});
+	FrameTimeSource defaultFrameTimeSource() const;
+	FrameTimeSource evalFrameTimeSource(FrameTimeSource) const;
+	void configureFrameTimeSource(FrameTimeSource);
 	void resetAppData();
 	void resetRendererData();
 	bool isMainWindow() const;
 	ApplicationContext appContext() const;
 	Application &application() const;
 	void setCursorVisible(bool);
+	void setSystemGestureExclusionRects(std::span<const WRect>);
+	void setDecorations(bool);
+	void setPosition(WPt pos);
+	void setSize(WSize size);
+	void toggleFullScreen();
 
-	template <class T, class... Args>
-	T &makeAppData(Args&&... args)
+	template <class T>
+	T &makeAppData(auto &&... args)
 	{
-		appDataPtr = std::make_shared<T>(std::forward<Args>(args)...);
+		appDataPtr = std::make_shared<T>(IG_forward(args)...);
 		return *appData<T>();
 	}
 
@@ -85,10 +92,10 @@ public:
 		return static_cast<T*>(appDataPtr.get());
 	}
 
-	template <class T, class... Args>
-	T &makeRendererData(Args&&... args)
+	template <class T>
+	T &makeRendererData(auto &&... args)
 	{
-		rendererDataPtr = std::make_shared<T>(std::forward<Args>(args)...);
+		rendererDataPtr = std::make_shared<T>(IG_forward(args)...);
 		return *rendererData<T>();
 	}
 
@@ -98,58 +105,39 @@ public:
 		return static_cast<T*>(rendererDataPtr.get());
 	}
 
-	// Called when the state of the window's drawing surface changes,
-	// such as a re-size or if it becomes the current drawing target
-	void setOnSurfaceChange(SurfaceChangeDelegate del);
-	// Called during a Screen frame callback if the window needs to be drawn
-	void setOnDraw(DrawDelegate del);
-	// Called to process an event from an input device
-	void setOnInputEvent(InputEventDelegate del);
-	// Called when app window enters/exits focus
-	void setOnFocusChange(FocusChangeDelegate del);
-	// Called when a file is dropped into into the app's window
-	// if app enables setAcceptDnd()
-	void setOnDragDrop(DragDropDelegate del);
-	// Called when the user performs an action indicating to
-	// to the window manager they wish to dismiss the window
-	// (clicking the close button for example),
-	// by default it will exit the app
-	void setOnDismissRequest(DismissRequestDelegate del);
-	// Called when the window is dismissed
-	void setOnDismiss(DismissDelegate del);
-
 	int realWidth() const;
 	int realHeight() const;
 	int width() const;
 	int height() const;
-	IG::Point2D<int> realSize() const;
-	IG::Point2D<int> size() const;
+	WSize realSize() const;
+	WSize size() const;
 	bool isPortrait() const;
 	bool isLandscape() const;
-	IG::Point2D<float> sizeMM() const;
-	IG::Point2D<float> sizeScaledMM() const;
+	F2Size sizeMM() const;
+	F2Size sizeScaledMM() const;
 	int widthMMInPixels(float mm) const;
 	int heightMMInPixels(float mm) const;
 	int widthScaledMMInPixels(float mm) const;
 	int heightScaledMMInPixels(float mm) const;
-	IG::WindowRect bounds() const;
-	IG::Point2D<int> transformInputPos(IG::Point2D<int> srcPos) const;
+	WRect bounds() const;
+	F2Pt transformInputPos(F2Pt srcPos) const;
+	Viewport viewport(WindowRect rect) const;
+	Viewport viewport() const;
 
 	// content in these bounds isn't blocked by system overlays and receives pointer input
-	IG::WindowRect contentBounds() const;
+	WRect contentBounds() const;
 
-	Orientation softOrientation() const;
-	Orientation validSoftOrientations() const;
-	bool requestOrientationChange(Orientation o);
-	bool setValidOrientations(Orientation oMask);
+	Rotation softOrientation() const;
+	bool requestOrientationChange(Rotation o);
+	bool setValidOrientations(Orientations);
 
-	bool updateSize(IG::Point2D<int> surfaceSize);
-	bool updatePhysicalSize(IG::Point2D<float> surfaceSizeMM);
-	bool updatePhysicalSize(IG::Point2D<float> surfaceSizeMM, IG::Point2D<float> surfaceSizeSMM);
+	bool updateSize(WSize surfaceSize);
+	bool updatePhysicalSize(F2Size surfaceSizeMM);
+	bool updatePhysicalSize(F2Size surfaceSizeMM, F2Size surfaceSizeSMM);
 	bool updatePhysicalSizeWithCurrentSize();
 	bool hasSurface() const;
 	bool dispatchInputEvent(Input::Event event);
-	bool dispatchRepeatableKeyInputEvent(Input::Event event);
+	bool dispatchRepeatableKeyInputEvent(Input::KeyEvent event);
 	void dispatchFocusChange(bool in);
 	void dispatchDragDrop(const char *filename);
 	void dispatchDismissRequest();
@@ -158,10 +146,11 @@ public:
 	void dispatchSurfaceCreated();
 	void dispatchSurfaceChanged();
 	void dispatchSurfaceDestroyed();
+	void signalSurfaceChanged(WindowSurfaceChangeFlags);
 
 private:
-	IG::Point2D<float> pixelSizeAsMM(IG::Point2D<int> size);
-	IG::Point2D<float> pixelSizeAsScaledMM(IG::Point2D<int> size);
+	F2Size pixelSizeAsMM(WSize size);
+	F2Size pixelSizeAsScaledMM(WSize size);
 	void draw(bool needsSync = false);
 };
 

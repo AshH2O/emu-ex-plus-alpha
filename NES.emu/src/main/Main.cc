@@ -13,109 +13,102 @@
 	You should have received a copy of the GNU General Public License
 	along with NES.emu.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "main"
-#include <emuframework/EmuApp.hh>
 #include <emuframework/EmuAppInlines.hh>
-#include <emuframework/EmuAudio.hh>
-#include <emuframework/EmuVideo.hh>
-#include "internal.hh"
+#include <emuframework/EmuSystemInlines.hh>
 #include "EmuFileIO.hh"
 #include <imagine/fs/FS.hh>
+#include <imagine/io/IO.hh>
+#include <imagine/util/format.hh>
+#include <imagine/util/string.h>
 #include <fceu/driver.h>
-#include <fceu/state.h>
 #include <fceu/fceu.h>
 #include <fceu/ppu.h>
 #include <fceu/fds.h>
 #include <fceu/input.h>
-#include <fceu/cheat.h>
+#include <fceu/cart.h>
 #include <fceu/video.h>
 #include <fceu/sound.h>
-#include <fceu/palette.h>
+#include <fceu/x6502.h>
+#include <imagine/logger/logger.h>
 
-using PalArray = std::array<pal, 512>;
 void ApplyDeemphasisComplete(pal* pal512);
 void FCEU_setDefaultPalettePtr(pal *ptr);
+void ApplyIPS(FILE *ips, FCEUFILE* fp);
 
-const char *EmuSystem::creditsViewStr = CREDITS_INFO_STRING "(c) 2011-2021\nRobert Broglia\nwww.explusalpha.com\n\nPortions (c) the\nFCEUX Team\nfceux.com";
-bool EmuSystem::hasCheats = true;
-bool EmuSystem::hasPALVideoSystem = true;
-bool EmuSystem::hasResetModes = true;
-unsigned fceuCheats = 0;
-ESI nesInputPortDev[2]{SI_UNSET, SI_UNSET};
-unsigned autoDetectedRegion = 0;
-static IG::PixelFormat pixFmt{};
-const char *fceuReturnedError = {};
-static PalArray defaultPal{};
-union
-{
-	uint16_t col16[256];
-	uint32_t col32[256];
-} nativeCol;
-static const unsigned nesPixX = 256, nesPixY = 240, nesVisiblePixY = 224;
-static uint8 XBufData[256 * 256 + 16]{};
 // Separate front & back buffers not needed for our video implementation
-uint8 *XBuf = XBufData;
-uint8 *XBackBuf = XBufData;
+uint8 *XBuf{};
+uint8 *XBackBuf{};
 uint8 *XDBuf{};
 uint8 *XDBackBuf{};
 int dendy = 0;
 bool paldeemphswap = false;
 bool swapDuty = false;
 
-bool hasFDSBIOSExtension(const char *name)
+namespace EmuEx
 {
-	return string_hasDotExtension(name, "rom") || string_hasDotExtension(name, "bin");
+
+constexpr SystemLogger log{"NES.emu"};
+const char *EmuSystem::creditsViewStr = CREDITS_INFO_STRING "(c) 2011-2024\nRobert Broglia\nwww.explusalpha.com\n\nPortions (c) the\nFCEUX Team\nfceux.com";
+bool EmuSystem::hasCheats = true;
+bool EmuSystem::hasPALVideoSystem = true;
+bool EmuSystem::hasResetModes = true;
+bool EmuSystem::hasRectangularPixels = true;
+bool EmuApp::needsGlobalInstance = true;
+
+NesApp::NesApp(ApplicationInitParams initParams, ApplicationContext &ctx):
+	EmuApp{initParams, ctx}, nesSystem{ctx}
+{
+	audio.setStereo(false);
 }
 
-static bool hasFDSExtension(const char *name)
+bool hasFDSBIOSExtension(std::string_view name)
 {
-	return string_hasDotExtension(name, "fds");
+	return endsWithAnyCaseless(name, ".rom", ".bin");
 }
 
-static bool hasROMExtension(const char *name)
+static bool hasFDSExtension(std::string_view name)
 {
-	return string_hasDotExtension(name, "nes") || string_hasDotExtension(name, "unf");
+	return endsWithAnyCaseless(name, ".fds");
 }
 
-static bool hasNESExtension(const char *name)
+static bool hasROMExtension(std::string_view name)
 {
-	return hasROMExtension(name) || hasFDSExtension(name);
+	return endsWithAnyCaseless(name, ".nes", ".unf", ".unif");
 }
 
-const BundledGameInfo &EmuSystem::bundledGameInfo(unsigned idx)
+static bool hasNESExtension(std::string_view name)
 {
-	static const BundledGameInfo info[]
-	{
-		{ "Test Game", "game.7z" }
-	};
-
-	return info[0];
+	return hasROMExtension(name) || hasFDSExtension(name) || endsWithAnyCaseless(name, ".nsf");
 }
 
-const char *EmuSystem::shortSystemName()
+const char *EmuSystem::shortSystemName() const
 {
 	return "FC-NES";
 }
 
-const char *EmuSystem::systemName()
+const char *EmuSystem::systemName() const
 {
 	return "Famicom (Nintendo Entertainment System)";
 }
 
-static void setDirOverrides()
+EmuSystem::NameFilterFunc EmuSystem::defaultFsFilter = hasNESExtension;
+
+NesSystem::NesSystem(ApplicationContext ctx):
+	EmuSystem{ctx}
 {
-	FCEUI_SetBaseDirectory(EmuSystem::savePath());
-	FCEUI_SetDirOverride(FCEUIOD_NV, EmuSystem::savePath());
-	FCEUI_SetDirOverride(FCEUIOD_CHEATS, EmuSystem::savePath());
+	XBuf = XBufData;
+	XBackBuf = XBufData;
+	backupSavestates = false;
+	if(!FCEUI_Initialize())
+	{
+		throw std::runtime_error{"Error in FCEUI_Initialize"};
+	}
 }
 
-EmuSystem::NameFilterFunc EmuSystem::defaultFsFilter = hasNESExtension;
-EmuSystem::NameFilterFunc EmuSystem::defaultBenchmarkFsFilter = hasNESExtension;
-
-void EmuSystem::reset(ResetMode mode)
+void NesSystem::reset(EmuApp &app, ResetMode mode)
 {
-	assert(gameIsRunning());
-	if(mode == RESET_HARD)
+	assert(hasContent());
+	if(mode == ResetMode::HARD)
 		FCEUI_PowerNES();
 	else
 		FCEUI_ResetNES();
@@ -131,119 +124,117 @@ static char saveSlotCharNES(int slot)
 	}
 }
 
-FS::PathString EmuSystem::sprintStateFilename(int slot, const char *statePath, const char *gameName)
+FS::FileString NesSystem::stateFilename(int slot, std::string_view name) const
 {
-	return FS::makePathStringPrintf("%s/%s.fc%c", statePath, gameName, saveSlotCharNES(slot));
+	return format<FS::FileString>("{}.fc{}", name, saveSlotCharNES(slot));
 }
 
-EmuSystem::Error EmuSystem::saveState(const char *path)
+void NesSystem::readState(EmuApp &app, std::span<uint8_t> buff)
 {
-	if(!FCEUI_SaveState(path))
-		return EmuSystem::makeFileWriteError();
-	else
-		return {};
+	EmuFileIO memFile{buff};
+	if(!FCEUSS_LoadFP(&memFile, SSLOADPARAM_NOBACKUP))
+		throw std::runtime_error("Invalid state data");
 }
 
-EmuSystem::Error EmuSystem::loadState(const char *path)
+size_t NesSystem::writeState(std::span<uint8_t> buff, SaveStateFlags flags)
 {
-	if(!FCEUI_LoadState(path))
-		return EmuSystem::makeFileReadError();
-	else
-		return {};
+	assert(buff.size() >= saveStateSize);
+	EmuFileIO memFile{buff};
+	FCEUSS_SaveMS(&memFile, -1);
+	return memFile.ftell();
 }
 
-void EmuSystem::saveBackupMem() // for manually saving when not closing game
+void NesSystem::loadBackupMemory(EmuApp &app)
 {
-	if(gameIsRunning())
+	if(isFDS)
 	{
-		logMsg("saving backup memory if needed");
-		// TODO: fix iOS permissions if needed
-		if(isFDS)
-			FCEU_FDSWriteModifiedDisk();
-		else
-			GameInterface(GI_WRITESAVE);
-		FCEU_FlushGameCheats(nullptr, 0, false);
+		FCEU_FDSReadModifiedDisk();
+	}
+	else if(currCartInfo)
+	{
+		FCEU_LoadGameSave(currCartInfo);
 	}
 }
 
-void EmuSystem::closeSystem()
+void NesSystem::onFlushBackupMemory(EmuApp &, BackupMemoryDirtyFlags)
+{
+	if(isFDS)
+	{
+		FCEU_FDSWriteModifiedDisk();
+	}
+	else if(currCartInfo)
+	{
+		FCEU_SaveGameSave(currCartInfo);
+	}
+}
+
+WallClockTimePoint NesSystem::backupMemoryLastWriteTime(const EmuApp &app) const
+{
+	return appContext().fileUriLastWriteTime(
+		app.contentSaveFilePath(isFDS ? ".fds.sav" : ".sav").c_str());
+}
+
+void NesSystem::closeSystem()
 {
 	FCEUI_CloseGame();
-	fceuCheats = 0;
+	fdsIsAccessing = false;
 }
 
-void FCEUD_SetPalette(uint8 index, uint8 r, uint8 g, uint8 b)
+void NesSystem::setDefaultPalette(IO &io)
 {
-	if(pixFmt == IG::PIXEL_RGB565)
+	auto colors = io.read(std::span<pal>{defaultPal}).items;
+	if(colors < 64)
 	{
-		nativeCol.col16[index] = pixFmt.desc().build(r >> 3, g >> 2, b >> 3, 0);
-	}
-	else // RGBA8888
-	{
-		auto desc = pixFmt == IG::PIXEL_BGRA8888 ? IG::PIXEL_DESC_BGRA8888.nativeOrder() : IG::PIXEL_DESC_RGBA8888.nativeOrder();
-		nativeCol.col32[index] = desc.build(r, g, b, (uint8)0);
-	}
-	//logMsg("set palette %d %X", index, nativeCol[index]);
-}
-
-void FCEUD_GetPalette(uint8 index, uint8 *r, uint8 *g, uint8 *b)
-{
-	bug_unreachable("called FCEUD_GetPalette()");
-}
-
-static void setDefaultPalette(IO &io)
-{
-	auto bytesRead = io.read(defaultPal.data(), 512);
-	if(bytesRead < 192)
-	{
-		logErr("skipped palette with only %d bytes", (int)bytesRead);
+		log.error("skipped palette with only {} colors", colors);
 		return;
 	}
-	if(bytesRead != 512)
+	if(colors != 512)
 	{
 		ApplyDeemphasisComplete(defaultPal.data());
 	}
 	FCEU_setDefaultPalettePtr(defaultPal.data());
 }
 
-void setDefaultPalette(Base::ApplicationContext ctx, const char *palPath)
+void NesSystem::setDefaultPalette(ApplicationContext ctx, CStringView palPath)
 {
-	if(!palPath || !strlen(palPath))
+	if(palPath.empty())
 	{
 		FCEU_setDefaultPalettePtr(nullptr);
 		return;
 	}
-	logMsg("setting default palette with path:%s", palPath);
-	if(palPath[0] != '/')
+	try
 	{
-		// load as asset
-		auto io = ctx.openAsset(FS::makePathStringPrintf("palette/%s", palPath).data(), IO::AccessHint::ALL);
-		if(!io)
-			return;
-		setDefaultPalette(io);
+		log.info("setting default palette with path:{}", palPath);
+		if(palPath[0] != '/' && !isUri(palPath))
+		{
+			// load as asset
+			IO io = ctx.openAsset(FS::pathString("palette", palPath), {.accessHint = IOAccessHint::All});
+			setDefaultPalette(io);
+		}
+		else
+		{
+			IO io = ctx.openFileUri(palPath, {.accessHint = IOAccessHint::All});
+			setDefaultPalette(io);
+		}
 	}
-	else
+	catch(...)
 	{
-		FileIO io{};
-		io.open(palPath, IO::AccessHint::ALL);
-		if(!io)
-			return;
-		setDefaultPalette(io);
+		FCEU_setDefaultPalettePtr(nullptr);
 	}
 }
 
-static void cacheUsingZapper()
+void NesSystem::cacheUsingZapper()
 {
 	assert(GameInfo);
-	iterateTimes(2, i)
+	for(const auto &p : joyports)
 	{
-		if(joyports[i].type == SI_ZAPPER)
+		if(p.type == SI_ZAPPER)
 		{
 			usingZapper = true;
 			return;
 		}
 	}
-	usingZapper = false;
+	usingZapper = GameInfo->inputfc == SIFC_SHADOW;
 }
 
 static const char* fceuInputToStr(int input)
@@ -258,46 +249,61 @@ static const char* fceuInputToStr(int input)
 	}
 }
 
-void setupNESFourScore()
+void NesSystem::setupNESFourScore()
 {
 	if(!GameInfo)
 		return;
 	if(!usingZapper)
 	{
 		if(optionFourScore)
-			logMsg("attaching four score");
+			log.info("attaching four score");
 		FCEUI_SetInputFourscore(optionFourScore);
 	}
 	else
 		FCEUI_SetInputFourscore(0);
 }
 
-bool EmuSystem::vidSysIsPAL()
+VideoSystem NesSystem::videoSystem() const
 {
-	return PAL || dendy;
+	return PAL || dendy ? VideoSystem::PAL : VideoSystem::NATIVE_NTSC;
 }
 
-void setupNESInputPorts()
+double NesSystem::videoAspectRatioScale() const
+{
+	double horizontalCropScaler = 240. / 256.; // cropped width / full pixel width
+	double baseLines = 224.;
+	assumeExpr(optionVisibleVideoLines != 0);
+	double lineAspectScaler = baseLines / optionVisibleVideoLines;
+	return (optionCorrectLineAspect ? lineAspectScaler : 1.)
+		* (optionHorizontalVideoCrop ? horizontalCropScaler : 1.);
+}
+
+void NesSystem::setupNESInputPorts()
 {
 	if(!GameInfo)
 		return;
-	iterateTimes(2, i)
+	for(auto &&[i, dev] : enumerate(std::array{inputPort1.value(), inputPort2.value()}))
 	{
-		if(nesInputPortDev[i] == SI_UNSET) // user didn't specify device, go with auto settings
+		if(dev == SI_UNSET) // user didn't specify device, go with auto settings
 			connectNESInput(i, GameInfo->input[i] == SI_UNSET ? SI_GAMEPAD : GameInfo->input[i]);
 		else
-			connectNESInput(i, nesInputPortDev[i]);
-		logMsg("attached %s to port %d%s", fceuInputToStr(joyports[i].type), i, nesInputPortDev[i] == SI_UNSET ? " (auto)" : "");
+			connectNESInput(i, dev);
+		log.info("attached {} to port {}{}", fceuInputToStr(joyports[i].type), i, dev == SI_UNSET ? " (auto)" : "");
+	}
+	if(GameInfo->inputfc == SIFC_HYPERSHOT)
+	{
+		FCEUI_SetInputFC(SIFC_HYPERSHOT, &fcExtData, 0);
+	}
+	else if(GameInfo->inputfc == SIFC_SHADOW)
+	{
+		FCEUI_SetInputFC(SIFC_SHADOW, &zapperData, 0);
+	}
+	else
+	{
+		FCEUI_SetInputFC(SIFC_NONE, nullptr, 0);
 	}
 	cacheUsingZapper();
 	setupNESFourScore();
-}
-
-static int cheatCallback(char *name, uint32 a, uint8 v, int compare, int s, int type, void *data)
-{
-	logMsg("cheat: %s, %d", name, s);
-	fceuCheats++;
-	return 1;
 }
 
 const char *regionToStr(int region)
@@ -311,17 +317,14 @@ const char *regionToStr(int region)
 	return "Unknown";
 }
 
-static int regionFromName(const char *name)
+static int regionFromName(std::string_view name)
 {
-	if(strstr(name, "(E)") || strstr(name, "(e)") || strstr(name, "(EU)")
-		|| strstr(name, "(Europe)") || strstr(name, "(PAL)")
-		|| strstr(name, "(F)") || strstr(name, "(f)")
-		|| strstr(name, "(G)") || strstr(name, "(g)")
-		|| strstr(name, "(I)") || strstr(name, "(i)"))
+	if(containsAny(name, "(E)", "(e)", "(EU)", "(Europe)", "(PAL)",
+		"(F)", "(f)", "(G)", "(g)", "(I)", "(i)"))
 	{
 		return 1; // PAL
 	}
-	else if(strstr(name, "(RU)") || strstr(name, "(ru)"))
+	else if(containsAny(name, "(RU)", "(ru)"))
 	{
 		return 2; // Dendy
 	}
@@ -332,113 +335,156 @@ void setRegion(int region, int defaultRegion, int detectedRegion)
 {
 	if(region)
 	{
-		logMsg("Forced region:%s", regionToStr(region - 1));
+		log.info("Forced region:{}", regionToStr(region - 1));
 		FCEUI_SetRegion(region - 1, false);
 	}
 	else if(defaultRegion)
 	{
-		logMsg("Forced region (Default):%s", regionToStr(defaultRegion - 1));
+		log.info("Forced region (Default):{}", regionToStr(defaultRegion - 1));
 		FCEUI_SetRegion(defaultRegion - 1, false);
 	}
 	else
 	{
-		logMsg("Detected region:%s", regionToStr(detectedRegion));
+		log.info("Detected region:{}", regionToStr(detectedRegion));
 		FCEUI_SetRegion(detectedRegion, false);
 	}
 }
 
-EmuSystem::Error EmuSystem::loadGame(IO &io, EmuSystemCreateParams, OnLoadProgressDelegate)
+void NesSystem::loadContent(IO &io, EmuSystemCreateParams, OnLoadProgressDelegate)
 {
-	setDirOverrides();
 	auto ioStream = new EmuFileIO(io);
 	auto file = new FCEUFILE();
-	file->filename = fullGamePath();
-	file->logicalPath = fullGamePath();
-	file->fullFilename = fullGamePath();
+	file->filename = contentFileName();
 	file->archiveIndex = -1;
 	file->stream = ioStream;
 	file->size = ioStream->size();
-	fceuReturnedError = {};
-	if(!FCEUI_LoadGameWithFile(file, originalGameFileName().data(), 0))
+	if(auto ipsFile = FileUtils::fopenUri(appContext(), userFilePath(patchesDir, ".ips"), "r");
+		ipsFile)
 	{
-		if(fceuReturnedError)
-			return EmuSystem::makeError("%s", fceuReturnedError);
-		else
-			return EmuSystem::makeError("Error loading game");
+		ApplyIPS(ipsFile, file);
 	}
-	autoDetectedRegion = regionFromName(gameFileName().data());
-	setRegion(optionVideoSystem.val, optionDefaultVideoSystem.val, autoDetectedRegion);
-	FCEUI_ListCheats(cheatCallback, 0);
-	if(fceuCheats)
-		logMsg("%d total cheats", fceuCheats);
-
+	if(!FCEUI_LoadGameWithFileVirtual(file, contentFileName().data(), 0, false))
+	{
+		if(loaderErrorString.size())
+			throw std::runtime_error(std::exchange(loaderErrorString, {}));
+		else
+			throw std::runtime_error("Error loading game");
+	}
+	autoDetectedRegion = regionFromName(contentFileName());
+	setRegion(optionVideoSystem, optionDefaultVideoSystem, autoDetectedRegion);
 	setupNESInputPorts();
-
-	return {};
+	EMUFILE_MEMORY stateMemFile;
+	FCEUSS_SaveMS(&stateMemFile, 0);
+	saveStateSize = stateMemFile.get_vec()->size();
 }
 
-void EmuSystem::onPrepareAudio(EmuAudio &audio)
+bool NesSystem::onVideoRenderFormatChange(EmuVideo &video, PixelFormat fmt)
 {
-	audio.setStereo(false);
-}
-
-void EmuSystem::onVideoRenderFormatChange(EmuVideo &video, IG::PixelFormat fmt)
-{
-	if(pixFmt == fmt)
-		return;
 	pixFmt = fmt;
+	updateVideoPixmap(video, optionHorizontalVideoCrop, optionVisibleVideoLines);
 	FCEU_ResetPalette();
-	video.setFormat({{nesPixX, nesVisiblePixY}, fmt});
+	return true;
 }
 
-void EmuSystem::configAudioRate(IG::FloatSeconds frameTime, uint32_t rate)
+void NesSystem::configAudioRate(FrameTime outputFrameTime, int outputRate)
 {
-	constexpr double ntscFrameRate = 21477272.0 / 357366.0;
-	constexpr double palFrameRate = 21281370.0 / 425568.0;
-	double systemFrameRate = vidSysIsPAL() ? palFrameRate : ntscFrameRate;
-	double mixRate = std::round(rate * (systemFrameRate * frameTime.count()));
+	uint32 mixRate = std::round(audioMixRate(outputRate, outputFrameTime));
+	if(FSettings.SndRate == mixRate)
+		return;
+	log.info("set sound mix rate:{}", (int)mixRate);
 	FCEUI_Sound(mixRate);
-	logMsg("set NES audio rate %d", FSettings.SndRate);
 }
 
 void emulateSound(EmuAudio *audio)
 {
-	const unsigned maxAudioFrames = EmuSystem::audioFramesPerVideoFrame+32;
+	static constexpr size_t maxAudioFrames = 1024;
 	int32 sound[maxAudioFrames];
-	unsigned frames = FlushEmulateSound(sound);
-	//logMsg("%d frames", frames);
+	auto frames = FlushEmulateSound(sound);
+	soundtimestamp = 0;
+	//log.debug("{} frames", frames);
 	assert(frames <= maxAudioFrames);
 	if(audio)
 	{
 		int16 sound16[maxAudioFrames];
-		iterateTimes(maxAudioFrames, i)
-		{
-			sound16[i] = sound[i];
-		}
+		copy_n(sound, maxAudioFrames, sound16);
 		audio->writeFrames(sound16, frames);
 	}
 }
 
-static void renderVideo(EmuSystemTask *task, EmuVideo &video, uint8 *buf)
+void NesSystem::updateVideoPixmap(EmuVideo &video, bool horizontalCrop, int lines)
 {
-	auto img = video.startFrame(task);
+	int xPixels = horizontalCrop ? 240 : 256;
+	video.setFormat({{xPixels, lines}, pixFmt});
+}
+
+void NesSystem::renderVideo(EmuSystemTaskContext taskCtx, EmuVideo &video, uint8 *buf)
+{
+	auto img = video.startFrame(taskCtx);
 	auto pix = img.pixmap();
-	IG::Pixmap ppuPix{{{256, 256}, IG::PIXEL_FMT_I8}, buf};
-	auto ppuPixRegion = ppuPix.subView({0, 8}, {256, 224});
+	PixmapView ppuPix{{{256, 256}, PixelFmtI8}, buf};
+	int xStart = pix.w() == 256 ? 0 : 8;
+	int yStart = optionStartVideoLine;
+	auto ppuPixRegion = ppuPix.subView({xStart, yStart}, pix.size());
 	assumeExpr(pix.size() == ppuPixRegion.size());
-	if(pix.format() == IG::PIXEL_RGB565)
+	if(pix.format() == PixelFmtRGB565)
 	{
-		pix.writeTransformed([](uint8 p){ return nativeCol.col16[p]; }, ppuPixRegion);
+		pix.writeTransformed([&](uint8 p){ return nativeCol.col16[p]; }, ppuPixRegion);
 	}
 	else
 	{
 		assumeExpr(pix.format().bytesPerPixel() == 4);
-		pix.writeTransformed([](uint8 p){ return nativeCol.col32[p]; }, ppuPixRegion);
+		pix.writeTransformed([&](uint8 p){ return nativeCol.col32[p]; }, ppuPixRegion);
 	}
 	img.endFrame();
 }
 
-void FCEUPPU_FrameReady(EmuSystemTask *task, EmuVideo *video, uint8 *buf)
+void NesSystem::runFrame(EmuSystemTaskContext taskCtx, EmuVideo *video, EmuAudio *audio)
+{
+	bool skip = !video && !optionCompatibleFrameskip;
+	FCEUI_Emulate(taskCtx, *this, video, skip, audio);
+}
+
+void NesSystem::renderFramebuffer(EmuVideo &video)
+{
+	renderVideo({}, video, XBuf);
+}
+
+bool NesSystem::shouldFastForward() const
+{
+	return fdsIsAccessing;
+}
+
+void EmuApp::onCustomizeNavView(EmuApp::NavView &view)
+{
+	const Gfx::LGradientStopDesc navViewGrad[] =
+	{
+		{ .0, Gfx::PackedColor::format.build(1. * .4, 0., 0., 1.) },
+		{ .3, Gfx::PackedColor::format.build(1. * .4, 0., 0., 1.) },
+		{ .97, Gfx::PackedColor::format.build(.5 * .4, 0., 0., 1.) },
+		{ 1., view.separatorColor() },
+	};
+	view.setBackgroundGradient(navViewGrad);
+}
+
+}
+
+void FCEUD_SetPalette(uint8 index, uint8 r, uint8 g, uint8 b)
+{
+	using namespace EmuEx;
+	auto &sys = static_cast<NesSystem&>(gSystem());
+	if(sys.pixFmt == PixelFmtRGB565)
+	{
+		sys.nativeCol.col16[index] = sys.pixFmt.desc().build(r >> 3, g >> 2, b >> 3, 0);
+	}
+	else // RGBA8888
+	{
+		auto desc = sys.pixFmt == PixelFmtBGRA8888 ? PixelDescBGRA8888Native : PixelDescRGBA8888Native;
+		sys.nativeCol.col32[index] = desc.build(r, g, b, (uint8)0);
+	}
+	//log.debug("set palette {} {}", index, nativeCol[index]);
+}
+
+void FCEUPPU_FrameReady(EmuEx::EmuSystemTaskContext taskCtx, EmuEx::NesSystem &sys, EmuEx::EmuVideo *video, uint8 *buf)
 {
 	if(!video)
 	{
@@ -446,48 +492,23 @@ void FCEUPPU_FrameReady(EmuSystemTask *task, EmuVideo *video, uint8 *buf)
 	}
 	if(!buf) [[unlikely]]
 	{
-		video->startUnchangedFrame(task);
+		video->startUnchangedFrame(taskCtx);
 		return;
 	}
-	renderVideo(task, *video, buf);
+	sys.renderVideo(taskCtx, *video, buf);
 }
 
-void EmuSystem::runFrame(EmuSystemTask *task, EmuVideo *video, EmuAudio *audio)
+void setDiskIsAccessing(bool on)
 {
-	bool skip = !video && !optionCompatibleFrameskip;
-	FCEUI_Emulate(task, video, skip, audio);
-}
-
-void EmuSystem::renderFramebuffer(EmuVideo &video)
-{
-	renderVideo({}, video, XBuf);
-}
-
-void EmuSystem::savePathChanged()
-{
-	if(gameIsRunning())
-		setDirOverrides();
-}
-
-void EmuApp::onCustomizeNavView(EmuApp::NavView &view)
-{
-	const Gfx::LGradientStopDesc navViewGrad[] =
+	using namespace EmuEx;
+	auto &sys = static_cast<NesSystem&>(gSystem());
+	if(sys.fastForwardDuringFdsAccess)
 	{
-		{ .0, Gfx::VertexColorPixelFormat.build(.5, .5, .5, 1.) },
-		{ .03, Gfx::VertexColorPixelFormat.build(1. * .4, 0., 0., 1.) },
-		{ .3, Gfx::VertexColorPixelFormat.build(1. * .4, 0., 0., 1.) },
-		{ .97, Gfx::VertexColorPixelFormat.build(.5 * .4, 0., 0., 1.) },
-		{ 1., Gfx::VertexColorPixelFormat.build(.5, .5, .5, 1.) },
-	};
-	view.setBackgroundGradient(navViewGrad);
-}
-
-EmuSystem::Error EmuSystem::onInit(Base::ApplicationContext ctx)
-{
-	backupSavestates = 0;
-	if(!FCEUI_Initialize())
-	{
-		return makeError("Error in FCEUI_Initialize");
+		//if(on && !sys.fdsIsAccessing) log.debug("FDS access started");
+		sys.fdsIsAccessing = on;
 	}
-	return {};
+	else
+	{
+		sys.fdsIsAccessing = false;
+	}
 }

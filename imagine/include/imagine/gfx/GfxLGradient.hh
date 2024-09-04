@@ -15,37 +15,53 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/config/defs.hh>
 #include <imagine/gfx/defs.hh>
-#include <imagine/gfx/GeomQuadMesh.hh>
 
-namespace Gfx
+namespace IG::Gfx
 {
 
 struct LGradientStopDesc
 {
-	GC pos;
-	VertexColor color;
+	float pos;
+	PackedColor color;
+};
+
+enum class LGradientPadMode
+{
+	none, top
 };
 
 class LGradient
 {
 public:
-	constexpr LGradient() {}
+	static size_t vertexSize(size_t stops, LGradientPadMode padMode)
+	{
+		size_t size = 2 * stops;
+		if(padMode == LGradientPadMode::top)
+			size += 2;
+		return size;
+	}
 
-	void draw(RendererCommands &r) const;
-	void setColor(ColorComp r, ColorComp g, ColorComp b);
-	void setTranslucent(ColorComp a);
-	void setColorStop(ColorComp r, ColorComp g, ColorComp b, uint32_t i);
-	void setTranslucentStop(ColorComp a, uint32_t i);
-	void setPos(const LGradientStopDesc *stop, uint32_t stops, GC x, GC y, GC x2, GC y2);
-	void setPos(const LGradientStopDesc *stop, uint32_t stops, const GCRect &d);
-	uint32_t stops() const;
-	explicit operator bool() const;
-
-protected:
-	GeomQuadMesh g{};
-	uint32_t stops_ = 0;
+	static void write(auto &&vBuff, int vOffset, auto &&stops, WRect pos, std::optional<int> topPadding)
+	{
+		auto v = vBuff.data() + vOffset * 2;
+		if(topPadding)
+		{
+			v[0].pos.x = pos.x;
+			v[1].pos.x = pos.x2;
+			v[0].pos.y = v[1].pos.y = *topPadding;
+			v[0].color = v[1].color = stops[0].color;
+			v += 2;
+		}
+		for(const auto &stop : stops)
+		{
+			v[0].pos.x = pos.x;
+			v[1].pos.x = pos.x2;
+			v[0].pos.y = v[1].pos.y = remap(stop.pos, 0.f, 1.f, pos.y, pos.y2);
+			v[0].color = v[1].color = stop.color;
+			v += 2;
+		}
+	}
 };
 
 }

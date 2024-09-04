@@ -38,6 +38,8 @@
 #include "maincpu.h"
 #include "types.h"
 
+#include <string.h>
+
 
 /* CRTC interface functions.
    - bit 0 of the addr is wired to register-select of the chip
@@ -45,9 +47,13 @@
 
 void crtc_store(uint16_t addr, uint8_t value)
 {
-    int current_cycle;
+    CLOCK current_cycle;
 
-    current_cycle = maincpu_clk - crtc.rl_start;
+    /*
+     * The current raster line starts at the left edge of the text area.
+     * That is also when the raster draw alarm is called.
+     */
+    current_cycle = maincpu_clk - CRTC_STORE_OFFSET - crtc.rl_start;
 
     addr &= 1;
 
@@ -60,7 +66,7 @@ void crtc_store(uint16_t addr, uint8_t value)
 #if 0
     /* debug display, just not the cursor (for CBM-II) */
     if (crtc.regno < 14 && crtc.regno != 10) {
-        printf("store_crtc(reg=%d, %d) - cline=%d, ycount=%d, char=%d\n",
+        printf("store_crtc(reg=%d, %d) - cline=%d, ycount=%d, char=%lld\n",
                crtc.regno, value, crtc.current_charline, crtc.raster.ycounter,
                current_cycle);
     }
@@ -85,10 +91,10 @@ void crtc_store(uint16_t addr, uint8_t value)
             }
 
             /* the compare is not yet done */
-            if ((crtc.regs[1]) > current_cycle) {
+            if (crtc.regs[CRTC_REG_HDISP] > current_cycle) {
                 /* only if we write a higher value than the counter,
                  we can update disp_cycles here */
-                crtc.rl_visible = crtc.regs[1];
+                crtc.rl_visible = crtc.regs[CRTC_REG_HDISP];
                 crtc.henable = 1;
             } else {
                 /* we write a value lower than the counter -> never reached,
@@ -96,6 +102,12 @@ void crtc_store(uint16_t addr, uint8_t value)
                 crtc.rl_visible = crtc.rl_len + 1;
                 crtc.henable = 0;
             }
+#if CRTC_BEAM_RACING
+            if (crtc.venable) {
+                /* Just cache the new visible length of the line */
+                crtc_fetch_prefetch();
+            }
+#endif
             break;
 
         case CRTC_REG_HSYNC:        /* R02  Horizontal Sync Position */
@@ -149,18 +161,19 @@ void crtc_store(uint16_t addr, uint8_t value)
             /* FIXME: set end line */
             break;
 
-        case CRTC_REG_DISPSTARTH:   /* R12  Control register */
+        case CRTC_REG_DISPSTARTH:   /* R12  Control register, MA8-13 */
             /* This is actually the upper 6 video RAM address bits.
              * But CBM decided that the two uppermost bits should be used
              * for control.
              * The usage here is from the 8032 schematics on funet.
              *
-             * Bit 0: 1=add 256 to screen start address ( 512 for 80-columns)
-             * Bit 1: 1=add 512 to screen start address (1024 for 80-columns)
-             * Bit 2: no connection
-             * Bit 3: no connection
-             * Bit 4: use top half of 4K character generator
-             * Bit 5: invert video signal
+             * Bit 0(8): 1=add 256 to screen start address ( 512 for 80-columns)
+             * Bit 1(9): 1=add 512 to screen start address (1024 for 80-columns)
+             * Bit 2(10): no connection (8296: connected)
+             * Bit 3(11): no connection (8296: connected)
+             * Bit 4(12): invert video signal
+             *            8296: HRE HiRes mode, or connected via JU8/9(?)
+             * Bit 5(13): use top half of 4K character generator
              * Bit 6: (no pin on the CRTC, video address is 14 bit only)
              * Bit 7: (no pin on the CRTC, video address is 14 bit only)
              */
@@ -171,7 +184,7 @@ void crtc_store(uint16_t addr, uint8_t value)
             crtc.regs[CRTC_REG_DISPSTARTH] &= 0x3f;
             break;
 
-        case CRTC_REG_DISPSTARTL:   /* R13  Address of first character */
+        case CRTC_REG_DISPSTARTL:   /* R13  Address of first character: MA0-7 */
             break;
 
         case CRTC_REG_CURSORPOSH:   /* R14  Cursor location  HI -- unused */
@@ -245,6 +258,12 @@ uint8_t crtc_read(uint16_t addr)
 uint8_t crtc_peek(uint16_t addr)
 {
     return crtc_read(addr);
+}
+
+/* directly read a register (for monitor) */
+uint8_t crtc_peek_register(uint8_t regno)
+{
+    return crtc.regs[regno];
 }
 
 /* FIXME: to be moved to `crtc.c'.  */

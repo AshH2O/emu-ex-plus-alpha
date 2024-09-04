@@ -19,11 +19,18 @@
 #include <imagine/gui/TableView.hh>
 #include <imagine/gui/MenuItem.hh>
 
-class BundledGamesView : public TableView, public EmuAppHelper<BundledGamesView>
+namespace EmuEx
+{
+
+using namespace IG;
+
+class BundledGamesView : public TableView, public EmuAppHelper
 {
 public:
 	BundledGamesView(ViewAttachParams attach);
 
 private:
-	TextMenuItem game[1]{};
+	TextMenuItem game[1];
 };
+
+}

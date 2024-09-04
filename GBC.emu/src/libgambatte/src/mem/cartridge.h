@@ -27,6 +27,8 @@
 
 #include <string>
 #include <vector>
+#include <span>
+#include <optional>
 
 namespace gambatte {
 
@@ -67,6 +69,9 @@ public:
 	void saveSavedata();
 	std::string const saveBasePath() const;
 	void setSaveDir(std::string const &dir);
+	std::span<unsigned char> srambank();
+	std::optional<std::time_t> rtcTime() const;
+	void setRtcTime(std::time_t time) { rtc_.setBaseTime(time); }
 	LoadRes loadROM(const void *romdata, std::size_t size, std::string const &romfilename, bool forceDmg, bool multicartCompat);
 	char const * romTitle() const { return reinterpret_cast<char const *>(memptrs_.romdata() + 0x134); }
 	class PakInfo const pakInfo(bool multicartCompat) const;

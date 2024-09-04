@@ -13,19 +13,19 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "App"
 #include <imagine/base/Application.hh>
 #include <imagine/logger/logger.h>
 
-namespace Base
+namespace IG
 {
 
-const char copyright[] = "Imagine is Copyright 2010-2021 Robert Broglia";
+const char *copyright = "Imagine is Copyright 2010-2023 Robert Broglia";
+constexpr SystemLogger log{"App"};
 
 BaseApplication::BaseApplication(ApplicationContext ctx)
 {
-	logDMsg("%s", copyright);
-	logDMsg("compiled on %s %s", __DATE__, __TIME__);
+	log.debug("{}", copyright);
+	log.debug("compiled on {} {}", __DATE__, __TIME__);
 
 	commandPort.attach({},
 		[ctx](auto msgs)
@@ -38,8 +38,6 @@ BaseApplication::BaseApplication(ApplicationContext ctx)
 		});
 }
 
-BaseApplication::~BaseApplication() {}
-
 void BaseApplication::addWindow(std::unique_ptr<Window> winPtr)
 {
 	window_.emplace_back(std::move(winPtr));
@@ -47,7 +45,7 @@ void BaseApplication::addWindow(std::unique_ptr<Window> winPtr)
 
 std::unique_ptr<Window> BaseApplication::moveOutWindow(Window &win)
 {
-	return IG::moveOutIf(window_, [&](auto &w){ return *w == win; });
+	return moveOut(window_, [&](const auto& w){ return *w == win; });
 }
 
 void BaseApplication::deinitWindows()
@@ -68,28 +66,22 @@ Window &BaseApplication::mainWindow() const
 
 Screen &BaseApplication::addScreen(ApplicationContext ctx, std::unique_ptr<Screen> ptr, bool notify)
 {
-	auto &screen = *ptr.get();
-	screen_.emplace_back(std::move(ptr));
-	if(notify && onScreenChange_)
-		onScreenChange_(ctx, screen, {ScreenChange::ADDED});
-	return screen;
+	auto &newScreen = screen_.emplace_back(std::move(ptr));
+	if(notify)
+		onEvent(ctx, ScreenChangeEvent{*newScreen, ScreenChange::added});
+	return *newScreen;
 }
 
-Screen *BaseApplication::findScreen(ScreenId id) const
+Screen* BaseApplication::findScreen(ScreenId id) const
 {
-	auto it = IG::find_if(screen_, [&](const auto &s) { return *s == id; });
-	if(it == screen_.end())
-	{
-		return nullptr;
-	}
-	return it->get();
+	return findPtr(screen_, [&](const auto &s) { return *s == id; });
 }
 
 std::unique_ptr<Screen> BaseApplication::removeScreen(ApplicationContext ctx, ScreenId id, bool notify)
 {
-	auto removedScreen = IG::moveOutIf(screen_, [&](const auto &s){ return *s == id; });
-	if(notify && removedScreen && onScreenChange_)
-		onScreenChange_(ctx, *removedScreen, {ScreenChange::REMOVED});
+	auto removedScreen = moveOut(screen_, [&](const auto &s){ return *s == id; });
+	if(notify && removedScreen)
+		onEvent(ctx, ScreenChangeEvent{*removedScreen, ScreenChange::removed});
 	return removedScreen;
 }
 
@@ -172,11 +164,6 @@ bool BaseApplication::isExiting() const
 	return activityState() == ActivityState::EXITING;
 }
 
-void BaseApplication::setOnInterProcessMessage(InterProcessMessageDelegate del)
-{
-	onInterProcessMessage_ = del;
-}
-
 bool BaseApplication::addOnResume(ResumeDelegate del, int priority)
 {
 	return onResume_.add(del, priority);
@@ -190,11 +177,6 @@ bool BaseApplication::removeOnResume(ResumeDelegate del)
 bool BaseApplication::containsOnResume(ResumeDelegate del) const
 {
 	return onResume_.contains(del);
-}
-
-void BaseApplication::setOnFreeCaches(FreeCachesDelegate del)
-{
-	onFreeCaches_ = del;
 }
 
 bool BaseApplication::addOnExit(ExitDelegate del, int priority)
@@ -212,19 +194,9 @@ bool BaseApplication::containsOnExit(ExitDelegate del) const
 	return onExit_.contains(del);
 }
 
-void BaseApplication::dispatchOnInterProcessMessage(ApplicationContext ctx, const char *filename)
+void BaseApplication::dispatchOnScreenChange(ApplicationContext ctx, Screen &s, ScreenChange change)
 {
-	onInterProcessMessage_.callCopySafe(ctx, filename);
-}
-
-bool BaseApplication::hasOnInterProcessMessage() const
-{
-	return (bool)onInterProcessMessage_;
-}
-
-void BaseApplication::setOnScreenChange(ScreenChangeDelegate del)
-{
-	onScreenChange_ = del;
+	onEvent(ctx, ScreenChangeEvent{s, change});
 }
 
 void BaseApplication::dispatchOnResume(ApplicationContext ctx, bool focused)
@@ -234,21 +206,33 @@ void BaseApplication::dispatchOnResume(ApplicationContext ctx, bool focused)
 
 void BaseApplication::dispatchOnFreeCaches(ApplicationContext ctx, bool running)
 {
-	onFreeCaches_.callCopySafe(ctx, running);
+	onEvent.callCopy(ctx, FreeCachesEvent{running});
 }
 
 void BaseApplication::dispatchOnExit(ApplicationContext ctx, bool backgrounded)
 {
 	onExit_.runAll([&](ExitDelegate del){ return del(ctx, backgrounded); }, true);
+	if(!backgrounded)
+	{
+		// destroy app window data since it was allocated by the app subclass
+		// for logical destructor ordering
+		for(auto &win : window_)
+		{
+			win->resetAppData();
+			win->resetRendererData();
+			// surface should be destroyed by reseting renderer data so skip surface change event
+			win->onEvent = delegateFuncDefaultInit;
+		}
+	}
 }
 
-[[gnu::weak]] void ApplicationContext::setIdleDisplayPowerSave(bool on) {}
+[[gnu::weak]] void ApplicationContext::setIdleDisplayPowerSave(bool) {}
 
 [[gnu::weak]] void ApplicationContext::endIdleByUserActivity() {}
 
-[[gnu::weak]] bool ApplicationContext::registerInstance(ApplicationInitParams, const char *) { return false; }
+[[gnu::weak]] bool ApplicationContext::registerInstance(ApplicationInitParams, const char*) { return false; }
 
-[[gnu::weak]] void ApplicationContext::setAcceptIPC(bool on, const char *) {}
+[[gnu::weak]] void ApplicationContext::setAcceptIPC(bool, const char*) {}
 
 void Application::runOnMainThread(MainThreadMessageDelegate del)
 {

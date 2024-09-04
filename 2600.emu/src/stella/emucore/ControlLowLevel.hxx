@@ -8,7 +8,7 @@
 //  SS  SS   tt   ee      ll   ll  aa  aa
 //   SSSS     ttt  eeeee llll llll  aaaaa
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -34,7 +34,8 @@
 class ControllerLowLevel
 {
   public:
-    ControllerLowLevel(Controller& controller) : myController(controller) { }
+    explicit ControllerLowLevel(Controller& controller)
+      : myController(controller) { }
     virtual ~ControllerLowLevel() = default;
 
     inline bool setPin(Controller::DigitalPin pin, bool value) {
@@ -44,10 +45,10 @@ class ControllerLowLevel
     inline bool getPin(Controller::DigitalPin pin) const {
       return myController.getPin(pin);
     }
-    inline void setPin(Controller::AnalogPin pin, Int32 value) {
+    inline void setPin(Controller::AnalogPin pin, AnalogReadout::Connection value) {
       myController.setPin(pin, value);
     }
-    inline Int32 getPin(Controller::AnalogPin pin) const {
+    inline AnalogReadout::Connection getPin(Controller::AnalogPin pin) const {
       return myController.getPin(pin);
     }
     inline void resetDigitalPins() {

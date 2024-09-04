@@ -100,6 +100,8 @@ static const char module_ram_name[] = "PETMEM";
  *                              Added in format V1.2
  * BYTE         EOIBLANK        bit 0=0: EOI does not blank screen
  *                                   =1: EOI does blank screen
+ *                              bit 1=0: Screen memory like 3000 and later
+ *                                    1: Screen memory like 2001
  *
  *                              Added in format V1.3
  * WORD         CPU_SWITCH      6502 / 6809 / PROG
@@ -116,12 +118,12 @@ static int mem_write_ram_snapshot_module(snapshot_t *s)
     int kbdindex;
     int i;
 
-    memsize = petres.ramSize;
+    memsize = petres.model.ramSize;
     if (memsize > 32) {
         memsize = 32;
     }
 
-    if (!petres.crtc) {
+    if (!petres.model.crtc) {
         config = 0;
     } else {
         config = petres.videoSize == 0x400 ? 1 : 2;
@@ -130,12 +132,13 @@ static int mem_write_ram_snapshot_module(snapshot_t *s)
     if (petres.map) {
         config = petres.map + 3;
     } else {
-        if (petres.superpet) {
+        if (petres.model.superpet) {
             config = 3;
         }
     }
 
-    rconf = (petres.ramsel9 ? 0x40 : 0) | (petres.ramselA ? 0x80 : 0);
+    rconf = (petres.ramsel9 ? 0x40 : 0) |
+            (petres.ramselA ? 0x80 : 0);
 
     conf8x96 = petmem_map_reg;
 
@@ -174,7 +177,8 @@ static int mem_write_ram_snapshot_module(snapshot_t *s)
     /* V1.1 */
     SMW_B(m, (uint8_t)(kbdindex & 1));
     /* V1.2 */
-    SMW_B(m, (uint8_t)(petres.eoiblank ? 1 : 0));
+    SMW_B(m, (uint8_t)((petres.model.eoiblank ? 1 : 0) |
+                       (petres.model.screenmirrors2001 ? 2 : 0)));
     /* V1.3 */
     SMW_W(m, (uint16_t)petres.superpet_cpu_switch);
     SMW_B(m, (uint8_t)dongle6702.val);
@@ -204,8 +208,11 @@ static int mem_read_ram_snapshot_module(snapshot_t *s)
     snapshot_module_t *m;
     uint8_t config, rconf, byte, memsize, conf8x96, superpet;
     petinfo_t peti = {
-        32, 0x0800, 1, 80, 0, 0, 0, 0, 0, 0, 0,
-        NULL, NULL, NULL, NULL, NULL, NULL, NULL, { NULL }
+        /* Defaults like a 8032 */
+        .ramSize = RAM_32K,
+        .IOSize = IO_2048,
+        .crtc = HAS_CRTC,
+        .video = COLS_80,
     };
     int old6809mode;
     int spetbank = 0;
@@ -223,7 +230,7 @@ static int mem_read_ram_snapshot_module(snapshot_t *s)
         return -1;
     }
 
-    old6809mode = petres.superpet &&
+    old6809mode = petres.model.superpet &&
                   petres.superpet_cpu_switch == SUPERPET_CPU_6809;
 
     SMR_B(m, &config);
@@ -270,10 +277,10 @@ static int mem_read_ram_snapshot_module(snapshot_t *s)
             break;
     }
 
-    peti.ramsel9 = (rconf & 0x40) ? 1 : 0;
-    peti.ramselA = (rconf & 0x80) ? 1 : 0;
-
     petmem_set_conf_info(&peti);  /* set resources and config accordingly */
+
+    petres.ramsel9 = (rconf & 0x40) ? 1 : 0;
+    petres.ramselA = (rconf & 0x80) ? 1 : 0;
     petmem_map_reg = conf8x96;
 
     mem_initialize_memory();
@@ -301,6 +308,7 @@ static int mem_read_ram_snapshot_module(snapshot_t *s)
     if (vminor > 1) {
         SMR_B(m, &byte);
         resources_set_int("EoiBlank", byte & 1);
+        resources_set_int("Screen2001", (byte & 2) >> 1);
     }
     if (vminor > 2) {
         int new6809mode, i;
@@ -331,12 +339,12 @@ static int mem_read_ram_snapshot_module(snapshot_t *s)
          * she may need to reset (to get to the correct CPU),
          * then reload the dump again.
          */
-        new6809mode = petres.superpet &&
+        new6809mode = petres.model.superpet &&
                       petres.superpet_cpu_switch == SUPERPET_CPU_6809;
         if (new6809mode != old6809mode) {
             log_error(pet_snapshot_log,
                       "Snapshot for different CPU. Re-load the snapshot.");
-            machine_trigger_reset(MACHINE_RESET_MODE_HARD);
+            machine_trigger_reset(MACHINE_RESET_MODE_POWER_CYCLE);
             return -1;
         }
         /* set banked or flat memory mapping */
@@ -349,6 +357,37 @@ static int mem_read_ram_snapshot_module(snapshot_t *s)
     snapshot_module_close(m);
 
     return 0;
+}
+
+#define NUM_TRAP_DEVICES 9  /* FIXME: is there a better constant ? */
+static int trapfl[NUM_TRAP_DEVICES];
+static int trapdevices[NUM_TRAP_DEVICES + 1] = { 1, 4, 5, 6, 7, 8, 9, 10, 11, -1 };
+
+static void get_trapflags(void)
+{
+    int i;
+    for(i = 0; trapdevices[i] != -1; i++) {
+        resources_get_int_sprintf("VirtualDevice%d", &trapfl[i], trapdevices[i]);
+        printf("got %d = %d\n", trapdevices[i], trapfl[i]);
+    }
+}
+
+static void clear_trapflags(void)
+{
+    int i;
+    for(i = 0; trapdevices[i] != -1; i++) {
+        resources_set_int_sprintf("VirtualDevice%d", 0, trapdevices[i]);
+        printf("clear %d = %d\n", trapdevices[i], 0);
+    }
+}
+
+static void restore_trapflags(void)
+{
+    int i;
+    for(i = 0; trapdevices[i] != -1; i++) {
+        resources_set_int_sprintf("VirtualDevice%d", trapfl[i], trapdevices[i]);
+        printf("restore %d = %d\n", trapdevices[i], trapfl[i]);
+    }
 }
 
 static const char module_rom_name[] = "PETROM";
@@ -382,7 +421,7 @@ static int mem_write_rom_snapshot_module(snapshot_t *s, int save_roms)
 {
     snapshot_module_t *m;
     uint8_t config;
-    int i, trapfl;
+    int i;
 
     if (!save_roms) {
         return 0;
@@ -395,15 +434,15 @@ static int mem_write_rom_snapshot_module(snapshot_t *s, int save_roms)
     }
 
     /* disable traps before saving the ROM */
-    resources_get_int("VirtualDevices", &trapfl);
-    resources_set_int("VirtualDevices", 0);
+    get_trapflags();
+    clear_trapflags();
     petrom_unpatch_2001();
 
     config = (petrom_9_loaded ? 1 : 0)
              | (petrom_A_loaded ? 2 : 0)
              | (petrom_B_loaded ? 4 : 0)
-             | ((petres.ramSize == 128) ? 8 : 0)
-             | (petres.superpet ? 16 : 0);
+             | ((petres.model.ramSize == 128) ? 8 : 0)
+             | (petres.model.superpet ? 16 : 0);
 
     SMW_B(m, config);
 
@@ -449,7 +488,7 @@ static int mem_write_rom_snapshot_module(snapshot_t *s, int save_roms)
     }
 
     /* enable traps again when necessary */
-    resources_set_int("VirtualDevices", trapfl);
+    restore_trapflags();
     petrom_patch_2001();
 
     snapshot_module_close(m);
@@ -462,7 +501,7 @@ static int mem_read_rom_snapshot_module(snapshot_t *s)
     uint8_t vmajor, vminor;
     snapshot_module_t *m;
     uint8_t config;
-    int trapfl, new_iosize;
+    int new_iosize;
 
     m = snapshot_module_open(s, module_rom_name, &vmajor, &vminor);
     if (m == NULL) {
@@ -477,14 +516,14 @@ static int mem_read_rom_snapshot_module(snapshot_t *s)
     }
 
     /* disable traps before loading the ROM */
-    resources_get_int("VirtualDevices", &trapfl);
-    resources_set_int("VirtualDevices", 0);
+    get_trapflags();
+    clear_trapflags();
     petrom_unpatch_2001();
 
     config = (petrom_9_loaded ? 1 : 0)
              | (petrom_A_loaded ? 2 : 0)
              | (petrom_B_loaded ? 4 : 0)
-             | ((petres.pet2k || petres.ramSize == 128) ? 8 : 0);
+             | ((petres.model.pet2k || petres.model.ramSize == 128) ? 8 : 0);
 
     SMR_B(m, &config);
 
@@ -504,8 +543,8 @@ static int mem_read_rom_snapshot_module(snapshot_t *s)
     } else {
         new_iosize = 0x800;
     }
-    if (new_iosize != petres.IOSize) {
-        petres.IOSize = new_iosize;
+    if (new_iosize != petres.model.IOSize) {
+        petres.model.IOSize = new_iosize;
         mem_initialize_memory();
     }
 
@@ -516,7 +555,6 @@ static int mem_read_rom_snapshot_module(snapshot_t *s)
         SMR_BA(m, mem_rom + 0x6000, 0x0800);
 
         /* chargen ROM */
-        resources_set_int("Basic1Chars", 0);
         SMR_BA(m, mem_chargen_rom, 0x0800);
 
         /* $9000-$9fff */
@@ -561,7 +599,7 @@ static int mem_read_rom_snapshot_module(snapshot_t *s)
     petrom_patch_2001();
 
     /* enable traps again when necessary */
-    resources_set_int("VirtualDevices", trapfl);
+    restore_trapflags();
 
     snapshot_module_close(m);
 

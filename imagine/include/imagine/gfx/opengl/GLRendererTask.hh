@@ -18,20 +18,17 @@
 #include <imagine/config/defs.hh>
 #include <imagine/gfx/defs.hh>
 #include "GLTask.hh"
-#include <imagine/gfx/RendererCommands.hh>
 #include <imagine/base/GLContext.hh>
+#include <imagine/util/utility.h>
+#include <concepts>
+#include <array>
 
 namespace IG
-{
-class Semaphore;
-}
-
-namespace Base
 {
 class Window;
 }
 
-namespace Gfx
+namespace IG::Gfx
 {
 
 class RendererTask;
@@ -41,61 +38,53 @@ class DrawContextSupport;
 class GLRendererTask : public GLTask
 {
 public:
-	using Command = GLTask::Command;
 	using CommandMessage = GLTask::CommandMessage;
 
-	GLRendererTask(Base::ApplicationContext, Renderer &);
-	GLRendererTask(Base::ApplicationContext, const char *debugLabel, Renderer &);
-	void initVBOs();
-	GLuint getVBO();
-	void initVAO();
+	GLRendererTask(ApplicationContext, Renderer &);
+	GLRendererTask(ApplicationContext, const char *debugLabel, Renderer &);
 	void initDefaultFramebuffer();
 	GLuint defaultFBO() const { return defaultFB; }
 	GLuint bindFramebuffer(Texture &tex);
 	void runInitialCommandsInGL(TaskContext ctx, DrawContextSupport &support);
 	void setRenderer(Renderer *r);
 	void verifyCurrentContext() const;
-	void destroyDrawable(Base::GLDrawable &drawable);
+	void destroyDrawable(GLDrawable &drawable);
 	RendererCommands makeRendererCommands(GLTask::TaskContext taskCtx, bool manageSemaphore,
-		bool notifyWindowAfterPresent, Base::Window &win, Viewport viewport, Mat4 projMat);
+		bool notifyWindowAfterPresent, Window &win);
 
-	template<class Func>
-	void run(Func &&del, bool awaitReply = false) { GLTask::run(std::forward<Func>(del), awaitReply); }
+	void run(std::invocable auto &&f, MessageReplyMode mode = MessageReplyMode::none) { GLTask::run(IG_forward(f), mode); }
 
-	template<class Func>
-	bool draw(Base::Window &win, Base::WindowDrawParams winParams, DrawParams params,
-		const Viewport &viewport, const Mat4 &projMat, Func &&del)
+	void run(std::invocable<TaskContext> auto &&f, auto &&extData, MessageReplyMode mode = MessageReplyMode::none) { GLTask::run(IG_forward(f), IG_forward(extData), mode); }
+
+	bool draw(Window &win, WindowDrawParams winParams, DrawParams params,
+		std::invocable<Window &, RendererCommands &> auto &&f)
 	{
 		doPreDraw(win, winParams, params);
-		assert(params.asyncMode() != DrawAsyncMode::AUTO); // doPreDraw() should set mode
-		bool manageSemaphore = params.asyncMode() == DrawAsyncMode::PRESENT;
-		bool notifyWindowAfterPresent = params.asyncMode() != DrawAsyncMode::NONE;
-		bool awaitReply = params.asyncMode() != DrawAsyncMode::FULL;
-		run([=, this, &win, &viewport, &projMat](TaskContext ctx)
+		assert(params.asyncMode != DrawAsyncMode::AUTO); // doPreDraw() should set mode
+		bool manageSemaphore = params.asyncMode == DrawAsyncMode::PRESENT;
+		bool notifyWindowAfterPresent = params.asyncMode != DrawAsyncMode::NONE;
+		MessageReplyMode replyMode = params.asyncMode != DrawAsyncMode::FULL ? MessageReplyMode::wait : MessageReplyMode::none;
+		GLTask::run([=, this, &win](TaskContext ctx)
 			{
-				auto cmds = makeRendererCommands(ctx, manageSemaphore, notifyWindowAfterPresent, win, viewport, projMat);
-				del(win, cmds);
-			}, awaitReply);
-		return params.asyncMode() == DrawAsyncMode::NONE;
+				auto cmds = makeRendererCommands(ctx, manageSemaphore, notifyWindowAfterPresent, win);
+				f(win, cmds);
+			}, replyMode);
+		return params.asyncMode != DrawAsyncMode::NONE;
 	}
 
 	// for iOS EAGLView renderbuffer management
 	void setIOSDrawableDelegates();
-	IG::Point2D<int> makeIOSDrawableRenderbuffer(void *layer, GLuint &colorRenderbuffer, GLuint &depthRenderbuffer);
+	WSize makeIOSDrawableRenderbuffer(void *layer, GLuint &colorRenderbuffer, GLuint &depthRenderbuffer);
 	void deleteIOSDrawableRenderbuffer(GLuint colorRenderbuffer, GLuint depthRenderbuffer);
 
 protected:
 	Renderer *r{};
-	#ifndef CONFIG_GFX_OPENGL_ES
-	GLuint streamVAO = 0;
-	std::array<GLuint, 6> streamVBO{};
-	uint32_t streamVBOIdx = 0;
-	#endif
-	IG_enableMemberIf(Config::Gfx::GLDRAWABLE_NEEDS_FRAMEBUFFER, GLuint, defaultFB){};
+	ConditionalMember<Config::Gfx::GLDRAWABLE_NEEDS_FRAMEBUFFER, GLuint> defaultFB{};
 	GLuint fbo = 0;
-	IG_enableMemberIf(Config::Gfx::OPENGL_DEBUG_CONTEXT, bool, debugEnabled){};
+	ConditionalMember<Config::OpenGLDebugContext, bool> debugEnabled{};
 
-	void doPreDraw(Base::Window &win, Base::WindowDrawParams winParams, DrawParams &params) const;
+	void doPreDraw(Window &win, WindowDrawParams winParams, DrawParams &params) const;
+	void updateDrawable(Drawable, IRect viewportRect, int swapInterval);
 };
 
 using RendererTaskImpl = GLRendererTask;

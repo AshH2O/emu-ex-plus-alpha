@@ -17,31 +17,20 @@
 
 #include <imagine/config/defs.hh>
 
-#ifdef CONFIG_DATA_TYPE_IMAGE_LIBPNG
+#ifdef __ANDROID__
+#include <imagine/data-type/image/Android.hh>
+#elif defined __linux__
 #include <imagine/data-type/image/LibPNG.hh>
-#endif
-
-#ifdef CONFIG_DATA_TYPE_IMAGE_QUARTZ2D
+#elif defined __APPLE__
 #include <imagine/data-type/image/Quartz2d.hh>
 #endif
 
-#ifdef CONFIG_DATA_TYPE_IMAGE_ANDROID
-#include <imagine/data-type/image/Android.hh>
-#endif
-
 #include <imagine/base/ApplicationContext.hh>
-#include <system_error>
-
-class GenericIO;
-
-namespace Base
-{
-class ApplicationContext;
-}
+#include <imagine/pixmap/Pixmap.hh>
 
 namespace IG
 {
-class Pixmap;
+class IO;
 }
 
 namespace IG::Data
@@ -53,19 +42,25 @@ class PixmapImage: public PixmapImageImpl
 {
 public:
 	using PixmapImageImpl::PixmapImageImpl;
-	std::errc write(IG::Pixmap dest);
-	IG::Pixmap pixmapView();
+	void write(MutablePixmapView dest);
+	PixmapView pixmapView();
 	explicit operator bool() const;
 	operator PixmapSource();
+	bool isPremultipled() const;
+};
+
+struct PixmapReaderParams
+{
+	bool premultiplyAlpha{true};
 };
 
 class PixmapReader final: public PixmapReaderImpl
 {
 public:
 	using PixmapReaderImpl::PixmapReaderImpl;
-	PixmapImage load(GenericIO io) const;
-	PixmapImage load(const char *name) const;
-	PixmapImage loadAsset(const char *name, const char *appName = Base::ApplicationContext::applicationName) const;
+	PixmapImage load(IO, PixmapReaderParams p = {}) const;
+	PixmapImage load(const char *name, PixmapReaderParams p = {}) const;
+	PixmapImage loadAsset(const char *name, PixmapReaderParams p = {}, const char *appName = ApplicationContext::applicationName) const;
 };
 
 }

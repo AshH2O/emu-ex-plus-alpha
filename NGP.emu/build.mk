@@ -2,55 +2,46 @@ ifndef inc_main
 inc_main := 1
 
 include $(IMAGINE_PATH)/make/imagineAppBase.mk
+include $(EMUFRAMEWORK_PATH)/make/mednafenCommon.mk
+
+VPATH += $(EMUFRAMEWORK_PATH)/src/shared
+
+CPPFLAGS += $(MDFN_COMMON_CPPFLAGS) \
+ -I$(projectPath)/src
+
+CXXFLAGS_WARN += -Wno-missing-field-initializers -Wno-unused-parameter
 
 SRC += main/Main.cc \
-main/input.cc \
 main/options.cc \
+main/input.cc \
 main/EmuMenuViews.cc \
-main/EmuControls.cc
-
-NP_CORE := Core
-
-CPPFLAGS += -DLSB_FIRST \
--D__cdecl= \
--I$(projectPath)/src \
--I$(projectPath)/src/$(NP_CORE)/z80 \
--I$(projectPath)/src/$(NP_CORE)/TLCS-900h \
--I$(projectPath)/src/$(NP_CORE)
-
-CXXFLAGS_WARN += -Wno-register
-
-NEOPOP_SRC += $(NP_CORE)/z80/Z80.cc \
-$(NP_CORE)/flash.cc \
-$(NP_CORE)/gfx_scanline_colour.cc \
-$(NP_CORE)/gfx_scanline_mono.cc \
-$(NP_CORE)/gfx.cc \
-$(NP_CORE)/rom.cc \
-$(NP_CORE)/sound.cc \
-$(NP_CORE)/state.cc \
-$(NP_CORE)/chunk.cc \
-$(NP_CORE)/dma.cc \
-$(NP_CORE)/bios.cc \
-$(NP_CORE)/biosHLE.cc \
-$(NP_CORE)/interrupt.cc \
-$(NP_CORE)/mem.cc \
-$(NP_CORE)/neopop.cc \
-$(NP_CORE)/Z80_interface.cc \
-$(NP_CORE)/TLCS-900h/TLCS900h.cc
-
-#CPPFLAGS += -DNEOPOP_DEBUG
-#NEOPOP_SRC += $(NP_CORE)/TLCS-900h/TLCS900h_disassemble_dst.cc $(NP_CORE)/TLCS-900h/TLCS900h_disassemble_extra.cc \
-$(NP_CORE)/TLCS-900h/TLCS900h_disassemble_reg.cc $(NP_CORE)/TLCS-900h/TLCS900h_disassemble_src.cc \
-$(NP_CORE)/TLCS-900h/TLCS900h_disassemble.cc
-
-#$(NP_CORE)/TLCS-900h/TLCS900h_interpret_dst.cc $(NP_CORE)/TLCS-900h/TLCS900h_interpret_reg.cc \
-#$(NP_CORE)/TLCS-900h/TLCS900h_interpret_single.cc $(NP_CORE)/TLCS-900h/TLCS900h_interpret_src.cc \
-#$(NP_CORE)/TLCS-900h/TLCS900h_interpret.cc $(NP_CORE)/TLCS-900h/TLCS900h_registers.cc
-#NEOPOP_OBJ := $(addprefix $(objDir)/,$(NEOPOP_SRC:.cc=.o))
-
-SRC += $(NEOPOP_SRC)
+$(MDFN_COMMON_SRC) \
+ngp/bios.cpp \
+ngp/biosHLE.cpp \
+ngp/dma.cpp \
+ngp/flash.cpp \
+ngp/gfx.cpp \
+ngp/T6W28_Apu.cpp \
+ngp/gfx_scanline_mono.cpp \
+ngp/gfx_scanline_colour.cpp \
+ngp/interrupt.cpp \
+ngp/mem.cpp \
+ngp/neopop.cpp \
+ngp/rom.cpp \
+ngp/rtc.cpp \
+ngp/sound.cpp \
+ngp/Z80_interface.cpp \
+ngp/TLCS-900h/TLCS900h_interpret_single.cpp \
+ngp/TLCS-900h/TLCS900h_interpret.cpp \
+ngp/TLCS-900h/TLCS900h_registers.cpp \
+ngp/TLCS-900h/TLCS900h_interpret_reg.cpp \
+ngp/TLCS-900h/TLCS900h_interpret_src.cpp \
+ngp/TLCS-900h/TLCS900h_interpret_dst.cpp \
+mednafen/hw_cpu/z80-fuse/z80.cpp \
+mednafen/hw_cpu/z80-fuse/z80_ops.cpp
 
 include $(EMUFRAMEWORK_PATH)/package/emuframework.mk
+include $(IMAGINE_PATH)/make/package/zlib.mk
 
 include $(IMAGINE_PATH)/make/imagineAppTarget.mk
 

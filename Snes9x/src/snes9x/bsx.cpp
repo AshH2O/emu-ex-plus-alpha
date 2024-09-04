@@ -738,16 +738,12 @@ void S9xBSXSetStream1 (uint8 count)
 	if (BSX.sat_stream1.is_open())
 		BSX.sat_stream1.close(); //If Stream already opened for one file: Close it.
 
-	char path[PATH_MAX + 1], name[PATH_MAX + 1];
-
-	strcpy(path, S9xGetDirectory(SAT_DIR));
-	strcat(path, SLASH_STR);
-
-	snprintf(name, PATH_MAX + 1, "BSX%04X-%d.bin", (BSX.PPU[0x2188 - BSXPPUBASE] | (BSX.PPU[0x2189 - BSXPPUBASE] * 256)), count); //BSXHHHH-DDD.bin
-	strcat(path, name);
+	char name[PATH_MAX];
+	snprintf(name, PATH_MAX, "BSX%04X-%d.bin", (BSX.PPU[0x2188 - BSXPPUBASE] | (BSX.PPU[0x2189 - BSXPPUBASE] * 256)), count); //BSXHHHH-DDD.bin
+	std::string path = S9xGetFullFilename(name, SAT_DIR);
 
 	BSX.sat_stream1.clear();
-	BSX.sat_stream1.open(path, std::ios::in | std::ios::binary);
+	BSX.sat_stream1.open(path.c_str(), std::ios::in | std::ios::binary);
 	if (BSX.sat_stream1.good())
 	{
 		BSX.sat_stream1.seekg(0, BSX.sat_stream1.end);
@@ -770,16 +766,12 @@ void S9xBSXSetStream2 (uint8 count)
 	if (BSX.sat_stream2.is_open())
 		BSX.sat_stream2.close(); //If Stream already opened for one file: Close it.
 
-	char path[PATH_MAX + 1], name[PATH_MAX + 1];
-
-	strcpy(path, S9xGetDirectory(SAT_DIR));
-	strcat(path, SLASH_STR);
-
-	snprintf(name, PATH_MAX + 1, "BSX%04X-%d.bin", (BSX.PPU[0x218E - BSXPPUBASE] | (BSX.PPU[0x218F - BSXPPUBASE] * 256)), count); //BSXHHHH-DDD.bin
-	strcat(path, name);
+	char name[PATH_MAX];
+	snprintf(name, PATH_MAX, "BSX%04X-%d.bin", (BSX.PPU[0x218E - BSXPPUBASE] | (BSX.PPU[0x218F - BSXPPUBASE] * 256)), count); //BSXHHHH-DDD.bin
+	std::string path = S9xGetFullFilename(name, SAT_DIR);
 
 	BSX.sat_stream2.clear();
-	BSX.sat_stream2.open(path, std::ios::in | std::ios::binary);
+	BSX.sat_stream2.open(path.c_str(), std::ios::in | std::ios::binary);
 	if (BSX.sat_stream2.good())
 	{
 		BSX.sat_stream2.seekg(0, BSX.sat_stream2.end);
@@ -1206,41 +1198,8 @@ uint8 * S9xGetBasePointerBSX (uint32 address)
 
 static bool8 BSX_LoadBIOS (void)
 {
-	FILE	*fp;
-	char	path[PATH_MAX + 1], name[PATH_MAX + 1];
-	bool8	r = FALSE;
-
-	strcpy(path, S9xGetDirectory(BIOS_DIR));
-	strcat(path, SLASH_STR);
-	strcpy(name, path);
-	strcat(name, "BS-X.bin");
-
-	fp = fopen(name, "rb");
-	if (!fp)
-	{
-		strcpy(name, path);
-		strcat(name, "BS-X.bios");
-		fp = fopen(name, "rb");
-	}
-
-	if (fp)
-	{
-		size_t	size;
-
-		size = fread((void *) BIOSROM, 1, BIOS_SIZE, fp);
-		fclose(fp);
-		if (size == BIOS_SIZE)
-			r = TRUE;
-	}
-
-#ifdef BSX_DEBUG
-	if (r)
-		printf("BS: BIOS found.\n");
-	else
-		printf("BS: BIOS not found!\n");
-#endif
-
-	return (r);
+	S9xReadBSXBios(BIOSROM);
+	return true;
 }
 
 static bool8 is_BSX_BIOS (const uint8 *data, uint32 size)
@@ -1255,7 +1214,7 @@ void S9xInitBSX (void)
 {
 	Settings.BS = FALSE;
 
-    if (is_BSX_BIOS(Memory.ROM,Memory.CalculatedSize))
+	if (is_BSX_BIOS(Memory.ROM,Memory.CalculatedSize))
 	{
 		// BS-X itself
 

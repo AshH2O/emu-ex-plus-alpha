@@ -17,22 +17,30 @@
 
 #include <imagine/config/defs.hh>
 
-namespace Base
+struct xcb_connection_t;
+struct xcb_screen_t;
+
+namespace IG
 {
 
-class XApplication;
 class Application;
+
+struct NativeDisplayConnection
+{
+	xcb_connection_t* conn{};
+	xcb_screen_t* screen{};
+};
 
 class XApplicationContext
 {
 public:
-	constexpr XApplicationContext() {}
-	constexpr XApplicationContext(XApplication &app):appPtr{&app} {}
-	void setApplicationPtr(Application*);
-	Application &application() const;
+	constexpr XApplicationContext() = default;
+	constexpr XApplicationContext(Application &app):appPtr{&app} {}
+	void setApplicationPtr(auto *appPtr_) { appPtr = appPtr_; }
+	Application &application() const { return *static_cast<Application*>(appPtr); }
 
 protected:
-	XApplication *appPtr{};
+	Application *appPtr{};
 };
 
 using ApplicationContextImpl = XApplicationContext;

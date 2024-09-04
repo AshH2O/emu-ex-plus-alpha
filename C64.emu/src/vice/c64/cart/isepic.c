@@ -45,6 +45,7 @@
 #include "machine.h"
 #include "mem.h"
 #include "monitor.h"
+#include "ram.h"
 #include "resources.h"
 #include "snapshot.h"
 #include "types.h"
@@ -150,7 +151,8 @@ static io_source_t isepic_io1_device = {
     isepic_dump,              /* device state information dump function */
     CARTRIDGE_ISEPIC,         /* cartridge ID */
     IO_PRIO_NORMAL,           /* normal priority, device read needs to be checked for collisions */
-    0                         /* insertion order, gets filled in by the registration function */
+    0,                        /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE            /* NO mirroring */
 };
 
 static io_source_t isepic_io2_device = {
@@ -166,7 +168,8 @@ static io_source_t isepic_io2_device = {
     isepic_dump,              /* device state information dump function */
     CARTRIDGE_ISEPIC,         /* cartridge ID */
     IO_PRIO_NORMAL,           /* normal priority, device read needs to be checked for collisions */
-    0                         /* insertion order, gets filled in by the registration function */
+    0,                        /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE            /* NO mirroring */
 };
 
 static const export_resource_t export_res = {
@@ -177,6 +180,33 @@ static io_source_list_t *isepic_io1_list_item = NULL;
 static io_source_list_t *isepic_io2_list_item = NULL;
 
 /* ------------------------------------------------------------------------- */
+
+/* FIXME: this still needs to be tweaked to match the hardware */
+static RAMINITPARAM ramparam = {
+    .start_value = 255,
+    .value_invert = 2,
+    .value_offset = 1,
+
+    .pattern_invert = 0x100,
+    .pattern_invert_value = 255,
+
+    .random_start = 0,
+    .random_repeat = 0,
+    .random_chance = 0,
+};
+
+void isepic_powerup(void)
+{
+    DBG(("isepic_powerup"));
+    if ((isepic_filename != NULL) && (*isepic_filename != 0)) {
+        /* do not init ram if a file is used for ram content (like battery backup) */
+        return;
+    }
+    if (isepic_ram) {
+        DBG(("isepic_powerup ram clear"));
+        ram_init_with_pattern(isepic_ram, ISEPIC_RAM_SIZE, &ramparam);
+    }
+}
 
 int isepic_cart_enabled(void)
 {
@@ -209,6 +239,7 @@ static int isepic_activate(void)
     if (isepic_ram == NULL) {
         isepic_ram = lib_malloc(ISEPIC_RAM_SIZE);
     }
+    ram_init_with_pattern(isepic_ram, ISEPIC_RAM_SIZE, &ramparam);
 
     if (!util_check_null_string(isepic_filename)) {
         log_message(LOG_DEFAULT, "Reading ISEPIC image %s.", isepic_filename);
@@ -523,8 +554,8 @@ void isepic_romh_store(uint16_t addr, uint8_t byte)
             case 0xfffb:
                 isepic_ram[(isepic_page * 256) + (addr & 0xff)] = byte;
                 break;
-		}
-	}
+        }
+    }
     mem_store_without_ultimax(addr, byte);
 }
 
@@ -627,7 +658,7 @@ void isepic_config_init(void)
 void isepic_reset(void)
 {
     if (isepic_state == ISEPIC_STATE_NMI_EXECUTING) {
-        cart_config_changed_slot1(2, 2, CMODE_READ | CMODE_RELEASE_FREEZE);
+        cart_config_changed_slot1(CMODE_RAM, CMODE_RAM, CMODE_READ | CMODE_RELEASE_FREEZE);
         isepic_state = ISEPIC_STATE_PROGRAMMING;
     }
 }
@@ -664,6 +695,7 @@ int isepic_bin_attach(const char *filename, uint8_t *rawcart)
         return -1;
     }
 
+    /* set the resource */
     if (set_isepic_filename(filename, NULL) < 0) {
         return -1;
     }
@@ -718,6 +750,7 @@ int isepic_crt_attach(FILE *fd, uint8_t *rawcart, const char *filename)
     if (isepic_crt_load(fd, rawcart) < 0) {
         return -1;
     }
+    /* set the resource */
     if (set_isepic_filename(filename, NULL) < 0) {
         return -1;
     }
@@ -794,7 +827,7 @@ void isepic_detach(void)
    ARRAY | RAM     | 2048 BYTES of RAM data
  */
 
-static char snap_module_name[] = "CARTISEPIC";
+static const char snap_module_name[] = "CARTISEPIC";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   0
 

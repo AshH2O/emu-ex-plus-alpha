@@ -17,16 +17,18 @@
 #include <imagine/gui/ViewStack.hh>
 #include <imagine/gui/NavView.hh>
 #include <imagine/base/Window.hh>
-#include <imagine/input/Input.hh>
+#include <imagine/input/Event.hh>
+#include <imagine/gfx/GlyphTextureSet.hh>
+#include <imagine/gfx/Renderer.hh>
+#include <imagine/gfx/BasicEffect.hh>
 #include <imagine/logger/logger.h>
-#include <imagine/util/math/int.hh>
 #include <imagine/util/ScopeGuard.hh>
-#include <imagine/util/string.h>
 #include <utility>
 
-BasicViewController::BasicViewController() {}
+namespace IG
+{
 
-void BasicViewController::push(std::unique_ptr<View> v, Input::Event e)
+void BasicViewController::push(std::unique_ptr<View> v, const Input::Event &e)
 {
 	if(view)
 	{
@@ -39,7 +41,7 @@ void BasicViewController::push(std::unique_ptr<View> v, Input::Event e)
 	logMsg("push view in basic view controller");
 }
 
-void BasicViewController::pushAndShow(std::unique_ptr<View> v, Input::Event e, bool, bool)
+void BasicViewController::pushAndShow(std::unique_ptr<View> v, const Input::Event &e, bool, bool)
 {
 	push(std::move(v), e);
 	place();
@@ -59,17 +61,15 @@ void BasicViewController::dismissView(int idx, bool)
 	if(!view || idx != 0 || idx != -1)
 		return;
 	auto &win = view->window();
-	view->waitForDrawFinished();
 	view.reset();
 	if(removeViewDel)
 		removeViewDel();
 	win.postDraw();
 }
 
-void BasicViewController::place(const IG::WindowRect &rect, const Gfx::ProjectionPlane &projP)
+void BasicViewController::place(const IG::WindowRect &rect)
 {
 	viewRect = rect;
-	this->projP = projP;
 	place();
 }
 
@@ -78,12 +78,11 @@ void BasicViewController::place()
 	if(!view)
 		return;
 	assert(viewRect.xSize() && viewRect.ySize());
-	view->waitForDrawFinished();
-	view->setViewRect(viewRect, projP);
+	view->setViewRect(viewRect);
 	view->place();
 }
 
-bool BasicViewController::inputEvent(Input::Event e)
+bool BasicViewController::inputEvent(const Input::Event& e)
 {
 	return view->inputEvent(e);
 }
@@ -95,12 +94,11 @@ void BasicViewController::draw(Gfx::RendererCommands &cmds)
 	view->draw(cmds);
 }
 
-ViewStack::ViewStack() {}
+ViewStack::ViewStack(ViewAttachParams attach):
+	bottomGradientQuads{attach.rendererTask, {.size = 1}} {}
 
 void ViewStack::setNavView(std::unique_ptr<NavView> navView)
 {
-	if(view.size())
-		top().waitForDrawFinished();
 	nav = std::move(navView);
 	if(nav)
 	{
@@ -114,10 +112,10 @@ NavView *ViewStack::navView() const
 	return nav.get();
 }
 
-void ViewStack::place(const IG::WindowRect &rect, const Gfx::ProjectionPlane &projP)
+void ViewStack::place(WindowRect viewRect, WindowRect displayRect)
 {
-	viewRect = rect;
-	this->projP = projP;
+	this->viewRect = viewRect;
+	this->displayRect = displayRect;
 	place();
 }
 
@@ -125,39 +123,50 @@ void ViewStack::place()
 {
 	if(!view.size())
 		return;
-	top().waitForDrawFinished();
 	assert(viewRect.xSize() && viewRect.ySize());
 	customViewRect = viewRect;
+	customDisplayRect = displayRect;
 	if(navViewIsActive())
 	{
-		nav->setTitle(top().name());
-		auto navRect = IG::makeWindowRectRel(viewRect.pos(LT2DO), {viewRect.xSize(), IG::makeEvenRoundedUp(int(nav->titleFace()->nominalHeight()*(double)1.75))});
-		nav->setViewRect(navRect, projP);
+		nav->setTitle(std::u16string{top().name()});
+		auto navRect = makeWindowRectRel(viewRect.pos(LT2DO), {viewRect.xSize(), View::navBarHeight(*nav->titleFace())});
+		WindowRect navDisplayRect{displayRect.pos(LT2DO), {displayRect.xPos(RC2DO), navRect.yPos(CB2DO)}};
+		nav->setViewRect(navRect, navDisplayRect);
 		nav->place();
 		customViewRect.y += nav->viewRect().ySize();
+		customDisplayRect.y += nav->displayRect().ySize();
 	}
 	else
 	{
 		navViewHasFocus = false;
 	}
-	top().setViewRect(customViewRect, projP);
+	top().setViewRect(customViewRect, customDisplayRect);
 	top().place();
+	if(customDisplayRect.y2 > customViewRect.y2) // add a basic gradient in the OS navigation bar area
+	{
+		decltype(bottomGradientQuads)::Type bottomGradient;
+		bottomGradient.setPos(View::displayInsetRect(View::Direction::BOTTOM, customViewRect, customDisplayRect));
+		bottomGradient.bl().color = bottomGradient.br().color = Gfx::PackedColor::format.build(0., 0., 0., 1.);
+		bottomGradient.tl().color = bottomGradient.tr().color = Gfx::PackedColor::format.build(0., 0., 0., 0.);
+		bottomGradientQuads.write(0, bottomGradient);
+	}
 }
 
-bool ViewStack::inputEvent(Input::Event e)
+bool ViewStack::inputEvent(const Input::Event &e)
 {
 	if(!view.size())
 		return false;
-	if(e.isPointer())
+	if(e.motionEvent() && e.motionEvent()->isPointer())
 	{
-		if(navViewIsActive() && nav->viewRect().overlaps(e.pos()))
+		auto &motionEv = *e.motionEvent();
+		if(navViewIsActive() && nav->viewRect().overlaps(motionEv.pos()))
 		{
 			if(nav->inputEvent(e))
 			{
 				return true;
 			}
 		}
-		if(e.pushed())
+		if(motionEv.pushed())
 		{
 			navViewHasFocus = false;
 			nav->clearSelection();
@@ -173,7 +182,7 @@ bool ViewStack::inputEvent(Input::Event e)
 	}
 }
 
-bool ViewStack::moveFocusToNextView(Input::Event e, _2DOrigin direction)
+bool ViewStack::moveFocusToNextView(const Input::Event &e, _2DOrigin direction)
 {
 	if(changingViewFocus || !view.size() || !navViewIsActive())
 		return false;
@@ -220,14 +229,20 @@ void ViewStack::draw(Gfx::RendererCommands &cmds)
 	top().draw(cmds);
 	if(navViewIsActive())
 		nav->draw(cmds);
+	if(customDisplayRect.y2 > customViewRect.y2)
+	{
+		using namespace Gfx;
+		cmds.set(BlendMode::ALPHA);
+		cmds.basicEffect().disableTexture(cmds);
+		cmds.drawQuad(bottomGradientQuads, 0);
+	}
 }
 
-void ViewStack::push(std::unique_ptr<View> v, Input::Event e)
+void ViewStack::push(std::unique_ptr<View> v, const Input::Event &e)
 {
 	assumeExpr(v);
 	if(view.size())
 	{
-		top().waitForDrawFinished();
 		top().onHide();
 	}
 	v->setController(this, e);
@@ -247,7 +262,7 @@ void ViewStack::push(std::unique_ptr<View> v)
 	push(std::move(v), e);
 }
 
-void ViewStack::pushAndShow(std::unique_ptr<View> v, Input::Event e, bool needsNavView, bool isModal)
+void ViewStack::pushAndShow(std::unique_ptr<View> v, const Input::Event &e, bool needsNavView, bool isModal)
 {
 	push(std::move(v), e);
 	view.back().needsNavView = needsNavView;
@@ -261,8 +276,7 @@ void ViewStack::pop()
 {
 	if(!view.size())
 		return;
-	top().waitForDrawFinished();
-	view.back().v->onDismiss();
+	view.back().ptr->onDismiss();
 	view.pop_back();
 	logMsg("pop view, %d in stack", (int)view.size());
 	if(nav)
@@ -270,17 +284,17 @@ void ViewStack::pop()
 		showNavLeftBtn();
 		if(view.size())
 		{
-			nav->setTitle(top().name());
+			nav->setTitle(std::u16string{top().name()});
 			if(navViewHasFocus)
 				top().setFocus(false);
 		}
 	}
 }
 
-void ViewStack::popViews(int num)
+void ViewStack::popViews(size_t num)
 {
 	auto win = view.size() ? &top().window() : nullptr;
-	iterateTimes(num, i)
+	for([[maybe_unused]] auto i : iotaCount(num))
 	{
 		pop();
 	}
@@ -317,7 +331,7 @@ void ViewStack::popTo(int idx)
 {
 	if(idx < 0)
 		return;
-	unsigned popToSize = idx + 1;
+	size_t popToSize = idx + 1;
 	while(view.size() > popToSize)
 		pop();
 	place();
@@ -331,43 +345,51 @@ void ViewStack::show()
 		top().show();
 }
 
+View* ViewStack::parentView(View& v)
+{
+	auto idx = viewIdx(v);
+	if(idx <= 0)
+		return {};
+	return view[idx - 1].ptr.get();
+}
+
 View &ViewStack::top() const
 {
 	assumeExpr(view.size());
-	return *view.back().v;
+	return *view.back().ptr;
 }
 
-View &ViewStack::viewAtIdx(uint32_t idx) const
+View &ViewStack::viewAtIdx(int idx) const
 {
-	assumeExpr(idx < view.size());
-	return *view[idx].v;
+	assumeExpr(size_t(idx) < view.size());
+	return *view[idx].ptr;
 }
 
 int ViewStack::viewIdx(View &v) const
 {
 	for(int i = 0; auto &viewEntry : view)
 	{
-		if(viewEntry.v.get() == &v)
+		if(viewEntry.ptr.get() == &v)
 			return i;
 		i++;
 	}
 	return -1;
 }
 
-int ViewStack::viewIdx(View::NameStringView name) const
+int ViewStack::viewIdx(std::u16string_view name) const
 {
 	for(int i = 0; auto &viewEntry : view)
 	{
-		if(viewEntry.v->name() == name)
+		if(viewEntry.ptr->name() == name)
 			return i;
 		i++;
 	}
 	return -1;
 }
 
-int ViewStack::viewIdx(const char *name) const
+int ViewStack::viewIdx(std::string_view name) const
 {
-	return viewIdx(View::makeNameString(name));
+	return viewIdx(toUTF16String(name));
 }
 
 bool ViewStack::contains(View &v) const
@@ -375,14 +397,14 @@ bool ViewStack::contains(View &v) const
 	return viewIdx(v) != -1;
 }
 
-bool ViewStack::contains(View::NameStringView name) const
+bool ViewStack::contains(std::u16string_view name) const
 {
 	return viewIdx(name) != -1;
 }
 
-bool ViewStack::contains(const char *name) const
+bool ViewStack::contains(std::string_view name) const
 {
-	return contains(View::makeNameString(name));
+	return contains(toUTF16String(name));
 }
 
 void ViewStack::dismissView(View &v, bool refreshLayout)
@@ -401,19 +423,19 @@ void ViewStack::dismissView(int idx, bool refreshLayout)
 	if(idx < 0)
 	{
 		// negative index is treated as an offset from the current size
-		idx = size() + idx;
+		idx = (int)size() + idx;
 	}
 	if(idx == 0)
 	{
 		logWarn("not dismissing root view");
 		return;
 	}
-	if(idx < 0 || (uint32_t)idx >= size())
+	if(idx < 0 || idx >= (int)size())
 	{
 		logWarn("view dismiss index out of range:%d", idx);
 		return;
 	}
-	if((uint32_t)idx == size() - 1)
+	if(idx == (int)size() - 1)
 	{
 		// topmost view case
 		if(refreshLayout)
@@ -424,7 +446,7 @@ void ViewStack::dismissView(int idx, bool refreshLayout)
 	else
 	{
 		logMsg("dismissing view at index:%d", idx);
-		view[idx].v->onDismiss();
+		view[idx].ptr->onDismiss();
 		view.erase(view.begin() + idx);
 	}
 }
@@ -454,7 +476,7 @@ void ViewStack::showNavLeftBtn()
 	}
 }
 
-uint32_t ViewStack::size() const
+size_t ViewStack::size() const
 {
 	return view.size();
 }
@@ -490,4 +512,6 @@ void ViewStack::popModalViews()
 	place();
 	top().show();
 	top().postDraw();
+}
+
 }

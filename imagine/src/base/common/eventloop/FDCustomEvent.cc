@@ -13,8 +13,8 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
-#define LOGTAG "CustomEvent"
 #include <imagine/base/CustomEvent.hh>
+#include <imagine/util/format.hh>
 #include <imagine/logger/logger.h>
 
 #ifdef __linux__
@@ -28,7 +28,12 @@
 static constexpr uintptr_t CUSTOM_IDENT = 1;
 #endif
 
-static int makeEventFD()
+namespace IG
+{
+
+constexpr SystemLogger log{"CustomEvent"};
+
+static IG::UniqueFileDescriptor makeEventFD()
 {
 #ifdef USE_EVENTFD
 	return eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
@@ -43,14 +48,14 @@ static int makeEventFD()
 #endif
 }
 
-static void notifyEventFD(int fd, const char *debugLabel)
+static void notifyEventFD(int fd, [[maybe_unused]] const char *debugLabel)
 {
 #ifdef USE_EVENTFD
 	eventfd_t counter = 1;
 	auto ret = write(fd, &counter, sizeof(counter));
 	if(ret == -1)
 	{
-		logErr("error writing eventfd:%d (%s)", fd, debugLabel);
+		log.error("error writing eventfd:{} ({})", fd, debugLabel);
 	}
 #else
 	struct kevent kev;
@@ -59,7 +64,7 @@ static void notifyEventFD(int fd, const char *debugLabel)
 #endif
 }
 
-static void cancelEventFD(int fd, const char *debugLabel)
+static void cancelEventFD(int fd, [[maybe_unused]] const char *debugLabel)
 {
 #ifdef USE_EVENTFD
 	eventfd_t counter;
@@ -67,7 +72,7 @@ static void cancelEventFD(int fd, const char *debugLabel)
 	if(ret == -1)
 	{
 		if(Config::DEBUG_BUILD && errno != EAGAIN)
-			logErr("error reading eventfd:%d (%s)", fd, debugLabel);
+			log.error("error reading eventfd:{} ({})", fd, debugLabel);
 	}
 #else
 	struct kevent kev;
@@ -76,40 +81,13 @@ static void cancelEventFD(int fd, const char *debugLabel)
 #endif
 }
 
-namespace Base
-{
-
-FDCustomEvent::FDCustomEvent(const char *debugLabel):
-	debugLabel{debugLabel ? debugLabel : "unnamed"},
-	fdSrc{label(), makeEventFD()}
+FDCustomEvent::FDCustomEvent(FDEventSourceDesc desc, PollEventDelegate del):
+	fdSrc{makeEventFD(), {.debugLabel = desc.debugLabel, .eventLoop = desc.eventLoop}, del}
 {
 	if(fdSrc.fd() == -1)
 	{
-		logErr("error creating fd (%s)", label());
+		log.error("error creating fd ({})", desc.debugLabel);
 	}
-}
-
-FDCustomEvent::FDCustomEvent(FDCustomEvent &&o)
-{
-	*this = std::move(o);
-}
-
-FDCustomEvent &FDCustomEvent::operator=(FDCustomEvent &&o)
-{
-	deinit();
-	fdSrc = std::move(o.fdSrc);
-	debugLabel = o.debugLabel;
-	return *this;
-}
-
-FDCustomEvent::~FDCustomEvent()
-{
-	deinit();
-}
-
-void FDCustomEvent::attach(EventLoop loop, PollEventDelegate del)
-{
-	fdSrc.attach(loop, del);
 }
 
 void CustomEvent::detach()
@@ -119,12 +97,12 @@ void CustomEvent::detach()
 
 void CustomEvent::notify()
 {
-	notifyEventFD(fdSrc.fd(), label());
+	notifyEventFD(fdSrc.fd(), debugLabel());
 }
 
 void CustomEvent::cancel()
 {
-	cancelEventFD(fdSrc.fd(), label());
+	cancelEventFD(fdSrc.fd(), debugLabel());
 }
 
 bool CustomEvent::isAttached() const
@@ -137,16 +115,6 @@ CustomEvent::operator bool() const
 	return fdSrc.fd() != -1;
 }
 
-const char *FDCustomEvent::label()
-{
-	return debugLabel;
-}
-
-void FDCustomEvent::deinit()
-{
-	fdSrc.closeFD();
-}
-
 bool FDCustomEvent::shouldPerformCallback(int fd)
 {
 	#ifdef USE_EVENTFD
@@ -155,7 +123,7 @@ bool FDCustomEvent::shouldPerformCallback(int fd)
 	if(ret == -1)
 	{
 		if(Config::DEBUG_BUILD && errno != EAGAIN)
-			logErr("error reading eventfd:%d in callback", fd);
+			log.error("error reading eventfd:{} in callback", fd);
 		return false;
 	}
 	#else
@@ -165,7 +133,7 @@ bool FDCustomEvent::shouldPerformCallback(int fd)
 	if(ret < 1)
 	{
 		if(ret == -1)
-			logErr("error in kevent() in callback");
+			log.error("error in kevent() in callback");
 		return false;
 	}
 	#endif

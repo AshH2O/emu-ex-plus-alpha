@@ -41,11 +41,7 @@
 /* Logging goes here.  */
 static log_t tcbmrom_log;
 
-#ifdef USE_EMBEDDED
-#include "drivedos1551.h"
-#else
 static uint8_t drive_rom1551[DRIVE_ROM1551_SIZE];
-#endif
 
 /* If nonzero, the ROM image has been loaded.  */
 static unsigned int rom1551_loaded = 0;
@@ -58,12 +54,12 @@ int tcbmrom_load_1551(void)
             DRIVE_TYPE_1551, NULL);
 }
 
-void tcbmrom_setup_image(drive_t *drive)
+void tcbmrom_setup_image(diskunit_context_t *unit)
 {
     if (rom_loaded) {
-        switch (drive->type) {
+        switch (unit->type) {
             case DRIVE_TYPE_1551:
-                memcpy(&(drive->rom[0x4000]), drive_rom1551,
+                memcpy(&(unit->rom[0x4000]), drive_rom1551,
                        DRIVE_ROM1551_SIZE);
                 break;
         }

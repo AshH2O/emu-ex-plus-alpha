@@ -1,5 +1,9 @@
 #ifndef CHEAT_H
 #define CHEAT_H
+
+#include <vector>
+#include <string>
+
 void FCEU_CheatResetRAM(void);
 void FCEU_CheatAddRAM(int s, uint32 A, uint8 *p);
 
@@ -18,9 +22,10 @@ typedef unsigned char _8BYTECHEATMAP;
 
 extern int FCEUI_FindCheatMapByte(uint16 address);
 extern void FCEUI_SetCheatMapByte(uint16 address, bool cheat);
-extern void FCEUI_CreateCheatMap();
-extern void FCEUI_RefreshCheatMap();
-extern void FCEUI_ReleaseCheatMap();
+extern void FCEUI_CreateCheatMap(void);
+extern void FCEUI_RefreshCheatMap(void);
+extern void FCEUI_ReleaseCheatMap(void);
+extern unsigned int FrozenAddressCount;
 
 int FCEU_CheatGetByte(uint32 A);
 void FCEU_CheatSetByte(uint32 A, uint8 V);
@@ -29,24 +34,39 @@ extern int savecheats;
 extern int globalCheatDisabled;
 extern int disableAutoLSCheats;
 
-int FCEU_DisableAllCheats();
+int FCEU_DisableAllCheats(void);
+int FCEU_DeleteAllCheats(void);
 
-typedef struct {
+void FCEU_SetCheatChangeEventCallback( void (*func)(void*) = nullptr, void* userData = nullptr );
+
+struct CHEATF_SUBFAST
+{
 	uint16 addr;
 	uint8 val;
 	int compare;
 	readfunc PrevRead;
-} CHEATF_SUBFAST;
+
+	CHEATF_SUBFAST(void)
+	{
+		addr = 0; val = 0; compare = 0; PrevRead = nullptr;
+	}
+};
+
+struct CHEATCODE
+{
+	uint16 addr{};
+	uint8 val{};
+	int compare{};	/* -1 for no compare. */
+	int type{};	/* 0 for replace, 1 for substitute(GG). */
+};
 
 struct CHEATF {
-	struct CHEATF *next;
-	char *name{};
-	uint16 addr;
-	uint8 val;
-	int compare;	/* -1 for no compare. */
-	int type;	/* 0 for replace, 1 for substitute(GG). */
-	int status;
+	std::string name;
+	std::vector<CHEATCODE> codes;
+	int status{};
 };
+
+extern std::vector<CHEATF> cheats;
 
 struct SEARCHPOSSIBLE {
 	uint16 addr;

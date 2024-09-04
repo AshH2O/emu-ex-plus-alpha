@@ -15,36 +15,48 @@
 	You should have received a copy of the GNU General Public License
 	along with EmuFramework.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <imagine/gfx/GfxSprite.hh>
 #include <imagine/gfx/Texture.hh>
+#include <imagine/gfx/Quads.hh>
+#include <imagine/util/enum.hh>
 
-namespace Gfx
+namespace EmuEx
 {
-class Renderer;
-}
+
+using namespace IG;
+
+WISE_ENUM_CLASS((ImageOverlayId, uint8_t),
+	(SCANLINES, 1),
+	(SCANLINES_2, 2),
+	(LCD, 10),
+	(CRT_MASK, 20),
+	(CRT_MASK_2, 21),
+	(CRT_GRILLE, 30),
+	(CRT_GRILLE_2, 31));
 
 class VideoImageOverlay
 {
 public:
-	enum
-	{
-		NO_EFFECT = 0,
-		SCANLINES = 1, SCANLINES_2 = 2,
-		CRT = 10,
-		CRT_RGB = 20, CRT_RGB_2,
-
-		MAX_EFFECT_VAL = CRT_RGB_2
-	};
-
-	constexpr	VideoImageOverlay() {}
-	void setEffect(Gfx::Renderer &r, unsigned effect);
-	void setIntensity(Gfx::GC intensity);
-	void place(const Gfx::Sprite &disp, unsigned lines);
-	void draw(Gfx::RendererCommands &cmds);
+	constexpr	VideoImageOverlay() = default;
+	void setEffect(Gfx::Renderer &, ImageOverlayId, Gfx::ColorSpace);
+	void setIntensity(float intensity);
+	float intensityLevel() const { return intensity; }
+	void place(WRect contentRect, WSize videoPixels, Rotation);
+	void draw(Gfx::RendererCommands &cmds, Gfx::Vec3 brightness);
 
 private:
-	Gfx::Texture img{};
-	Gfx::Sprite spr{};
-	Gfx::GC intensity = 0.25;
-	unsigned effect = NO_EFFECT;
+	struct Vertex
+	{
+		glm::i16vec2 pos;
+		glm::vec2 texCoord;
+	};
+	using Quad = Gfx::BaseQuad<Vertex>;
+	using Quads = Gfx::ObjectVertexArray<Quad>;
+
+	Quads quad;
+	Gfx::Texture texture;
+	float intensity = 0.75f;
+	ImageOverlayId overlayId{};
+	bool multiplyBlend{};
 };
+
+}

@@ -15,37 +15,38 @@
 
 #define LOGTAG "MOGAInput"
 #include <imagine/base/Application.hh>
+#include <imagine/base/android/AndroidInputDevice.hh>
 #include <imagine/input/android/MogaManager.hh>
 #include <imagine/time/Time.hh>
 #include <imagine/logger/logger.h>
-#include "input.hh"
 #include <android/input.h>
 
-namespace Input
+namespace IG::Input
 {
 
-static const int ACTION_VERSION_MOGAPRO = 1;
-static const int STATE_CONNECTION = 1;
-static const int STATE_SELECTED_VERSION = 4;
+static constexpr int ACTION_VERSION_MOGAPRO = 1;
+static constexpr int STATE_CONNECTION = 1;
+static constexpr int STATE_SELECTED_VERSION = 4;
+static constexpr int DEVICE_ID = -128; // arbitrary value to avoid collisions
 
-MogaManager::MogaManager(Base::ApplicationContext ctx, bool notify):
+MogaManager::MogaManager(ApplicationContext ctx, bool notify):
 	onExit
 	{
-		[this, env = ctx.mainThreadJniEnv()](Base::ApplicationContext ctx, bool backgrounded)
+		[this, env = ctx.mainThreadJniEnv()](ApplicationContext ctx, bool backgrounded)
 		{
 			if(backgrounded)
 			{
 				jMOGAOnPause(env, mogaHelper);
 				ctx.addOnResume(
-					[this, env](Base::ApplicationContext, bool)
+					[this, env](ApplicationContext, bool)
 					{
 						onResumeMOGA(env, true);
 						return false;
-					}, Base::INPUT_DEVICE_ON_RESUME_PRIORITY
+					}, INPUT_DEVICE_ON_RESUME_PRIORITY
 				);
 			}
 			return true;
-		}, ctx, Base::INPUT_DEVICE_ON_EXIT_PRIORITY
+		}, ctx, INPUT_DEVICE_ON_EXIT_PRIORITY
 	}
 {
 	auto env = ctx.mainThreadJniEnv();
@@ -70,39 +71,31 @@ MogaManager::~MogaManager()
 		return;
 	logMsg("deinit MOGA input system");
 	jMOGAExit(mogaHelper.jniEnv(), mogaHelper);
-	appContext().application().removeInputDevice(0, false);
+	appContext().application().removeInputDevice(appContext(), Input::Map::SYSTEM, DEVICE_ID, false);
 }
 
-AndroidInputDevice MogaManager::makeMOGADevice(const char *name)
+std::unique_ptr<Input::Device> MogaManager::makeMOGADevice(const char *name)
 {
-	AndroidInputDevice dev{0, Device::TYPE_BIT_GAMEPAD | Device::TYPE_BIT_JOYSTICK, name,
-		Device::AXIS_BITS_STICK_1 | Device::AXIS_BITS_STICK_2};
-	dev.subtype_ = Device::SUBTYPE_GENERIC_GAMEPAD;
+	auto devPtr = std::make_unique<Input::Device>(std::in_place_type<AndroidInputDevice>, DEVICE_ID, InputDeviceTypeFlags{.gamepad = true, .joystick = true}, name);
+	devPtr->setSubtype(DeviceSubtype::GENERIC_GAMEPAD);
+	auto &axes = getAs<AndroidInputDevice>(*devPtr).jsAxes();
 	// set joystick axes
 	{
-		const uint8_t stickAxes[] { AXIS_X, AXIS_Y, AXIS_Z, AXIS_RZ };
+		static constexpr AxisId stickAxes[] { AxisId::X, AxisId::Y, AxisId::Z, AxisId::RZ };
 		for(auto axisId : stickAxes)
 		{
-			//logMsg("joystick axis: %d", axisId);
-			auto size = 2.0f;
-			dev.jsAxes().emplace_back(axisId, (AxisKeyEmu<float>){-1.f + size/4.f, 1.f - size/4.f,
-				Key(axisToKeycode(axisId)+1), axisToKeycode(axisId), Key(axisToKeycode(axisId)+1), axisToKeycode(axisId)});
+			axes.emplace_back(axisId);
 		}
 	}
 	// set trigger axes
 	{
-		const uint8_t triggerAxes[] { AXIS_LTRIGGER, AXIS_RTRIGGER };
+		static constexpr AxisId triggerAxes[] { AxisId::LTRIGGER, AxisId::RTRIGGER };
 		for(auto axisId : triggerAxes)
 		{
-			//logMsg("trigger axis: %d", axisId);
-			// use unreachable lowLimit value so only highLimit is used
-			dev.jsAxes().emplace_back(axisId, (AxisKeyEmu<float>){-1.f, 0.25f,
-				0, axisToKeycode(axisId), 0, axisToKeycode(axisId)});
+			axes.emplace_back(axisId);
 		}
 	}
-	dev.setJoystickAxisAsDpadBitsDefault(Device::AXIS_BITS_STICK_1);
-	dev.setJoystickAxisAsDpadBits(Device::AXIS_BITS_STICK_1);
-	return dev;
+	return devPtr;
 }
 
 void MogaManager::updateMOGAState(JNIEnv *env, bool connected, bool notify)
@@ -115,13 +108,13 @@ void MogaManager::updateMOGAState(JNIEnv *env, bool connected, bool notify)
 		{
 			logMsg("MOGA connected");
 			const char *name = jMOGAGetState(env, mogaHelper, STATE_SELECTED_VERSION) == ACTION_VERSION_MOGAPRO ? "MOGA Pro Controller" : "MOGA Controller";
-			mogaDev = app.addInputDevice(makeMOGADevice(name), false, notify);
+			mogaDev = app.addAndroidInputDevice(appContext(), makeMOGADevice(name), notify);
 		}
 		else
 		{
 			logMsg("MOGA disconnected");
 			mogaDev = {};
-			app.removeInputDevice(0, notify);
+			app.removeInputDevice(appContext(), Input::Map::SYSTEM, DEVICE_ID, notify);
 		}
 	}
 }
@@ -139,7 +132,7 @@ void MogaManager::initMOGAJNIAndDevice(JNIEnv *env, jobject mogaHelper)
 		{
 			"keyEvent", "(JIIJ)V",
 			(void*)(void (*)(JNIEnv*, jobject, jlong, jint, jint, jlong))
-			([](JNIEnv* env, jobject thiz, jlong mogaManagerPtr, jint action, jint keyCode, jlong timestamp)
+			([](JNIEnv*, jobject, jlong mogaManagerPtr, jint action, jint keyCode, jlong timestamp)
 			{
 				auto &mogaManager = *((MogaManager*)mogaManagerPtr);
 				auto &mogaDev = *mogaManager.mogaDev;
@@ -148,36 +141,36 @@ void MogaManager::initMOGAJNIAndDevice(JNIEnv *env, jobject mogaHelper)
 				assert((uint32_t)keyCode < Keycode::COUNT);
 				ctx.endIdleByUserActivity();
 				Key key = keyCode & 0x1ff;
-				auto time = IG::Nanoseconds(timestamp);
-				Event event{0, Map::SYSTEM, key, key, (action == AKEY_EVENT_ACTION_DOWN) ? Action::PUSHED : Action::RELEASED, 0, 0, Source::GAMEPAD, time, &mogaDev};
+				auto time = SteadyClockTimePoint{Nanoseconds{timestamp}};
+				KeyEvent event{Map::SYSTEM, key, (action == AKEY_EVENT_ACTION_DOWN) ? Action::PUSHED : Action::RELEASED, 0, 0, Source::GAMEPAD, time, &mogaDev};
 				ctx.application().dispatchRepeatableKeyInputEvent(event);
 			})
 		},
 		{
 			"motionEvent", "(JFFFFFFJ)V",
 			(void*)(void (*)(JNIEnv*, jobject, jlong, jfloat, jfloat, jfloat, jfloat, jfloat, jfloat, jlong))
-			([](JNIEnv* env, jobject thiz, jlong mogaManagerPtr, jfloat x, jfloat y, jfloat z, jfloat rz, jfloat lTrigger, jfloat rTrigger, jlong timestamp)
+			([](JNIEnv*, jobject, jlong mogaManagerPtr, jfloat x, jfloat y, jfloat z, jfloat rz, jfloat lTrigger, jfloat rTrigger, jlong timestamp)
 			{
 				auto &mogaManager = *((MogaManager*)mogaManagerPtr);
 				auto &mogaDev = *mogaManager.mogaDev;
 				auto ctx = mogaManager.appContext();
 				ctx.endIdleByUserActivity();
-				auto time = IG::Nanoseconds(timestamp);
+				auto time = SteadyClockTimePoint{Nanoseconds{timestamp}};
 				logMsg("MOGA motion event: %f %f %f %f %f %f %d", (double)x, (double)y, (double)z, (double)rz, (double)lTrigger, (double)rTrigger, (int)timestamp);
 				auto &win = ctx.mainWindow();
-				auto &axis = mogaDev.jsAxes();
-				axis[0].keyEmu.dispatch(x, 0, Map::SYSTEM, time, mogaDev, win);
-				axis[1].keyEmu.dispatch(y, 0, Map::SYSTEM, time, mogaDev, win);
-				axis[2].keyEmu.dispatch(z, 0, Map::SYSTEM, time, mogaDev, win);
-				axis[3].keyEmu.dispatch(rz, 0, Map::SYSTEM, time, mogaDev, win);
-				axis[4].keyEmu.dispatch(lTrigger, 0, Map::SYSTEM, time, mogaDev, win);
-				axis[5].keyEmu.dispatch(rTrigger, 0, Map::SYSTEM, time, mogaDev, win);
+				auto axis = mogaDev.motionAxes();
+				axis[0].update(x, Map::SYSTEM, time, mogaDev, win, true);
+				axis[1].update(y, Map::SYSTEM, time, mogaDev, win, true);
+				axis[2].update(z, Map::SYSTEM, time, mogaDev, win, true);
+				axis[3].update(rz, Map::SYSTEM, time, mogaDev, win, true);
+				axis[4].update(lTrigger, Map::SYSTEM, time, mogaDev, win, true);
+				axis[5].update(rTrigger, Map::SYSTEM, time, mogaDev, win, true);
 			})
 		},
 		{
 			"stateEvent", "(JII)V",
 			(void*)(void (*)(JNIEnv*, jobject, jlong, jint, jint))
-			([](JNIEnv* env, jobject thiz, jlong mogaManagerPtr, jint state, jint action)
+			([](JNIEnv* env, jobject, jlong mogaManagerPtr, jint state, jint action)
 			{
 				logMsg("MOGA state event: %d %d", state, action);
 				if(state == STATE_CONNECTION)
@@ -199,7 +192,7 @@ void MogaManager::onResumeMOGA(JNIEnv *env, bool notify)
 	updateMOGAState(env, isConnected, notify);
 }
 
-Base::ApplicationContext MogaManager::appContext() const
+ApplicationContext MogaManager::appContext() const
 {
 	return onExit.appContext();
 }

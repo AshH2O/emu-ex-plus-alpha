@@ -20,10 +20,10 @@
 #include <imagine/base/EventLoop.hh>
 #include <imagine/base/ApplicationContext.hh>
 #include <imagine/base/Application.hh>
+#include <imagine/fs/FS.hh>
 #include <imagine/logger/logger.h>
-#include <imagine/util/string.h>
 
-namespace Base
+namespace IG
 {
 
 #define DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER 1
@@ -58,8 +58,8 @@ static guint setOpenPathListener(LinuxApplication &app, GDBusConnection *bus, co
 	return g_dbus_connection_signal_subscribe(bus,
 		name, name, "openPath", appObjectPath,
 		nullptr, G_DBUS_SIGNAL_FLAGS_NONE,
-		[](GDBusConnection *connection, const gchar *name, const gchar *path, const gchar *interface,
-			const gchar *signal, GVariant *param, gpointer userData)
+		[](GDBusConnection*, [[maybe_unused]] const gchar *name, [[maybe_unused]] const gchar *path, [[maybe_unused]] const gchar *interface,
+			[[maybe_unused]] const gchar *signal, GVariant *param, gpointer userData)
 		{
 			if(!g_variant_is_of_type(param, G_VARIANT_TYPE("(s)")))
 			{
@@ -68,8 +68,8 @@ static guint setOpenPathListener(LinuxApplication &app, GDBusConnection *bus, co
 			}
 			gchar *openPath;
 			g_variant_get(param, "(s)", &openPath);
-			ApplicationContext ctx{*((Application*)userData)};
-			ctx.dispatchOnInterProcessMessage(openPath);
+			auto &app = *static_cast<Application*>(userData);
+			app.onEvent(ApplicationContext{app}, DocumentPickerEvent{openPath, FS::displayName(openPath)});
 		},
 		&app,
 		nullptr);
@@ -203,13 +203,5 @@ void LinuxApplication::setAcceptIPC(bool on, const char *name)
 		openPathSub = setOpenPathListener(*this, gbus, name);
 	}
 }
-
-void ApplicationContext::setIdleDisplayPowerSave(bool on) { application().setIdleDisplayPowerSave(on); }
-
-void ApplicationContext::endIdleByUserActivity() { application().endIdleByUserActivity(); }
-
-bool ApplicationContext::registerInstance(ApplicationInitParams initParams, const char *name) { return application().registerInstance(initParams, name); }
-
-void ApplicationContext::setAcceptIPC(bool on, const char *name) { application().setAcceptIPC(on, name); }
 
 }

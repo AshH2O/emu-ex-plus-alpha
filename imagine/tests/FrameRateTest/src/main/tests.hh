@@ -16,15 +16,22 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/gfx/GfxText.hh>
-#include <imagine/gfx/GfxSprite.hh>
-#include <imagine/gfx/ProjectionPlane.hh>
+#include <imagine/gfx/Quads.hh>
 #include <imagine/gfx/PixmapBufferTexture.hh>
 #include <imagine/gfx/SyncFence.hh>
 #include <imagine/time/Time.hh>
 #include <imagine/thread/Semaphore.hh>
 #include <imagine/base/ApplicationContext.hh>
 
-class ViewAttachParams;
+namespace IG
+{
+struct ViewAttachParams;
+}
+
+namespace FrameRateTest
+{
+
+using namespace IG;
 
 enum TestID
 {
@@ -35,9 +42,9 @@ enum TestID
 
 struct FramePresentTime
 {
-	IG::FrameTime timestamp{};
-	IG::Time atOnFrame{};
-	IG::Time atWinPresent{};
+	SteadyClockTimePoint timestamp{};
+	SteadyClockTimePoint atOnFrame{};
+	SteadyClockTimePoint atWinPresent{};
 
 	constexpr FramePresentTime() {}
 };
@@ -45,13 +52,13 @@ struct FramePresentTime
 struct TestParams
 {
 	TestID test{};
-	IG::WP pixmapSize{};
+	WSize pixmapSize{};
 	Gfx::TextureBufferMode bufferMode{};
 
 	constexpr TestParams(TestID test)
 		: test{test} {}
 
-	constexpr TestParams(TestID test, IG::WP pixmapSize, Gfx::TextureBufferMode bufferMode)
+	constexpr TestParams(TestID test, WSize pixmapSize, Gfx::TextureBufferMode bufferMode)
 		: test{test}, pixmapSize{pixmapSize}, bufferMode{bufferMode} {}
 };
 
@@ -60,7 +67,7 @@ struct TestDesc
 	TestParams params;
 	std::string name;
 
-	TestDesc(TestID test, const char *name, IG::WP pixmapSize = {},
+	TestDesc(TestID test, std::string name, WSize pixmapSize = {},
 		Gfx::TextureBufferMode bufferMode = {})
 		: params{test, pixmapSize, bufferMode}, name{name} {}
 };
@@ -68,47 +75,46 @@ struct TestDesc
 class TestFramework
 {
 public:
-	using TestFinishedDelegate = DelegateFunc<void (TestFramework &test)>;
+	using TestFinishedDelegate = IG::DelegateFunc<void (TestFramework &test)>;
 	bool started{};
 	bool shouldEndTest{};
 	unsigned frames{};
 	unsigned droppedFrames{};
 	unsigned continuousFrames{};
-	IG::FrameTime startTime{}, endTime{};
+	SteadyClockTimePoint presentTime{};
+	SteadyClockTimePoint startTime{}, endTime{};
 	TestFinishedDelegate onTestFinished;
 	FramePresentTime lastFramePresentTime;
-	Gfx::SyncFence presentFence{};
+	Gfx::IQuads statsRectQuads;
 
-	TestFramework() {}
+	TestFramework(ViewAttachParams);
 	virtual ~TestFramework() {}
-	virtual void initTest(Base::ApplicationContext, Gfx::Renderer &, IG::WP pixmapSize, Gfx::TextureBufferMode) {}
-	virtual void placeTest(const Gfx::GCRect &testRect) {}
-	virtual void frameUpdateTest(Gfx::RendererTask &rendererTask, Base::Screen &screen, IG::FrameTime frameTime) = 0;
+	virtual void placeTest(WRect) {}
+	virtual void frameUpdateTest(Gfx::RendererTask &, Screen &, SteadyClockTimePoint) = 0;
 	virtual void drawTest(Gfx::RendererCommands &cmds, Gfx::ClipRect bounds) = 0;
-	virtual void presentedTest(Gfx::RendererCommands &cmds) {}
-	void init(Base::ApplicationContext, Gfx::Renderer &, Gfx::GlyphTextureSet &face, IG::WP pixmapSize, Gfx::TextureBufferMode);
-	void place(Gfx::Renderer &r, const Gfx::ProjectionPlane &projP, const Gfx::GCRect &testRect);
-	void frameUpdate(Gfx::RendererTask &rTask, Base::Window &win, Base::FrameParams frameParams);
-	void prepareDraw(Gfx::Renderer &r);
-	void draw(Gfx::RendererCommands &cmds, Gfx::ClipRect bounds, Gfx::GC xIndent);
-	void finish(Gfx::RendererTask &task, IG::FrameTime frameTime);
-	void setCPUFreqText(const char *str);
-	void setCPUUseText(const char *str);
+	virtual void presentedTest(Gfx::RendererCommands&) {}
+	void place(WRect viewBounds, WRect testRect);
+	void frameUpdate(Gfx::RendererTask &rTask, IG::Window &win, IG::FrameParams frameParams);
+	void prepareDraw();
+	void draw(Gfx::RendererCommands &cmds, Gfx::ClipRect bounds, int xIndent);
+	void finish(SteadyClockTimePoint);
+	void setCPUFreqText(std::string_view str);
+	void setCPUUseText(std::string_view str);
 
 protected:
 	Gfx::Text cpuStatsText;
-	Gfx::GCRect cpuStatsRect{};
-	std::array<char, 256> cpuFreqStr{};
-	std::array<char, 64> cpuUseStr{};
 	Gfx::Text frameStatsText;
-	Gfx::GCRect frameStatsRect{};
-	std::array<char, 256> skippedFrameStr{};
-	std::array<char, 256> statsStr{};
-	Gfx::ProjectionPlane projP;
-	unsigned lostFrameProcessTime = 0;
+	std::string cpuFreqStr;
+	std::string cpuUseStr;
+	std::string skippedFrameStr;
+	std::string statsStr;
+	WRect viewBounds{};
+	WRect cpuStatsRect{};
+	WRect frameStatsRect{};
+	unsigned lostFrameProcessTime{};
 
-	void placeCPUStatsText(Gfx::Renderer &r);
-	void placeFrameStatsText(Gfx::Renderer &r);
+	void placeCPUStatsText();
+	void placeFrameStatsText();
 };
 
 class ClearTest : public TestFramework
@@ -117,9 +123,8 @@ protected:
 	bool flash{true};
 
 public:
-	ClearTest() {}
-
-	void frameUpdateTest(Gfx::RendererTask &rendererTask, Base::Screen &screen, IG::FrameTime frameTime) override;
+	using TestFramework::TestFramework;
+	void frameUpdateTest(Gfx::RendererTask &, Screen &, SteadyClockTimePoint) override;
 	void drawTest(Gfx::RendererCommands &cmds, Gfx::ClipRect bounds) override;
 };
 
@@ -127,26 +132,24 @@ class DrawTest : public TestFramework
 {
 protected:
 	int flash{true};
+	Gfx::ITexQuads quad;
 	Gfx::PixmapBufferTexture texture;
-	Gfx::Sprite sprite;
 
 public:
-	DrawTest() {}
-
-	void initTest(Base::ApplicationContext, Gfx::Renderer &, IG::WP pixmapSize, Gfx::TextureBufferMode) override;
-	void placeTest(const Gfx::GCRect &rect) override;
-	void frameUpdateTest(Gfx::RendererTask &rendererTask, Base::Screen &screen, IG::FrameTime frameTime) override;
+	DrawTest(IG::ApplicationContext, ViewAttachParams attach, WSize pixmapSize, Gfx::TextureBufferMode);
+	void placeTest(WRect testRect) override;
+	void frameUpdateTest(Gfx::RendererTask &, Screen &, SteadyClockTimePoint) override;
 	void drawTest(Gfx::RendererCommands &cmds, Gfx::ClipRect bounds) override;
 };
 
 class WriteTest : public DrawTest
 {
 public:
-	WriteTest() {}
-	~WriteTest() override;
-
-	void frameUpdateTest(Gfx::RendererTask &rendererTask, Base::Screen &screen, IG::FrameTime frameTime) override;
+	using DrawTest::DrawTest;
+	void frameUpdateTest(Gfx::RendererTask &, Screen &, SteadyClockTimePoint) override;
 	void drawTest(Gfx::RendererCommands &cmds, Gfx::ClipRect bounds) override;
 };
 
 const char *testIDToStr(TestID id);
+
+}

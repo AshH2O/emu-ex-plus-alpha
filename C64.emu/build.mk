@@ -6,7 +6,7 @@ include $(IMAGINE_PATH)/make/imagineAppBase.mk
 viceSrcPath := $(projectPath)/src/vice
 
 CFLAGS_LANG += -Werror=implicit-function-declaration
-CFLAGS_WARN += -Wno-implicit-fallthrough -Wno-sign-compare
+CFLAGS_WARN += -Wno-implicit-fallthrough -Wno-sign-compare -Wno-unused-parameter -Wno-unused-function
 
 ifeq ($(ENV),android)
  LDLIBS += -ldl
@@ -21,9 +21,9 @@ endif
 SRC += main/Main.cc \
 main/options.cc \
 main/input.cc \
-main/EmuControls.cc \
 main/EmuMenuViews.cc \
 main/VicePlugin.cc \
+main/resources.cc \
 main/sysfile.cc \
 main/video.cc \
 main/sound.cc \
@@ -38,8 +38,10 @@ CPPFLAGS += \
 -I$(viceSrcPath)/c64/cart \
 -I$(viceSrcPath)/c128 \
 -I$(viceSrcPath)/cbm2 \
+-I$(viceSrcPath)/cbm2/cart \
 -I$(viceSrcPath)/pet \
 -I$(viceSrcPath)/plus4 \
+-I$(viceSrcPath)/plus4/cart \
 -I$(viceSrcPath)/drive \
 -I$(viceSrcPath)/lib/p64 \
 -I$(viceSrcPath)/sid \
@@ -48,11 +50,12 @@ CPPFLAGS += \
 -I$(viceSrcPath)/video \
 -I$(viceSrcPath)/drive/iec/c64exp \
 -I$(viceSrcPath)/core \
--I$(viceSrcPath)/rtc \
+-I$(viceSrcPath)/core/rtc \
 -I$(viceSrcPath)/vdrive \
 -I$(viceSrcPath)/imagecontents \
 -I$(viceSrcPath)/monitor \
 -I$(viceSrcPath)/platform \
+-I$(viceSrcPath)/printerdrv \
 -I$(viceSrcPath)/raster \
 -I$(viceSrcPath)/c64dtv \
 -I$(viceSrcPath)/vicii \
@@ -69,6 +72,10 @@ CPPFLAGS += \
 -I$(viceSrcPath)/drive/tcbm \
 -I$(viceSrcPath)/diag \
 -I$(viceSrcPath)/rs232drv \
+-I$(viceSrcPath)/datasette \
+-I$(viceSrcPath)/fsdevice \
+-I$(viceSrcPath)/arch/shared \
+-I$(viceSrcPath)/arch/shared/hotkeys \
 -DSTDC_HEADERS=1 \
 -DHAVE_SYS_TYPES_H=1 \
 -DHAVE_SYS_STAT_H=1 \
@@ -87,12 +94,11 @@ attach.c \
 autostart.c \
 autostart-prg.c \
 charset.c \
-clkguard.c \
 clipboard.c \
 cbmdos.c \
 cbmimage.c \
 crc32.c \
-datasette.c \
+crt.c \
 debug.c \
 dma.c \
 event.c \
@@ -101,21 +107,22 @@ gcr.c \
 info.c \
 init.c \
 interrupt.c \
-ioutil.c \
 kbdbuf.c \
 keyboard.c \
+keymap.c \
 lib.c \
-libm_math.c \
 machine-bus.c \
 machine.c \
 network.c \
 opencbmlib.c \
 palette.c \
+profiler.c \
 ram.c \
 rawfile.c \
 rawnet.c \
 resources.c \
 romset.c \
+sha1.c \
 snapshot.c \
 socket.c \
 sound.c \
@@ -127,8 +134,7 @@ zipcode.c
 libc64cartsystem_a_SOURCES = \
 c64cart.c \
 c64carthooks.c \
-c64cartmem.c \
-crt.c
+c64cartmem.c
 libc64cartsystem_a_SOURCES := $(addprefix c64/cart/,$(libc64cartsystem_a_SOURCES))
 
 libc64cart_a_SOURCES = \
@@ -137,6 +143,11 @@ actionreplay3.c \
 actionreplay4.c \
 actionreplay.c \
 atomicpower.c \
+bisplus.c \
+blackbox3.c \
+blackbox4.c \
+blackbox8.c \
+blackbox9.c \
 c64-generic.c \
 c64-midi.c \
 c64tpi.c \
@@ -152,6 +163,7 @@ delaep7x8.c \
 diashowmaker.c \
 dinamic.c \
 dqbb.c \
+drean.c \
 easycalc.c \
 easyflash.c \
 epyxfastload.c \
@@ -162,15 +174,20 @@ final3.c \
 finalplus.c \
 formel64.c \
 freezeframe.c \
+freezeframe2.c \
 freezemachine.c \
 funplay.c \
 gamekiller.c \
 gmod2.c \
+gmod3.c \
 gs.c \
+hyperbasic.c \
 ide64.c \
+ieeeflash64.c \
 isepic.c \
 kcs.c \
 kingsoft.c \
+ltkernal.c \
 mach5.c \
 magicdesk.c \
 magicformel.c \
@@ -179,17 +196,22 @@ maxbasic.c \
 mikroass.c \
 mmcreplay.c \
 mmc64.c \
+multimax.c \
 ocean.c \
 prophet64.c \
 pagefox.c \
+partner64.c \
 ramcart.c \
+ramlink.c \
 retroreplay.c \
 reu.c \
 rexep256.c \
+rexramfloppy.c \
 rexutility.c \
 rgcd.c \
 ross.c \
 rrnetmk3.c \
+sdbox.c \
 shortbus.c \
 shortbus_digimax.c \
 silverrock128.c \
@@ -201,14 +223,13 @@ superexplode5.c \
 supergames.c \
 supersnapshot.c \
 supersnapshot4.c \
+turtlegraphics.c \
 warpspeed.c \
 westermann.c \
-zaxxon.c
+zaxxon.c \
+zippcode48.c
 
 libc64cart_a_SOURCES := $(addprefix c64/cart/,$(libc64cart_a_SOURCES))
-
-# don't include cpmcart.c for C128 due to conflicting Z80 regs definition
-libc128cart_a_SOURCES := $(libc64cart_a_SOURCES:c64/cart/cpmcart.c=) main/cpmcartStubs.c
 
 libc64commoncart_a_SOURCES = \
 c64acia1.c \
@@ -224,6 +245,8 @@ libcrtc_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(viceSrc
 libiecbus_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(viceSrcPath)/iecbus/*)))
 
 libserial_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(viceSrcPath)/serial/*)))
+
+libdatasette_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(viceSrcPath)/datasette/*)))
 
 libc64_a_SOURCES = \
 c64-cmdline-options.c \
@@ -258,7 +281,6 @@ c64romset.c \
 c64rsuser.c \
 c64sound.c \
 c64video.c \
-patchrom.c \
 plus256k.c \
 plus60k.c \
 psid.c \
@@ -271,7 +293,6 @@ c64cia1.c \
 c64cia2.c \
 c64datasette.c \
 c64drive.c \
-c64embedded.c \
 c64export.c \
 c64fastiec.c \
 c64iec.c \
@@ -284,7 +305,6 @@ c64romset.c \
 c64rsuser.c \
 c64sound.c \
 c64video.c \
-patchrom.c \
 reloc65.c
 libc64scpu64_a_SOURCES := $(addprefix c64/,$(libc64scpu64_a_SOURCES))
 
@@ -356,7 +376,6 @@ c64romset.c \
 c64rsuser.c \
 c64sound.c \
 c64video.c \
-patchrom.c \
 plus256k.c \
 plus60k.c \
 psid.c \
@@ -372,12 +391,10 @@ c64bus.c \
 c64drive.c \
 c64fastiec.c \
 c64keyboard.c \
-c64parallel.c \
 c64rom.c \
 c64romset.c \
 c64rsuser.c \
-c64video.c \
-patchrom.c
+c64video.c
 libc64c64dtv_a_SOURCES := $(addprefix c64/,$(libc64c64dtv_a_SOURCES))
 
 libc64dtv_a_SOURCES = \
@@ -394,21 +411,17 @@ c64dtv-snapshot.c \
 c64dtv.c \
 c64dtvcia1.c \
 c64dtvcia2.c \
-c64dtvembedded.c \
 c64dtviec.c \
 c64dtvmeminit.c \
 c64dtvmodel.c \
 c64dtvpla.c \
 c64dtvprinter.c \
 c64dtvsound.c \
+c64dtv-stubs.c \
 debugcart.c \
 flash-trap.c \
 hummeradc.c
 libc64dtv_a_SOURCES := $(addprefix c64dtv/,$(libc64dtv_a_SOURCES))
-
-libc64dtvstubs_a_SOURCES = \
-c64dtvcart.c
-libc64dtvstubs_a_SOURCES := $(addprefix c64dtv/,$(libc64dtvstubs_a_SOURCES))
 
 libviciidtv_a_SOURCES = \
 vicii-badline.c \
@@ -427,6 +440,7 @@ vicii.c
 libviciidtv_a_SOURCES := $(addprefix vicii/,$(libviciidtv_a_SOURCES))
 
 libc128_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(viceSrcPath)/c128/*)))
+libc128_a_SOURCES += $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(viceSrcPath)/c128/cart/*)))
 
 libc64c128_a_SOURCES = \
 c64bus.c \
@@ -438,13 +452,13 @@ c64iec.c \
 c64io.c \
 c64keyboard.c \
 c64meminit.c \
+c64memlimit.c \
 c64memrom.c \
 c64printer.c \
 c64pla.c \
 c64parallel.c \
 c64rsuser.c \
-c64sound.c \
-patchrom.c
+c64sound.c
 libc64c128_a_SOURCES := $(addprefix c64/,$(libc64c128_a_SOURCES))
 
 libvdc_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(viceSrcPath)/vdc/*)))
@@ -473,21 +487,20 @@ libmascuerade_a_SOURCES := $(addprefix vic20/cart/,$(libmascuerade_a_SOURCES))
 
 libpet_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(viceSrcPath)/pet/*)))
 
-libplus4_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(viceSrcPath)/plus4/*)))
+libplus4_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(viceSrcPath)/plus4/*) $(wildcard $(viceSrcPath)/plus4/cart/*)))
 
 libcbm2_a_SOURCES = \
 cbm2-cmdline-options.c \
 cbm2-resources.c \
 cbm2-snapshot.c \
+cbm2-stubs.c \
 cbm2.c \
 cbm2acia1.c \
 cbm2bus.c \
-cbm2cart.c \
 cbm2cia1.c \
 cbm2cpu.c \
 cbm2datasette.c \
 cbm2drive.c \
-cbm2embedded.c \
 cbm2iec.c \
 cbm2io.c \
 cbm2mem.c \
@@ -500,19 +513,19 @@ cbm2sound.c \
 cbm2tpi1.c \
 cbm2tpi2.c \
 cbm2video.c \
-debugcart.c
+cart/cbm2cart.c \
+cart/debugcart.c
 libcbm2_a_SOURCES := $(addprefix cbm2/,$(libcbm2_a_SOURCES))
 
 libcbm5x0_a_SOURCES = \
 cbm2-cmdline-options.c \
 cbm5x0-resources.c \
 cbm5x0-snapshot.c \
+cbm5x0-stubs.c \
 cbm5x0.c \
-cbm5x0embedded.c \
 cbm2acia1.c \
 cbm2bus.c \
-cbm2cart.c \
-cbm2cia1.c \
+cbm5x0cia1.c \
 cbm2cpu.c \
 cbm2datasette.c \
 cbm2drive.c \
@@ -521,14 +534,15 @@ cbm2io.c \
 cbm5x0mem.c \
 cbm2memsnapshot.c \
 cbm2model.c \
-cbm2printer.c \
+cbm5x0printer.c \
 cbm5x0rom.c \
 cbm2romset.c \
 cbm2sound.c \
 cbm2tpi1.c \
 cbm2tpi2.c \
 cbm5x0video.c \
-debugcart.c
+cart/cbm2cart.c \
+cart/debugcart.c
 libcbm5x0_a_SOURCES := $(addprefix cbm2/,$(libcbm5x0_a_SOURCES))
 
 libdrive_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(viceSrcPath)/drive/*)))
@@ -566,14 +580,15 @@ sid.c
 libsid_a_SOURCES := $(addprefix sid/,$(libsid_a_SOURCES))
 
 libresid_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.cc, $(wildcard $(viceSrcPath)/resid/*))) sid/resid.cc
+libresid_a_SOURCES := $(filter-out resid/filter.cc, $(libresid_a_SOURCES))
 
 libresiddtv_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.cc, $(wildcard $(viceSrcPath)/resid-dtv/*))) sid/resid-dtv.cc
-
-librtc_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(viceSrcPath)/rtc/*)))
+libresid_a_SOURCES := $(filter-out $(viceSrcPath)/resid/filter8580new.cc, $(libresid_a_SOURCES))
 
 libtape_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(viceSrcPath)/tape/*)))
 
 libcore_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(viceSrcPath)/core/*)))
+libcore_a_SOURCES += $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(viceSrcPath)/core/rtc/*)))
 
 libuserport_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(viceSrcPath)/userport/*)))
 
@@ -582,16 +597,17 @@ libraster_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(viceS
 libvideo_a_SOURCES = \
 render1x1.c \
 render1x2.c \
-render1x1crt.c \
-render1x2crt.c \
 render1x1pal.c \
 render1x1ntsc.c \
+render1x1rgbi.c \
+render1x2rgbi.c \
 video-canvas.c \
 video-cmdline-options.c \
 video-color.c \
-video-render-crt.c \
-video-render-pal.c \
 video-render.c \
+video-render-crtmono.c \
+video-render-palntsc.c \
+video-render-rgbi.c \
 video-resources.c \
 video-sound.c \
 video-viewport.c
@@ -615,8 +631,14 @@ libtapeport_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(vic
 
 libsamplerdrv_a_SOURCES := $(subst $(viceSrcPath)/,,$(filter %.c, $(wildcard $(viceSrcPath)/samplerdrv/*)))
 
+ifeq ($(SUBENV), pandora)
+libcCompatSrc = main/linuxCompat.c
+endif
+
 pluginNoTape_src = \
+$(libcCompatSrc) \
 main/pluginCommon.c \
+main/pluginCxxSupport.cc \
 $(libsounddrv_a_SOURCES) \
 $(libprinterdrv_a_SOURCES) \
 $(librs232drv_a_SOURCES) \
@@ -633,7 +655,8 @@ $(base_sources)
 
 plugin_src = \
 $(pluginNoTape_src) \
-$(libtape_a_SOURCES)
+$(libtape_a_SOURCES) \
+$(libdatasette_a_SOURCES)
 
 c64_src = \
 $(plugin_src) \
@@ -655,7 +678,6 @@ $(libmonitor_a_SOURCES) \
 $(libvicii_a_SOURCES) \
 $(libraster_a_SOURCES) \
 $(libuserport_a_SOURCES) \
-$(librtc_a_SOURCES) \
 $(libvideo_a_SOURCES) \
 $(libimagecontents_a_SOURCES) \
 $(libresid_a_SOURCES) \
@@ -681,7 +703,6 @@ $(libmonitor_a_SOURCES) \
 $(libviciisc_a_SOURCES) \
 $(libraster_a_SOURCES) \
 $(libuserport_a_SOURCES) \
-$(librtc_a_SOURCES) \
 $(libvideo_a_SOURCES) \
 $(libimagecontents_a_SOURCES) \
 $(libtapeport_a_SOURCES) \
@@ -689,6 +710,7 @@ $(libresid_a_SOURCES)
 
 scpu64_src = \
 $(pluginNoTape_src) \
+$(libdatasette_a_SOURCES) \
 $(libscpu64_a_SOURCES) \
 $(libc64cartsystem_a_SOURCES) \
 $(libc64cart_a_SOURCES) \
@@ -708,7 +730,6 @@ $(libmonitor_a_SOURCES) \
 $(libviciisc_a_SOURCES) \
 $(libraster_a_SOURCES) \
 $(libuserport_a_SOURCES) \
-$(librtc_a_SOURCES) \
 $(libvideo_a_SOURCES) \
 $(libimagecontents_a_SOURCES) \
 $(libresid_a_SOURCES)
@@ -731,18 +752,16 @@ $(libmonitor_a_SOURCES) \
 $(libviciitv_a_SOURCES) \
 $(libraster_a_SOURCES) \
 $(libuserport_a_SOURCES) \
-$(librtc_a_SOURCES) \
 $(libvideo_a_SOURCES) \
 $(libimagecontents_a_SOURCES) \
 $(libresiddtv_a_SOURCES) \
-$(libc64dtvstubs_a_SOURCES) \
 ps2mouse.c
 
 c128_src = \
 $(plugin_src) \
 $(libc128_a_SOURCES) \
 $(libc64cartsystem_a_SOURCES) \
-$(libc128cart_a_SOURCES) \
+$(libc64cart_a_SOURCES) \
 $(libc64commoncart_a_SOURCES) \
 $(libc64c128_a_SOURCES) \
 $(libdriveiec_a_SOURCES) \
@@ -761,7 +780,6 @@ $(libvicii_a_SOURCES) \
 $(libvdc_a_SOURCES) \
 $(libraster_a_SOURCES) \
 $(libuserport_a_SOURCES) \
-$(librtc_a_SOURCES) \
 $(libvideo_a_SOURCES) \
 $(libimagecontents_a_SOURCES) \
 $(libtapeport_a_SOURCES) \
@@ -785,7 +803,6 @@ $(libsid_a_SOURCES) \
 $(libmonitor_a_SOURCES) \
 $(libraster_a_SOURCES) \
 $(libuserport_a_SOURCES) \
-$(librtc_a_SOURCES) \
 $(libvideo_a_SOURCES) \
 $(libimagecontents_a_SOURCES) \
 $(libtapeport_a_SOURCES) \
@@ -805,7 +822,6 @@ $(libmonitor_a_SOURCES) \
 $(libcrtc_a_SOURCES) \
 $(libraster_a_SOURCES) \
 $(libuserport_a_SOURCES) \
-$(librtc_a_SOURCES) \
 $(libvideo_a_SOURCES) \
 $(libsid_a_SOURCES) \
 $(libimagecontents_a_SOURCES) \
@@ -827,7 +843,6 @@ $(libvdrive_a_SOURCES) \
 $(libmonitor_a_SOURCES) \
 $(libraster_a_SOURCES) \
 $(libuserport_a_SOURCES) \
-$(librtc_a_SOURCES) \
 $(libvideo_a_SOURCES) \
 $(libsid_a_SOURCES) \
 $(libimagecontents_a_SOURCES) \
@@ -848,7 +863,6 @@ $(libmonitor_a_SOURCES) \
 $(libcrtc_a_SOURCES) \
 $(libraster_a_SOURCES) \
 $(libuserport_a_SOURCES) \
-$(librtc_a_SOURCES) \
 $(libvideo_a_SOURCES) \
 $(libsid_a_SOURCES) \
 $(libimagecontents_a_SOURCES) \
@@ -869,16 +883,15 @@ $(libvdrive_a_SOURCES) \
 $(libmonitor_a_SOURCES) \
 $(libvicii_a_SOURCES) \
 $(libraster_a_SOURCES) \
-$(libuserport_a_SOURCES) \
-$(librtc_a_SOURCES) \
 $(libvideo_a_SOURCES) \
 $(libsid_a_SOURCES) \
 $(libimagecontents_a_SOURCES) \
 $(libtapeport_a_SOURCES) \
 $(libresid_a_SOURCES) \
-main/iecbusStubs.c
+main/iecbusStubs.c \
+main/cbm5x0Stubs.c
 
-pluginLDFlags = $(CFLAGS_TARGET) $(LDFLAGS_SYSTEM) $(LDLIBS_SYSTEM) -lz
+pluginLDFlags = $(CFLAGS_TARGET) $(LDFLAGS_SYSTEM) -lz -lm
 
 ifeq ($(ENV),android)
  # must link to the app's main shared object so Android resolves runtime symbols correctly
@@ -887,6 +900,10 @@ endif
 
 # needed to prevent miscompile when building with -Ofast
 %/resid/dac.o : CFLAGS_OPTIMIZE += -fno-finite-math-only
+
+# allow linking with minimal c++ support
+%/sid/resid-dtv.o : CXXFLAGS_LANG += -fno-exceptions
+%/sid/resid.o : CXXFLAGS_LANG += -fno-exceptions
 
 c64_obj := $(addprefix $(objDir)/,$(c64_src:.c=.o))
 c64_obj := $(c64_obj:.cc=.o)
@@ -967,7 +984,7 @@ cbm2_module := $(targetDir)/libcbm2$(loadableModuleExt)
 $(cbm2_module) : $(cbm2_obj) $(linkerLibsDep)
 	@echo "Linking $@"
 	@mkdir -p `dirname $@`
-	$(PRINT_CMD) $(CC) -o $@ $(linkLoadableModuleAction) $(cbm2_obj) $(pluginLDFlags) -s
+	$(PRINT_CMD) $(CC) -o $@ $(linkLoadableModuleAction) $(cbm2_obj) $(pluginLDFlags)
 
 cbm5x0_obj := $(addprefix $(objDir)/,$(cbm5x0_src:.c=.o))
 cbm5x0_obj := $(cbm5x0_obj:.cc=.o)

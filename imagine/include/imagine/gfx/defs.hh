@@ -16,89 +16,68 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/config/defs.hh>
-#include <imagine/base/Error.hh>
-#include <imagine/util/Point2D.hh>
+#include <imagine/pixmap/PixelFormat.hh>
 #include <imagine/util/rectangle2.h>
-#include <imagine/util/DelegateFunc.hh>
-#include <optional>
-#include <stdexcept>
-#include <string>
-#include <string_view>
+#include <array>
 
-#ifdef CONFIG_GFX_OPENGL
-#include <imagine/gfx/opengl/gfx-globals.hh>
+#ifndef CONFIG_GFX_OPENGL
+#define CONFIG_GFX_OPENGL 1
 #endif
 
-namespace Gfx
+#ifdef CONFIG_GFX_OPENGL
+#include <imagine/gfx/opengl/defs.hh>
+#endif
+
+namespace IG::Gfx
 {
 
-using namespace IG;
-
+class Renderer;
 class RendererTask;
 class RendererCommands;
 class SyncFence;
+struct TextureBufferFlags;
+struct TextureWriteFlags;
+class TextureConfig;
 class Texture;
+struct TextureBinding;
+class PixmapBufferTexture;
+class TextureSamplerConfig;
+class TextureSampler;
+class Mat4;
+class Vec3;
+class Vec4;
+class Shader;
+class Program;
+class BasicEffect;
+class GlyphTextureSet;
+class ProjectionPlane;
+struct DrawableConfig;
+struct Color4B;
+enum class BufferType : uint8_t;
+template<class T, BufferType type>
+class Buffer;
+template<class T>
+class ObjectVertexBuffer;
+template<class T>
+class ObjectVertexArray;
+template<class T>
+class QuadIndexArray;
 
-using GC = TransformCoordinate;
-using Coordinate = TransformCoordinate;
-using GfxPoint = IG::Point2D<GC>;
-using GP = GfxPoint;
-using GCRect = IG::CoordinateRect<GC, true, true>;
-using GTexC = TextureCoordinate;
-using GTexCPoint = IG::Point2D<GTexC>;
-using GTexCRect = IG::Rect2<GTexC>;
-using Error = std::optional<std::runtime_error>;
+using GCRect = CoordinateRect<float, true, true>;
 
-static constexpr GC operator"" _gc (long double n)
-{
-	return (GC)n;
-}
+enum class WrapMode: uint8_t { REPEAT, MIRROR_REPEAT, CLAMP };
 
-static constexpr GC operator"" _gc (unsigned long long n)
-{
-	return (GC)n;
-}
+enum class MipFilter: uint8_t { NONE, NEAREST, LINEAR };
 
-static constexpr GC operator"" _gtexc (long double n)
-{
-	return (GTexC)n;
-}
+enum class BlendMode: uint8_t { OFF, ALPHA, PREMULT_ALPHA, INTENSITY };
 
-static constexpr GC operator"" _gtexc (unsigned long long n)
-{
-	return (GTexC)n;
-}
+enum class EnvMode: uint8_t { MODULATE, BLEND, REPLACE, ADD };
 
-static GCRect makeGCRectRel(GP p, GP size)
-{
-	return GCRect::makeRel(p, size);
-}
+enum class BlendEquation: uint8_t { ADD, SUB, RSUB };
 
-template <class T>
-static GTexC pixelToTexC(T pixel, T total) { return (GTexC)pixel / (GTexC)total; }
+enum class Faces: uint8_t { BOTH, FRONT, BACK };
 
-enum WrapMode
-{
-	WRAP_REPEAT,
-	WRAP_CLAMP
-};
-
-enum MipFilterMode
-{
-	MIP_FILTER_NONE,
-	MIP_FILTER_NEAREST,
-	MIP_FILTER_LINEAR,
-};
-
-enum { BLEND_MODE_OFF = 0, BLEND_MODE_ALPHA, BLEND_MODE_INTENSITY };
-
-enum { IMG_MODE_MODULATE = 0, IMG_MODE_BLEND, IMG_MODE_REPLACE, IMG_MODE_ADD };
-
-enum { BLEND_EQ_ADD, BLEND_EQ_SUB, BLEND_EQ_RSUB };
-
-enum { BOTH_FACES, FRONT_FACES, BACK_FACES };
-
-enum class ColorName
+enum class ColorName: uint8_t
 {
 	RED,
 	GREEN,
@@ -110,48 +89,19 @@ enum class ColorName
 	BLACK
 };
 
-enum TransformTargetEnum { TARGET_WORLD, TARGET_TEXTURE };
-
-enum class CommonProgram
+enum class TextureType : uint8_t
 {
-	// color replacement shaders
-	TEX_REPLACE,
-	TEX_ALPHA_REPLACE,
-	TEX_EXTERNAL_REPLACE,
-
-	// color modulation shaders
-	TEX,
-	TEX_ALPHA,
-	TEX_EXTERNAL,
-	NO_TEX
+	UNSET, T2D_1, T2D_2, T2D_4, T2D_EXTERNAL
 };
-
-enum class CommonTextureSampler
-{
-	CLAMP,
-	NEAREST_MIP_CLAMP,
-	NO_MIP_CLAMP,
-	NO_LINEAR_NO_MIP_CLAMP,
-	REPEAT,
-	NEAREST_MIP_REPEAT
-};
-
-using TextString = std::u16string;
-using TextStringView = std::u16string_view;
 
 class TextureSpan
 {
 public:
-	constexpr TextureSpan(const Texture *tex = {}, GTexCRect uv = {{}, {1., 1.}}):
-		tex{tex}, uv{uv}
-	{}
-	constexpr const Texture *texture() const { return tex; }
-	constexpr GTexCRect uvBounds() const { return uv; }
-	explicit operator bool() const;
+	const Texture *texturePtr{};
+	FRect bounds{{}, {1.f, 1.f}};
 
-protected:
-	const Texture *tex;
-	GTexCRect uv;
+	explicit operator bool() const;
+	operator TextureBinding() const;
 };
 
 enum class TextureBufferMode : uint8_t
@@ -168,63 +118,139 @@ enum class DrawAsyncMode : uint8_t
 	AUTO, NONE, PRESENT, FULL
 };
 
-class DrawParams
+struct DrawParams
 {
-public:
-	constexpr DrawParams() {}
-	constexpr DrawParams(DrawAsyncMode asyncMode):
-		asyncMode_{asyncMode}
-	{}
-
-	void setAsyncMode(DrawAsyncMode mode)
-	{
-		asyncMode_ = mode;
-	}
-
-	DrawAsyncMode asyncMode() const { return asyncMode_; }
-
-private:
-	DrawAsyncMode asyncMode_ = DrawAsyncMode::AUTO;
+	DrawAsyncMode asyncMode{DrawAsyncMode::AUTO};
 };
 
-static constexpr Color color(float r, float g, float b, float a = 1.f)
+struct Color4F
 {
-	if constexpr(std::is_floating_point_v<ColorComp>)
+	union
 	{
-		return {(ColorComp)r, (ColorComp)g, (ColorComp)b, (ColorComp)a};
-	}
-	else
-	{
-		return {255.f * r, 255.f * g, 255.f * b, 255.f * a};
-	}
-}
+		std::array<float, 4> rgba{};
+		struct
+		{
+			float r, g, b, a;
+		};
+	};
 
-static constexpr Color color(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255)
-{
-	if constexpr(std::is_floating_point_v<ColorComp>)
-	{
-		return {r / 255.f, g / 255.f, b / 255.f, a / 255.f};
-	}
-	else
-	{
-		return {(ColorComp)r, (ColorComp)g, (ColorComp)b, (ColorComp)a};
-	}
-}
+	constexpr Color4F() = default;
+	constexpr Color4F(float r, float g, float b, float a = 1.f):
+		r{r}, g{g}, b{b}, a{a} {}
+	constexpr Color4F(std::array<float, 4> rgba): rgba{rgba} {}
+	constexpr Color4F(float i): Color4F{i, i, i, i} {}
 
-static constexpr Color color(ColorName c)
+	constexpr Color4F(ColorName c):
+		rgba
+		{
+			[&] -> std::array<float, 4>
+			{
+				switch(c)
+				{
+					case ColorName::RED:     return {1.f, 0.f, 0.f, 1.f};
+					case ColorName::GREEN:   return {0.f, 1.f, 0.f, 1.f};
+					case ColorName::BLUE:    return {0.f, 0.f, 1.f, 1.f};
+					case ColorName::CYAN:    return {0.f, 1.f, 1.f, 1.f};
+					case ColorName::YELLOW:  return {1.f, 1.f, 0.f, 1.f};
+					case ColorName::MAGENTA: return {1.f, 0.f, 1.f, 1.f};
+					case ColorName::WHITE:   return {1.f, 1.f, 1.f, 1.f};
+					case ColorName::BLACK:   return {0.f, 0.f, 0.f, 1.f};
+				}
+				return {};
+			}()
+		} {}
+
+	[[nodiscard]]
+	constexpr Color4F multiplyAlpha() const { return {r * a, g * a, b * a, a}; }
+	[[nodiscard]]
+	constexpr Color4F multiplyRGB(float l) const { return {r * l, g * l, b * l, a}; }
+	constexpr operator Color4B() const;
+	constexpr operator std::array<float, 4>() const { return rgba; }
+	constexpr bool operator ==(Color4F const &rhs) const { return rgba == rhs.rgba; }
+};
+
+struct Color4B
 {
-	switch(c)
+	union
 	{
-		case ColorName::RED: return color(1.f, 0.f, 0.f);
-		case ColorName::GREEN: return color(0.f, 1.f, 0.f);
-		case ColorName::BLUE: return color(0.f, 0.f, 1.f);
-		case ColorName::CYAN: return color(0.f, 1.f, 1.f);
-		case ColorName::YELLOW: return color(1.f, 1.f, 0.f);
-		case ColorName::MAGENTA: return color(1.f, 0.f, 1.f);
-		case ColorName::WHITE: return color(1.f, 1.f, 1.f);
-		case ColorName::BLACK: return color(0.f, 0.f, 0.f);
-		default: return color(0.f, 0.f, 0.f, 0.f);
-	}
-}
+		uint32_t rgba{};
+		struct
+		{
+			uint8_t r, g, b, a;
+		};
+	};
+	static constexpr auto format = PixelDescRGBA8888Native;
+
+	constexpr Color4B() = default;
+	constexpr Color4B(uint32_t rgba): rgba{rgba} {}
+
+	constexpr Color4B(ColorName c):
+		rgba
+		{
+			[&] -> uint32_t
+			{
+				switch(c)
+				{
+					case ColorName::RED:     return format.build(1.f, 0.f, 0.f);
+					case ColorName::GREEN:   return format.build(0.f, 1.f, 0.f);
+					case ColorName::BLUE:    return format.build(0.f, 0.f, 1.f);
+					case ColorName::CYAN:    return format.build(0.f, 1.f, 1.f);
+					case ColorName::YELLOW:  return format.build(1.f, 1.f, 0.f);
+					case ColorName::MAGENTA: return format.build(1.f, 0.f, 1.f);
+					case ColorName::WHITE:   return format.build(1.f, 1.f, 1.f);
+					case ColorName::BLACK:   return format.build(0.f, 0.f, 0.f);
+				}
+				return {};
+			}()
+		} {}
+
+	constexpr operator Color4F() const { return format.rgbaNorm(rgba); }
+	constexpr operator uint32_t() const { return rgba; }
+	constexpr bool operator ==(Color4B const &rhs) const { return rgba == rhs.rgba; }
+};
+
+constexpr Color4F::operator Color4B() const { return Color4B::format.build(r, g, b, a); }
+
+using PackedColor = Color4B;
+using Color = Color4F;
+
+enum class AttribType : uint8_t
+{
+	UByte = 1,
+	Short,
+	UShort,
+	Float,
+};
+
+struct AttribDesc
+{
+	size_t offset{};
+	int size{};
+	AttribType type{};
+	bool normalize{};
+
+	constexpr bool operator==(AttribDesc const&) const = default;
+};
+
+constexpr bool supportsPresentModes = Config::envIsLinux || Config::envIsAndroid;
+constexpr bool supportsPresentationTime = Config::envIsAndroid;
+
+struct GlyphSetMetrics
+{
+	int16_t nominalHeight{};
+	int16_t spaceSize{};
+	int16_t yLineStart{};
+};
+
+enum class BufferType : uint8_t
+{
+	vertex,
+	index,
+};
+
+enum class BufferMapMode
+{
+	unset, direct, indirect
+};
 
 }

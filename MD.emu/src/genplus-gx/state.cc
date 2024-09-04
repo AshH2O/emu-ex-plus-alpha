@@ -23,7 +23,8 @@
 #include "shared.h"
 #include <imagine/logger/logger.h>
 #include <system_error>
-#include <imagine/util/string.h>
+#include <memory>
+#include <format>
 
 static unsigned oldStateSizeAfterZ80Regs()
 {
@@ -96,7 +97,7 @@ static unsigned oldStateSizeAfterVDP(int exVersion, bool is64Bit)
   return size;
 }
 
-EmuSystem::Error state_load(const unsigned char *buffer)
+void state_load(const unsigned char *buffer)
 {
 	auto state = std::make_unique<unsigned char[]>(STATE_SIZE);
 
@@ -104,18 +105,27 @@ EmuSystem::Error state_load(const unsigned char *buffer)
   unsigned bufferptr = 0;
 
   /* uncompress savestate */
-  uint32 inbytes32;
+  int32 inbytes32;
   memcpy(&inbytes32, buffer, 4);
-  unsigned long inbytes = inbytes32;
   unsigned long outbytes = STATE_SIZE;
-  logMsg("uncompressing %d bytes to buffer of %d size", (int)inbytes, (int)outbytes);
+  if(inbytes32 > 0)
   {
-  	int result = uncompress((Bytef *)state.get(), &outbytes, (Bytef *)(buffer + 4), inbytes);
-		if(result != Z_OK)
+		unsigned long inbytes = inbytes32;
+		outbytes = STATE_SIZE;
+		logMsg("uncompressing %d bytes to buffer of %d size", (int)inbytes, (int)outbytes);
 		{
-			//logErr("error %d in uncompress loading state", result);
-			return EmuSystem::makeError("Error %d during uncompress", result);
+			int result = uncompress((Bytef *)state.get(), &outbytes, (Bytef *)(buffer + 4), inbytes);
+			if(result != Z_OK)
+			{
+				//logErr("error %d in uncompress loading state", result);
+				throw std::runtime_error(std::format("Error {} during uncompress", result));
+			}
 		}
+  }
+  else // not compressed
+  {
+  	memcpy(state.get(), buffer + 4, -inbytes32);
+  	outbytes = -inbytes32;
   }
 
   /* signature check (GENPLUS-GX x.x.x) */
@@ -124,13 +134,13 @@ EmuSystem::Error state_load(const unsigned char *buffer)
   version[16] = 0;
   if (strncmp(version,STATE_VERSION,11))
   {
-    return EmuSystem::makeError("Missing header");
+    throw std::runtime_error("Missing header");
   }
 
   /* version check (1.5.0 and above) */
   if ((version[11] < 0x31) || ((version[11] == 0x31) && (version[13] < 0x35)))
   {
-    return EmuSystem::makeError("Version too old");
+    throw std::runtime_error("Version too old");
   }
 
   unsigned exVersion = (version[15] >= 0x32) ? version[15] - 0x31 : 0;
@@ -217,7 +227,7 @@ EmuSystem::Error state_load(const unsigned char *buffer)
   		logErr("unexpected amount of bytes remaining in state:%d, should be %d or %d",
   			bytesLeft, bytesLeft32, bytesLeft64);
   		system_reset();
-  		return EmuSystem::makeError("Can't determine if created on 32 or 64-bit system");
+  		throw std::runtime_error("Can't determine if created on 32 or 64-bit system");
   	}
   	bufferptr += sound_context_load(&state[bufferptr], version, true, ptrSize);
   }
@@ -289,13 +299,11 @@ EmuSystem::Error state_load(const unsigned char *buffer)
 	if(bufferptr != outbytes)
 	{
 		system_reset();
-		return EmuSystem::makeError("Expected %d size state but got %d", bufferptr, (int)outbytes);
+		throw std::runtime_error(std::format("Expected {} size state but got {}", bufferptr, (int)outbytes));
 	}
-
-  return {};
 }
 
-int state_save(unsigned char *buffer)
+int state_save(unsigned char *buffer, bool uncompressed)
 {
 	auto state = std::make_unique<unsigned char[]>(STATE_SIZE);
 
@@ -393,15 +401,24 @@ int state_save(unsigned char *buffer)
 	}
 	#endif
 
-  /* compress state file */
-  unsigned long inbytes   = bufferptr;
-  unsigned long outbytes  = STATE_SIZE;
-  logMsg("compressing %d bytes to buffer of %d size", (int)inbytes, (int)outbytes);
-  int ret = compress2 ((Bytef *)(buffer + 4), &outbytes, (Bytef *)state.get(), inbytes, 9);
-  logMsg("compress2 returned %d, reduced to %d bytes", ret, (int)outbytes);
-  uint32 outbytes32 = outbytes; // assumes no save states will ever be over 4GB
-  memcpy(buffer, &outbytes32, 4);
-
-  /* return total size */
-  return (outbytes32 + 4);
+	int32 outbytes32;
+  if(uncompressed)
+  {
+  	memcpy(buffer + 4, state.get(), bufferptr);
+  	outbytes32 = -bufferptr; // use negative size to indicate uncompressed state
+  	memcpy(buffer, &outbytes32, 4);
+  	outbytes32 = bufferptr;
+  	return bufferptr + 4;
+  }
+  else
+  {
+		unsigned long inbytes   = bufferptr;
+		unsigned long outbytes  = STATE_SIZE;
+		logMsg("compressing %d bytes to buffer of %d size", (int)inbytes, (int)outbytes);
+		int ret = compress2 ((Bytef *)(buffer + 4), &outbytes, (Bytef *)state.get(), inbytes, 9);
+		logMsg("compress2 returned %d, reduced to %d bytes", ret, (int)outbytes);
+		outbytes32 = outbytes;
+		memcpy(buffer, &outbytes32, 4);
+		return outbytes + 4;
+  }
 }

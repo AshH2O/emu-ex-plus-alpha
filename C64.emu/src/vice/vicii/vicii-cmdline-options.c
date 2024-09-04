@@ -44,20 +44,15 @@
 
 static int border_set_func(const char *value, void *extra_param)
 {
-    int video;
-    resources_get_int("MachineVideoStandard", &video);
-
     if (strcmp(value, "1") == 0 || strcmp(value, "full") == 0) {
-        vicii_resources.border_mode = VICII_FULL_BORDERS;
+        resources_set_int("VICIIBorderMode", 1);
     } else if (strcmp(value, "2") == 0 || strcmp(value, "debug") == 0) {
-        vicii_resources.border_mode = VICII_DEBUG_BORDERS;
+        resources_set_int("VICIIBorderMode", 2);
     } else if (strcmp(value, "3") == 0 || strcmp(value, "none") == 0) {
-        vicii_resources.border_mode = VICII_NO_BORDERS;
+        resources_set_int("VICIIBorderMode", 3);
     } else {
-        vicii_resources.border_mode = VICII_NORMAL_BORDERS;
+        resources_set_int("VICIIBorderMode", 0);
     }
-
-    machine_change_timing(video, vicii_resources.border_mode);
 
     return 0;
 }
@@ -65,8 +60,10 @@ static int border_set_func(const char *value, void *extra_param)
 /* VIC-II command-line options.  */
 static const cmdline_option_t cmdline_options[] =
 {
+    /* NOTE: although we use CALL_FUNCTION, we put the resource that will be
+             modified into the array - this helps reconstructing the cmdline */
     { "-VICIIborders", CALL_FUNCTION, CMDLINE_ATTRIB_NEED_ARGS,
-      border_set_func, NULL, NULL, NULL,
+      border_set_func, NULL, "VICIIBorderMode", NULL,
       "<Mode>", "Set border display mode (0: normal, 1: full, 2: debug, 3: none)" },
     { "-VICIIchecksb", SET_RESOURCE, CMDLINE_ATTRIB_NONE,
       NULL, NULL, "VICIICheckSbColl", (void *)1,

@@ -70,7 +70,8 @@ static io_source_t stb_device = {
     stb_dump,                        /* device state information dump function */
     CARTRIDGE_STRUCTURED_BASIC,      /* cartridge ID */
     IO_PRIO_NORMAL,                  /* normal priority, device read needs to be checked for collisions */
-    0                                /* insertion order, gets filled in by the registration function */
+    0,                               /* insertion order, gets filled in by the registration function */
+    IO_MIRROR_NONE                   /* NO mirroring */
 };
 
 static io_source_list_t *stb_list_item = NULL;
@@ -141,7 +142,7 @@ static int stb_dump(void)
 void stb_config_init(void)
 {
     /* turn on normal config: bank 0 */
-    cart_config_changed_slotmain(0, 0, CMODE_READ);
+    cart_config_changed_slotmain(CMODE_8KGAME, CMODE_8KGAME, CMODE_READ);
     stb_bank = 0;
     stb_active = 1;
 }
@@ -152,7 +153,7 @@ void stb_config_setup(uint8_t *rawcart)
     memcpy(roml_banks, rawcart, 0x4000);
 
     /* turn on normal config: bank 0 */
-    cart_config_changed_slotmain(0, 0, CMODE_READ);
+    cart_config_changed_slotmain(CMODE_8KGAME, CMODE_8KGAME, CMODE_READ);
     stb_bank = 0;
     stb_active = 1;
 }
@@ -220,7 +221,7 @@ void stb_detach(void)
    ARRAY | ROML   |   0.0+  | 16384 BYTES of ROML data
  */
 
-static char snap_module_name[] = "CARTSTB";
+static const char snap_module_name[] = "CARTSTB";
 #define SNAP_MAJOR   0
 #define SNAP_MINOR   1
 

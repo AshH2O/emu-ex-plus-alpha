@@ -15,38 +15,107 @@
 	You should have received a copy of the GNU General Public License
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
+#include <imagine/util/utility.h>
+#include <imagine/util/algorithm.h>
 #include <cstdint>
 #include <array>
 #include <span>
+#include <tuple>
+#include <cassert>
 
 namespace IG
 {
 
-template <unsigned SIZE>
+template <size_t SIZE>
 using ByteArray = std::array<uint8_t, SIZE>;
 
-// simple 2D view into an array
-template <class T>
-class ArrayView2
+// Static array for storing non-null elements, terminated by null
+template<class T, size_t maxSize>
+class ZArray : public std::array<T, maxSize>
 {
 public:
-	T *arr{};
-	uint32_t pitch = 0;
+	using Base = std::array<T, maxSize>;
+	using iterator = T*;
+	using const_iterator = const T*;
 
-	constexpr ArrayView2() {}
-	constexpr ArrayView2(T *arr, uint32_t pitch): arr(arr), pitch(pitch) {}
+	// Define constructor so underlying array is zero-init
+	constexpr ZArray(auto &&...args): Base{IG_forward(args)...} {}
+	constexpr size_t size() const { return findIndex(std::span{this->data(), maxSize}, T{}, maxSize); }
+	constexpr size_t capacity() const { return maxSize; }
+	constexpr auto begin(this auto&& self) { return self.data(); }
+	constexpr auto end(this auto&& self) { return self.data() + self.size(); }
+	constexpr const_iterator cbegin() const { return begin(); }
+	constexpr const_iterator cend() const { return end(); }
+	constexpr size_t freeSpace() const { return capacity() - size(); }
+	constexpr bool isFull() const { return !freeSpace(); }
 
-	constexpr std::size_t flatOffset(std::size_t row, std::size_t col) const
+	constexpr void push_back(const T &val)
 	{
-		return (row * pitch) + col;
+		assert(size() < capacity());
+		this->data()[size()] = val;
 	}
 
-	constexpr std::span<T> operator[](std::size_t row) const
+	constexpr iterator insert(const_iterator position, const T &val)
 	{
-		return {arr + (row * pitch), pitch};
+		assert(size() < maxSize);
+		iterator p{this->data() + (position - this->cbegin())};
+		if(p == end())
+		{
+			push_back(val);
+		}
+		else
+		{
+			std::move_backward(p, end(), end() + 1);
+			*p = val;
+		}
+		return p;
 	}
 
-	constexpr T *data() { return arr; }
+	constexpr bool tryPushBack(const T &val)
+	{
+		if(isFull())
+			return false;
+		push_back(val);
+		return true;
+	}
+
+	constexpr bool tryInsert(const_iterator position, const T &val)
+	{
+		if(isFull())
+			return false;
+		insert(position, val);
+		return true;
+	}
 };
+
+template <class T, size_t size>
+class RingArray: public std::array<T, size>
+{
+public:
+	constexpr void push_back(const T &e)
+	{
+		this->data()[writeIdx] = e;
+		writeIdx = (writeIdx + 1) % size;
+	}
+
+private:
+	size_t writeIdx{};
+};
+
+constexpr auto toArray = [](auto &&...vals){ return std::array{IG_forward(vals)...}; };
+
+constexpr auto concatToArray(auto &&...vals)
+{
+	return std::apply(toArray, std::tuple_cat(IG_forward(vals)...));
+}
+
+template <auto ...vals>
+static constexpr auto concatToArrayNow = concatToArray(vals...);
+
+template <typename Type, typename... Values>
+constexpr auto makeArray(Values &&... v) -> std::array <Type, sizeof...(Values)>
+{
+	return {{std::forward<Values>(v)...}};
+}
 
 }

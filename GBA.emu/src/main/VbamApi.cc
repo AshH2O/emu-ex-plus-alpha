@@ -13,23 +13,66 @@
 	You should have received a copy of the GNU General Public License
 	along with GBA.emu.  If not, see <http://www.gnu.org/licenses/> */
 
-#include <vbam/gba/GBA.h>
-#include <vbam/gba/Sound.h>
-#include <vbam/gba/RTC.h>
-#include <vbam/common/SoundDriver.h>
-#include <vbam/Util.h>
+#include <core/gba/gba.h>
+#include <core/gba/gbaSound.h>
+#include <core/gba/gbaRtc.h>
+#include <core/gba/gbaEeprom.h>
+#include <core/gba/gbaFlash.h>
+#include <core/gba/gbaCheats.h>
+#include <core/gba/gbaGfx.h>
+#include <core/base/sound_driver.h>
+#include <core/base/file_util.h>
 #include <imagine/logger/logger.h>
 #include <imagine/util/algorithm.h>
-#include "internal.hh"
+#include <imagine/util/math.hh>
+#include <imagine/io/IO.hh>
+#include "MainSystem.hh"
+#include "GBASys.hh"
 
+struct GameSettings
+{
+	std::string_view gameName;
+	std::string_view gameId;
+	int saveSize;
+	int saveType;
+	bool rtcEnabled;
+	bool mirroringEnabled;
+	bool useBios;
+};
+
+constexpr GameSettings settings[]
+{
+#include "gba-over.inc"
+};
+
+#ifdef VBAM_ENABLE_DEBUGGER
+int  oldreg[18];
+char oldbuffer[10];
+#endif
+
+// this is an optional hack to change the backdrop/background color:
+// -1: disabled
+// 0x0000 to 0x7FFF: set custom 15 bit color
+//int customBackdropColor = -1;
+
+extern int romSize;
 int systemSaveUpdateCounter = SYSTEM_SAVE_NOT_UPDATED;
 SystemColorMap systemColorMap;
+int emulating{};
+CoreOptions coreOptions
+{
+	.saveType = GBA_SAVE_NONE
+};
 
-static void debuggerOutput(const char *s, u32 addr)
+void CPUUpdateRenderBuffers(GBASys &gba, bool force);
+
+using namespace EmuEx;
+
+static void debuggerOutput(const char *s, uint32_t addr)
 {
 	logMsg("called dbgOutput");
 }
-void (*dbgOutput)(const char *, u32) = debuggerOutput;
+void (*dbgOutput)(const char *, uint32_t) = debuggerOutput;
 
 #ifndef NDEBUG
 void systemMessage(int num, const char *msg, ...)
@@ -42,961 +85,388 @@ void systemMessage(int num, const char *msg, ...)
 	va_end( args );
 	logger_printf(LOG_M, "\n");
 }
+
+void log(const char *msg, ...)
+{
+	if(!logger_isEnabled())
+		return;
+	va_list args;
+	va_start( args, msg );
+	logger_vprintf(LOG_M, msg, args);
+	va_end( args );
+	logger_printf(LOG_M, "\n");
+}
+#else
+void log(const char *msg, ...) {}
 #endif
 
-void systemUpdateMotionSensor()
-{
-}
+void systemUpdateMotionSensor() {}
+int systemGetSensorX() { return static_cast<EmuEx::GbaSystem&>(gSystem()).sensorX; }
+int systemGetSensorY() { return static_cast<EmuEx::GbaSystem&>(gSystem()).sensorY; }
+int systemGetSensorZ() { return static_cast<EmuEx::GbaSystem&>(gSystem()).sensorZ; }
+uint8_t systemGetSensorDarkness() { return static_cast<EmuEx::GbaSystem&>(gSystem()).darknessLevel; }
 
-int systemGetSensorX()
-{
-	return 0;
-}
-
-int systemGetSensorY()
-{
-	return 0;
-}
+void systemCartridgeRumble(bool e) {}
 
 bool systemCanChangeSoundQuality()
 {
 	return false;
 }
 
-struct GameSettings
+uint32_t systemGetClock() { return 0; }
+
+void StartLink(uint16_t siocnt) {}
+
+void StartGPLink(uint16_t value) {}
+
+bool agbPrintWrite(uint32_t address, uint16_t value) { return false; };
+
+void agbPrintEnable(bool enable) {}
+
+void agbPrintFlush() {}
+
+int CheckEReaderRegion(void) { return 0; }
+
+void EReaderWriteMemory(uint32_t address, uint32_t value) {}
+
+void BIOS_EReader_ScanCard(int swi_num) {}
+
+bool soundInit() { return true; }
+void soundSetThrottle(unsigned short throttle) {}
+void soundPause() {}
+void soundResume() {}
+void soundShutdown() {}
+
+namespace EmuEx
 {
-	const char *gameName;
-	const char *gameID;
-	int saveType;
-	int rtcEnabled;
-	int flashSize;
-	int mirroringEnabled;
-};
+
+const char *saveTypeStr(int type, int size)
+{
+	switch(type)
+	{
+		case GBA_SAVE_AUTO: return "Auto";
+		case GBA_SAVE_EEPROM: return "EEPROM";
+		case GBA_SAVE_SRAM: return "SRAM";
+		case GBA_SAVE_FLASH: return size == SIZE_FLASH1M ? "Flash (128K)" : "Flash (64K)";
+		case GBA_SAVE_EEPROM_SENSOR: return "EEPROM + Sensor";
+		case GBA_SAVE_NONE: return "None";
+	}
+	return "Unknown";
+}
+
+bool saveMemoryHasContent()
+{
+	auto hasContent = [](std::span<uint8_t> mem)
+	{
+		for(auto v : mem)
+		{
+			if(v != 0xFF)
+				return true;
+		}
+		return false;
+	};
+	switch(coreOptions.saveType)
+	{
+		case GBA_SAVE_EEPROM:
+		case GBA_SAVE_EEPROM_SENSOR:
+			return hasContent(eepromData);
+		case GBA_SAVE_SRAM:
+		case GBA_SAVE_FLASH:
+			return hasContent(flashSaveMemory);
+	}
+	return false;
+}
 
 static void resetGameSettings()
 {
 	//agbPrintEnable(0);
 	rtcEnable(0);
-	cpuSaveType = 0;
-	flashSetSize(0x10000);
+	g_flashSize = SIZE_FLASH512;
+	eepromSize = SIZE_EEPROM_512;
 }
 
-void setGameSpecificSettings(GBASys &gba)
+void setSaveType(int type, int size)
 {
-	resetGameSettings();
-	bool mirroringEnable = 0;
-	static const GameSettings setting[] = {
-	{       "Dragon Ball Z - The Legacy of Goku II (Europe)(En,Fr,De,Es,It)",
-	        "ALFP",
-	        1,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Dragon Ball Z - The Legacy of Goku (Europe)(En,Fr,De,Es,It)",
-	        "ALGP",
-	        1,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Rocky (Europe)(En,Fr,De,Es,It)",
-	        "AROP",
-	        1,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Rocky (USA)(En,Fr,De,Es,It)",
-	        "AR8e",
-	        1,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Pokemon - Ruby Version (USA, Europe)",
-	        "AXVE",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Sapphire Version (USA, Europe)",
-	        "AXPE",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Super Mario Advance 4 - Super Mario Bros. 3 (Europe)(En,Fr,De,Es,It)",
-	        "AX4P",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Top Gun - Combat Zones (USA)(En,Fr,De,Es,It)",
-	        "A2YE",
-	        5,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Dragon Ball Z - Taiketsu (Europe)(En,Fr,De,Es,It)",
-	        "BDBP",
-	        1,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Mario vs. Donkey Kong (Europe)",
-	        "BM5P",
-	        3,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Pokemon - Emerald Version (USA, Europe)",
-	        "BPEE",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Yu-Gi-Oh! - Ultimate Masters - World Championship Tournament 2006 (Europe)(En,Jp,Fr,De,Es,It)",
-	        "BY6P",
-	        2,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Pokemon Mystery Dungeon - Red Rescue Team (USA, Australia)",
-	        "B24E",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon Mystery Dungeon - Red Rescue Team (Europe)",
-	        "B24P",
-	        3,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Classic NES Series - Castlevania (USA, Europe)",
-	        "FADE",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Classic NES Series - Bomberman (USA, Europe)",
-	        "FBME",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Classic NES Series - Donkey Kong (USA, Europe)",
-	        "FDKE",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Classic NES Series - Dr. Mario (USA, Europe)",
-	        "FDME",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Classic NES Series - Excitebike (USA, Europe)",
-	        "FEBE",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Classic NES Series - Ice Climber (USA, Europe)",
-	        "FICE",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Classic NES Series - Zelda II - The Adventure of Link (USA, Europe)",
-	        "FLBE",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Classic NES Series - Metroid (USA, Europe)",
-	        "FMRE",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Classic NES Series - Pac-Man (USA, Europe)",
-	        "FP7E",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Classic NES Series - Super Mario Bros. (USA, Europe)",
-	        "FSME",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Classic NES Series - Xevious (USA, Europe)",
-	        "FXVE",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Classic NES Series - Legend of Zelda (USA, Europe)",
-	        "FZLE",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Yoshi's Universal Gravitation (Europe)(En,Fr,De,Es,It)",
-	        "KYGP",
-	        4,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Boktai - The Sun Is in Your Hand (Europe)(En,Fr,De,Es,It)",
-	        "U3IP",
-	        -1,
-	        1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Boktai 2 - Solar Boy Django (Europe)(En,Fr,De,Es,It)",
-	        "U32P",
-	        -1,
-	        1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Golden Sun - The Lost Age (USA)",
-	        "AGFE",
-	        -1,
-	        1,
-	        0x10000,
-	        -1
-	        },
-	        {
-	        "Golden Sun (USA)",
-	        "AGSE",
-	        -1,
-	        1,
-	        0x10000,
-	        -1
-	        },
-	        {
-	        "Dragon Ball Z - The Legacy of Goku II (USA)",
-	        "ALFE",
-	        1,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Dragon Ball Z - The Legacy of Goku (USA)",
-	        "ALGE",
-	        1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Super Mario Advance 4 - Super Mario Bros 3 - Super Mario Advance 4 v1.1 (USA)",
-	        "AX4E",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Dragon Ball Z - Taiketsu (USA)",
-	        "BDBE",
-	        1,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Dragon Ball Z - Buu's Fury (USA)",
-	        "BG3E",
-	        1,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "2 Games in 1 - Dragon Ball Z - The Legacy of Goku I & II (USA)",
-	        "BLFE",
-	        1,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Pokemon - Fire Red Version (USA, Europe)",
-	        "BPRE",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Leaf Green Version (USA, Europe)",
-	        "BPGE",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Dragon Ball GT - Transformation (USA)",
-	        "BT4E",
-	        1,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "2 Games in 1 - Dragon Ball Z - Buu's Fury + Dragon Ball GT - Transformation (USA)",
-	        "BUFE",
-	        1,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "useBios=1",
-	        "BYGE",
-	        2,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Yoshi - Topsy-Turvy (USA)",
-	        "KYGE",
-	        4,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "e-Reader (USA)",
-	        "PSAE",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Boktai - The Sun Is in Your Hand (USA)",
-	        "U3IE",
-	        -1,
-	        1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Boktai 2 - Solar Boy Django (USA)",
-	        "U32E",
-	        -1,
-	        1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Dragon Ball Z - The Legacy of Goku II International (Japan)",
-	        "ALFJ",
-	        1,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Pocket Monsters - Sapphire (Japan)",
-	        "AXPJ",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pocket Monsters - Ruby (Japan)",
-	        "AXVJ",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Super Mario Advance 4 (Japan)",
-	        "AX4J",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "F-Zero - Climax (Japan)",
-	        "BFTJ",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Game Boy Wars Advance 1+2 (Japan)",
-	        "BGWJ",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Sennen Kazoku (Japan)",
-	        "BKAJ",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pocket Monsters - Emerald (Japan)",
-	        "BPEJ",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pocket Monsters - Leaf Green (Japan)",
-	        "BPGJ",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pocket Monsters - Fire Red (Japan)",
-	        "BPRJ",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Digi Communication 2 - Datou! Black Gemagema Dan (Japan)",
-	        "BDKJ",
-	        1,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Rockman EXE 4.5 - Real Operation (Japan)",
-	        "BR4J",
-	        -1,
-	        1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Famicom Mini Vol. 01 - Super Mario Bros. (Japan)",
-	        "FMBJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 12 - Clu Clu Land (Japan)",
-	        "FCLJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 13 - Balloon Fight (Japan)",
-	        "FBFJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 14 - Wrecking Crew (Japan)",
-	        "FWCJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 15 - Dr. Mario (Japan)",
-	        "FDMJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 16 - Dig Dug (Japan)",
-	        "FDDJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 17 - Takahashi Meijin no Boukenjima (Japan)",
-	        "FTBJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 18 - Makaimura (Japan)",
-	        "FMKJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 19 - Twin Bee (Japan)",
-	        "FTWJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 20 - Ganbare Goemon! Karakuri Douchuu (Japan)",
-	        "FGGJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 21 - Super Mario Bros. 2 (Japan)",
-	        "FM2J",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 22 - Nazo no Murasame Jou (Japan)",
-	        "FNMJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 23 - Metroid (Japan)",
-	        "FMRJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 24 - Hikari Shinwa - Palthena no Kagami (Japan)",
-	        "FPTJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 25 - The Legend of Zelda 2 - Link no Bouken (Japan)",
-	        "FLBJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 26 - Famicom Mukashi Banashi - Shin Onigashima - Zen Kou Hen (Japan)",
-	        "FFMJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 27 - Famicom Tantei Club - Kieta Koukeisha - Zen Kou Hen (Japan)",
-	        "FTKJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 28 - Famicom Tantei Club Part II - Ushiro ni Tatsu Shoujo - Zen Kou Hen (Japan)",
-	        "FTUJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 29 - Akumajou Dracula (Japan)",
-	        "FADJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Famicom Mini Vol. 30 - SD Gundam World - Gachapon Senshi Scramble Wars (Japan)",
-	        "FSDJ",
-	        1,
-	        -1,
-	        -1,
-	        1
-	        },
-	        {
-	        "Koro Koro Puzzle - Happy Panechu! (Japan)",
-	        "KHPJ",
-	        4,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Yoshi no Banyuuinryoku (Japan)",
-	        "KYGJ",
-	        4,
-	        -1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Card e-Reader+ (Japan)",
-	        "PSAJ",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Bokura no Taiyou - Taiyou Action RPG (Japan)",
-	        "U3IJ",
-	        -1,
-	        1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Zoku Bokura no Taiyou - Taiyou Shounen Django (Japan)",
-	        "U32J",
-	        -1,
-	        1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Shin Bokura no Taiyou - Gyakushuu no Sabata (Japan)",
-	        "U33J",
-	        -1,
-	        1,
-	        -1,
-	        -1
-	        },
-	        {
-	        "Mother 3 (Japan)",
-	        "A3UJ",
-	        -1,
-	        -1,
-	        65536,
-	        -1
-	        },
-	        {
-	        "Pokemon - Version Saphir (France)",
-	        "AXPF",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Version Rubis (France)",
-	        "AXVF",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Version Emeraude (France)",
-	        "BPEF",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Version Vert Feuille (France)",
-	        "BPGF",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Version Rouge Feu (France)",
-	        "BPRF",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Versione Zaffiro (Italy)",
-	        "AXPI",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Versione Rubino (Italy)",
-	        "AXVI",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Versione Smeraldo (Italy)",
-	        "BPEI",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Versione Verde Foglia (Italy)",
-	        "BPGI",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Versione Rosso Fuoco (Italy)",
-	        "BPRI",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Saphir-Edition (Germany)",
-	        "AXPD",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Rubin-Edition (Germany)",
-	        "AXVD",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Smaragd-Edition (Germany)",
-	        "BPED",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Blattgruene Edition (Germany)",
-	        "BPGD",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Feuerrote Edition (Germany)",
-	        "BPRD",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Edicion Zafiro (Spain)",
-	        "AXPS",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Edicion Rubi (Spain)",
-	        "AXVS",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Edicion Esmeralda (Spain)",
-	        "BPES",
-	        -1,
-	        1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Edicion Verde Hoja (Spain)",
-	        "BPGS",
-	        -1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "Pokemon - Edicion Rojo Fuego (Spain)",
-	        "BPRS",
-	        1,
-	        -1,
-	        131072,
-	        -1
-	        },
-	        {
-	        "WarioWare - Twisted! (USA)",
-	        "RZWE",
-	        -1,
-	        1, // needs "RealTimeClock" (actually motion sensor and rumble)
-	        -1,
-	        -1
-	        },
-	        {
-	        "Mawaru Made in Wario (Japan)",
-	        "RZWJ",
-	        -1,
-	        1, // needs "RealTimeClock" (actually motion sensor and rumble)
-	        -1,
-	        -1
-	        },
-	};
-
-	resetGameSettings();
-	logMsg("game id: %c%c%c%c", gba.mem.rom[0xac], gba.mem.rom[0xad], gba.mem.rom[0xae], gba.mem.rom[0xaf]);
-	for(auto e : setting)
+	assert(type != GBA_SAVE_AUTO);
+	coreOptions.saveType = type;
+	switch(type)
 	{
-		if(IG::equal_n(e.gameID, 4, &gba.mem.rom[0xac]))
-		{
-			logMsg("loading settings for: %s", e.gameName);
-			if(e.rtcEnabled >= 0)
-			{
-				logMsg("using RTC");
-				detectedRtcGame = 1;
-			}
-			if(e.flashSize > 0)
-			{
-				logMsg("using flash size %d", e.flashSize);
-				flashSetSize(e.flashSize);
-			}
-			if(e.saveType >= 0)
-			{
-				logMsg("using save type %d", e.saveType);
-				cpuSaveType = e.saveType;
-			}
-			if(e.mirroringEnabled >= 0)
-			{
-				logMsg("using mirroring");
-				mirroringEnable = e.mirroringEnabled;
-			}
+		case GBA_SAVE_EEPROM:
+		case GBA_SAVE_EEPROM_SENSOR:
+			eepromSize = size == SIZE_EEPROM_8K ? SIZE_EEPROM_8K : SIZE_EEPROM_512;
 			break;
-		}
+		case GBA_SAVE_SRAM:
+			g_flashSize = SIZE_SRAM;
+			break;
+		case GBA_SAVE_FLASH:
+			flashSetSize(size == SIZE_FLASH1M ? SIZE_FLASH1M : SIZE_FLASH512);
+			break;
 	}
+}
 
-	switch(gba.mem.rom[0xac])
+static GbaSensorType detectSensorType(std::string_view gameId)
+{
+	static constexpr std::string_view tiltIds[]{"KHPJ", "KYGJ", "KYGE", "KYGP"};
+	if(std::ranges::contains(tiltIds, gameId))
 	{
-		bcase 'F': // Classic NES
-			logMsg("using classic NES series settings");
-			cpuSaveType = 1; // EEPROM
-			mirroringEnable = 1;
-		bcase 'K': // Accelerometers
-			cpuSaveType = 4; // EEPROM + sensor
-		bcase 'R': // WarioWare Twisted style sensors
-		case 'V': // Drill Dozer
-			//rtcEnableWarioRumble(true);
-		bcase 'U': // Boktai solar sensor and clock
-		detectedRtcGame = 1;
+		logMsg("detected accelerometer sensor");
+		return GbaSensorType::Accelerometer;
 	}
-	doMirroring(gba, mirroringEnable);
-
-	if(detectedRtcGame && (unsigned)optionRtcEmulation == RTC_EMU_AUTO)
+	static constexpr std::string_view gyroIds[]{"RZWJ", "RZWE", "RZWP"};
+	if(std::ranges::contains(gyroIds, gameId))
 	{
-		logMsg("automatically enabling RTC");
-		rtcEnable(true);
+		logMsg("detected gyroscope sensor");
+		return GbaSensorType::Gyroscope;
+	}
+	static constexpr std::string_view lightIds[]{"U3IJ", "U3IE", "U3IP",
+		"U32J", "U32E", "U32P", "U33J"};
+	if(std::ranges::contains(lightIds, gameId))
+	{
+		logMsg("detected light sensor");
+		return GbaSensorType::Light;
+	}
+	return GbaSensorType::None;
+}
+
+void GbaSystem::setGameSpecificSettings(GBASys &gba, int romSize)
+{
+	using namespace EmuEx;
+	resetGameSettings();
+	logMsg("game id:%c%c%c%c", gba.mem.rom[0xac], gba.mem.rom[0xad], gba.mem.rom[0xae], gba.mem.rom[0xaf]);
+	GameSettings foundSettings{};
+	std::string_view gameId{(char*)&gba.mem.rom[0xac], 4};
+	if(auto it = std::ranges::find_if(settings, [&](const auto &s){return s.gameId == gameId;});
+		it != std::end(settings))
+	{
+		foundSettings = *it;
+		logMsg("found settings for:%s save type:%s save size:%d rtc:%d mirroring:%d",
+			it->gameName.data(), saveTypeStr(it->saveType, it->saveSize), it->saveSize, it->rtcEnabled, it->mirroringEnabled);
+	}
+	detectedRtcGame = foundSettings.rtcEnabled;
+	detectedSaveType = foundSettings.saveType;
+	detectedSaveSize = foundSettings.saveSize;
+	detectedSensorType = detectSensorType(gameId);
+	doMirroring(gba, foundSettings.mirroringEnabled);
+	if(detectedSaveType == GBA_SAVE_AUTO)
+	{
+		flashDetectSaveType(gba.mem.rom, romSize);
+		detectedSaveType = coreOptions.saveType;
+		detectedSaveSize = coreOptions.saveType == GBA_SAVE_FLASH ? g_flashSize : 0;
+		logMsg("save type found from rom scan:%s", saveTypeStr(detectedSaveType, detectedSaveSize));
+	}
+	if(auto [type, size] = saveTypeOverride();
+		type != GBA_SAVE_AUTO)
+	{
+		setSaveType(type, size);
+		logMsg("save type override:%s", saveTypeStr(type, size));
 	}
 	else
 	{
-		rtcEnable((unsigned)optionRtcEmulation == RTC_EMU_ON);
+		setSaveType(detectedSaveType, detectedSaveSize);
 	}
+	setRTC(optionRtcEmulation);
+}
+
+void GbaSystem::setSensorActive(bool on)
+{
+	auto ctx = appContext();
+	auto typeToSet = sensorType;
+	if(sensorType == GbaSensorType::Auto)
+		typeToSet = detectedSensorType;
+	if(!on)
+	{
+		sensorListener = {};
+	}
+	else if(typeToSet == GbaSensorType::Accelerometer)
+	{
+		sensorListener = IG::SensorListener{ctx, IG::SensorType::Accelerometer, [this, ctx](SensorValues vals)
+		{
+			vals = ctx.remapSensorValuesForDeviceRotation(vals);
+			sensorX = IG::remap(vals[0], -9.807f, 9.807f, 1897, 2197);
+			sensorY = IG::remap(vals[1], -9.807f, 9.807f, 2197, 1897);
+			//logDMsg("updated accel: %d,%d", sensorX, sensorY);
+		}};
+	}
+	else if(typeToSet == GbaSensorType::Gyroscope)
+	{
+		sensorListener = IG::SensorListener{ctx, IG::SensorType::Gyroscope, [this, ctx](SensorValues vals)
+		{
+			vals = ctx.remapSensorValuesForDeviceRotation(vals);
+			sensorZ = IG::remap(vals[2], -20.f, 20.f, 1800, -1800);
+			//logDMsg("updated gyro: %d", sensorZ);
+		}};
+	}
+	else if(typeToSet == GbaSensorType::Light)
+	{
+		sensorListener = IG::SensorListener{ctx, IG::SensorType::Light, [this](SensorValues vals)
+		{
+			if(!lightSensorScaleLux)
+				darknessLevel = 0;
+			else
+				darknessLevel = IG::remapClamp(vals[0], lightSensorScaleLux, 0.f, std::numeric_limits<decltype(darknessLevel)>{});
+			//logDMsg("updated light: %u", darknessLevel);
+		}};
+	}
+}
+
+void GbaSystem::clearSensorValues()
+{
+	sensorX = sensorY = sensorZ = 0;
+}
+
+}
+
+void preLoadRomSetup(GBASys &gba)
+{
+  romSize = SIZE_ROM;
+  /*if (rom != NULL) {
+    CPUCleanUp();
+  }*/
+
+  systemSaveUpdateCounter = SYSTEM_SAVE_NOT_UPDATED;
+
+  memset(gba.mem.workRAM, 0, sizeof(gba.mem.workRAM));
+}
+
+void postLoadRomSetup(GBASys &gba)
+{
+  uint16_t *temp = (uint16_t *)(gba.mem.rom+((romSize+1)&~1));
+  int i;
+  for (i = (romSize+1)&~1; i < 0x2000000; i+=2) {
+    WRITE16LE(temp, (i >> 1) & 0xFFFF);
+    temp++;
+  }
+
+  memset(gba.mem.bios, 0, sizeof(gba.mem.bios));
+
+  memset(gba.mem.internalRAM, 0, sizeof(gba.mem.internalRAM));
+
+  memset(gba.mem.ioMem.b, 0, sizeof(gba.mem.ioMem));
+
+  gba.lcd.reset();
+
+  flashInit();
+  eepromInit();
+
+  CPUUpdateRenderBuffers(gba, true);
+}
+
+int CPULoadRomWithIO(GBASys &gba, IG::IO &io)
+{
+	preLoadRomSetup(gba);
+	romSize = io.read(gba.mem.rom, romSize);
+  postLoadRomSetup(gba);
+  return romSize;
+}
+
+size_t saveMemorySize()
+{
+	if(!coreOptions.saveType || coreOptions.saveType == GBA_SAVE_NONE)
+		return 0;
+  if (coreOptions.saveType == GBA_SAVE_FLASH) {
+  	return g_flashSize;
+  } else if (coreOptions.saveType == GBA_SAVE_SRAM) {
+  	return 0x8000;
+  }
+  // eeprom case
+  return eepromSize;
+}
+
+void setSaveMemory(IG::ByteBuffer buff)
+{
+  if(!coreOptions.saveType || coreOptions.saveType == GBA_SAVE_NONE)
+    return;
+	assert(buff.size() == saveMemorySize());
+  if (coreOptions.saveType == GBA_SAVE_FLASH || coreOptions.saveType == GBA_SAVE_SRAM) {
+  	flashSaveMemory = std::move(buff);
+  } else { // eeprom case
+  	eepromData = std::move(buff);
+  }
+}
+
+void utilWriteIntMem(uint8_t*& data, int val)
+{
+	memcpy(data, &val, sizeof(int));
+	data += sizeof(int);
+}
+
+void utilWriteMem(uint8_t*& data, const void* in_data, unsigned size)
+{
+	memcpy(data, in_data, size);
+	data += size;
+}
+
+void utilWriteDataMem(uint8_t*& data, const variable_desc* desc)
+{
+	while (desc->address)
+	{
+		utilWriteMem(data, desc->address, desc->size);
+		desc++;
+	}
+}
+
+int utilReadIntMem(const uint8_t*& data)
+{
+	int res;
+	memcpy(&res, data, sizeof(int));
+	data += sizeof(int);
+	return res;
+}
+
+void utilReadMem(void* buf, const uint8_t*& data, unsigned size)
+{
+	memcpy(buf, data, size);
+	data += size;
+}
+
+void utilReadDataMem(const uint8_t*& data, const variable_desc* desc)
+{
+	while (desc->address)
+	{
+		utilReadMem(desc->address, data, desc->size);
+		desc++;
+	}
+}
+
+void cheatsSaveGame(uint8_t*& data)
+{
+	utilWriteIntMem(data, 0);
+	CheatsData cheat{};
+	for([[maybe_unused]] auto i: iotaCount(100))
+	{
+		utilWriteMem(data, &cheat, sizeof(cheat));
+	}
+}
+
+void cheatsReadGame(const uint8_t*& data)
+{
+  utilReadIntMem(data);
+  CheatsData cheat{};
+	for([[maybe_unused]] auto i: iotaCount(100))
+	{
+		utilReadMem(&cheat, data, sizeof(cheat));
+	}
+}
+
+const char *dispModeName(GBALCD::RenderLineFunc renderLine)
+{
+	if (renderLine == mode0RenderLine) return "0";
+	else if (renderLine == mode0RenderLineNoWindow) return "0NW";
+	else if (renderLine == mode0RenderLineAll) return "0A";
+	else if (renderLine == mode1RenderLine) return "1";
+	else if (renderLine == mode1RenderLineNoWindow) return "1NW";
+	else if (renderLine == mode1RenderLineAll) return "1A";
+	else if (renderLine == mode2RenderLine) return "2";
+	else if (renderLine == mode2RenderLineNoWindow) return "2NW";
+	else if (renderLine == mode2RenderLineAll) return "2A";
+	else if (renderLine == mode3RenderLine) return "3";
+	else if (renderLine == mode3RenderLineNoWindow) return "3NW";
+	else if (renderLine == mode3RenderLineAll) return "3A";
+	else if (renderLine == mode4RenderLine) return "4";
+	else if (renderLine == mode4RenderLineNoWindow) return "4NW";
+	else if (renderLine == mode4RenderLineAll) return "4A";
+	else if (renderLine == mode5RenderLine) return "5";
+	else if (renderLine == mode5RenderLineNoWindow) return "5NW";
+	else if (renderLine == mode5RenderLineAll) return "5A";
+	else return "Invalid";
 }

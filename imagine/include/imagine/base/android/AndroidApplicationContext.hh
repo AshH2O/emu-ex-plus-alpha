@@ -16,64 +16,46 @@
 	along with Imagine.  If not, see <http://www.gnu.org/licenses/> */
 
 #include <imagine/config/defs.hh>
+#include <android/native_activity.h>
 #include <jni.h>
-#include <array>
+#include <string>
 
 struct ANativeActivity;
 struct AAssetManager;
 
-namespace IG
+namespace IG::FS
 {
-class PixelFormat;
-class Pixmap;
+struct PathLocation;
 }
 
-namespace Base
+namespace IG
 {
 
 class Application;
 
-using AndroidPropString = std::array<char, 92>;
-
-enum class SustainedPerformanceType
-{
-	NONE,
-	DEVICE,
-	NOOP
-};
-
-enum SurfaceRotation : uint8_t;
+using NativeDisplayConnection = void*;
 
 class AndroidApplicationContext
 {
 public:
-	constexpr AndroidApplicationContext() {}
+	constexpr AndroidApplicationContext() = default;
 	constexpr AndroidApplicationContext(ANativeActivity *act):act{act} {}
 	constexpr ANativeActivity *aNativeActivityPtr() const { return act; }
-	void setApplicationPtr(Application*);
-	Application &application() const;
+	Application &application() const { return *static_cast<Application*>(act->instance); }
 	JNIEnv *mainThreadJniEnv() const;
 	JNIEnv *thisThreadJniEnv() const;
-	int32_t androidSDK() const;
 	jobject baseActivityObject() const;
 	AAssetManager *aAssetManager() const;
-	AndroidPropString androidBuildDevice() const;
-	SustainedPerformanceType sustainedPerformanceModeType() const;
-	void setSustainedPerformanceMode(bool on);
-	bool apkSignatureIsConsistent() const;
-	bool packageIsInstalled(const char *name) const;
+	std::string androidBuildDevice() const;
+	void setNoopThreadActive(bool on);
+	FS::PathLocation externalMediaPathLocation() const;
 
 	// Input system functions
-	void enumInputDevices();
 	bool hasTrackball() const;
 
 protected:
 	ANativeActivity *act{};
 };
-
-IG::PixelFormat makePixelFormatFromAndroidFormat(int32_t androidFormat);
-IG::Pixmap makePixmapView(JNIEnv *env, jobject bitmap, void *pixels, IG::PixelFormat format);
-
 
 using ApplicationContextImpl = AndroidApplicationContext;
 

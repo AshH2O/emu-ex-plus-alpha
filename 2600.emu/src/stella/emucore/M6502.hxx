@@ -8,7 +8,7 @@
 // MM     MM 66  66 55  55 00  00 22
 // MM     MM  6666   5555   0000  222222
 //
-// Copyright (c) 1995-2020 by Bradford W. Mott, Stephen Anthony
+// Copyright (c) 1995-2022 by Bradford W. Mott, Stephen Anthony
 // and the Stella Team
 //
 // See the file "License.txt" for information on usage and redistribution of
@@ -34,6 +34,7 @@ class DispatchResult;
 #endif
 
 #include "bspf.hxx"
+#include "Device.hxx"
 #include "Serializable.hxx"
 
 /**
@@ -63,7 +64,7 @@ class M6502 : public Serializable
       Create a new 6502 microprocessor.
     */
     explicit M6502(const Settings& settings);
-    virtual ~M6502() = default;
+    ~M6502() override = default;
 
   public:
     /**
@@ -156,10 +157,24 @@ class M6502 : public Serializable
 
       @return The address of the last read
     */
-    uInt16 lastReadBaseAddress() const { return myLastPeekBaseAddress; }
+    uInt16 lastReadAddress() const { return myLastPeekAddress; }
 
     /**
       Return the last address that was part of a write/poke.
+
+      @return The address of the last write
+    */
+    uInt16 lastWriteAddress() const { return myLastPokeAddress; }
+
+    /**
+      Return the last (non-mirrored) address that was part of a read/peek.
+
+      @return The address of the last read
+    */
+    uInt16 lastReadBaseAddress() const { return myLastPeekBaseAddress; }
+
+    /**
+      Return the last (non-mirrored) address that was part of a write/poke.
 
       @return The address of the last write
     */
@@ -240,6 +255,8 @@ class M6502 : public Serializable
     void setGhostReadsTrap(bool enable) { myGhostReadsTrap = enable; }
     void setReadFromWritePortBreak(bool enable) { myReadFromWritePortBreak = enable; }
     void setWriteToReadPortBreak(bool enable) { myWriteToReadPortBreak = enable; }
+    void setLogBreaks(bool enable) { myLogBreaks = enable; }
+    bool getLogBreaks() { return myLogBreaks; }
 #endif  // DEBUGGER_SUPPORT
 
   private:
@@ -255,7 +272,7 @@ class M6502 : public Serializable
 
       @return The byte at the specified address
     */
-    uInt8 peek(uInt16 address, uInt8 flags);
+    uInt8 peek(uInt16 address, Device::AccessFlags flags);
 
     /**
       Change the byte at the specified address to the given value and
@@ -264,7 +281,7 @@ class M6502 : public Serializable
       @param address  The address where the value should be stored
       @param value    The value to be stored at the address
     */
-    void poke(uInt16 address, uInt8 value, uInt8 flags = 0);
+    void poke(uInt16 address, uInt8 value, Device::AccessFlags flags = Device::NONE);
 
     /**
       Get the 8-bit value of the Processor Status register.
@@ -377,7 +394,7 @@ class M6502 : public Serializable
     /// accessed specifically by a peek or poke command
     uInt16 myLastPeekBaseAddress{0}, myLastPokeBaseAddress{0};
     // Indicates the type of the last access
-    uInt8 myFlags{0};
+    uInt16 myFlags{0};
 
     /// Indicates the last address used to access data by a peek command
     /// for the CPU registers (S/A/X/Y)
@@ -401,7 +418,7 @@ class M6502 : public Serializable
 
 #ifdef DEBUGGER_SUPPORT
     Int32 evalCondBreaks() {
-      for(Int32 i = Int32(myCondBreaks.size()) - 1; i >= 0; --i)
+      for(Int32 i = static_cast<Int32>(myCondBreaks.size()) - 1; i >= 0; --i)
         if(myCondBreaks[i]->evaluate())
           return i;
 
@@ -410,7 +427,7 @@ class M6502 : public Serializable
 
     Int32 evalCondSaveStates()
     {
-      for(Int32 i = Int32(myCondSaveStates.size()) - 1; i >= 0; --i)
+      for(Int32 i = static_cast<Int32>(myCondSaveStates.size()) - 1; i >= 0; --i)
         if(myCondSaveStates[i]->evaluate())
           return i;
 
@@ -419,7 +436,7 @@ class M6502 : public Serializable
 
     Int32 evalCondTraps()
     {
-      for(Int32 i = Int32(myTrapConds.size()) - 1; i >= 0; --i)
+      for(Int32 i = static_cast<Int32>(myTrapConds.size()) - 1; i >= 0; --i)
         if(myTrapConds[i]->evaluate())
           return i;
 
@@ -454,6 +471,7 @@ class M6502 : public Serializable
     bool myReadFromWritePortBreak{false};  // trap on reads from write ports
     bool myWriteToReadPortBreak{false};    // trap on writes to read ports
     bool myStepStateByInstruction{false};
+    bool myLogBreaks{false};               // log breaks/taps and continue emulation
 
   private:
     // Following constructors and assignment operators not supported
